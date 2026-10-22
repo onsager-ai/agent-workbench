@@ -9,6 +9,29 @@ Codex is the user's only control surface. Handle small answers and routine confi
 
 The shared source lives in this skill directory. Load only the relevant role file under `references/`. Model IDs, effort, dispatch budgets, the Sol weekly brake and the automatic rework limit live in `models.json`, not in each prompt. Do not alter the user's default interactive model or settings. Read the applicable repository instructions from the actual working directory before preparing a contract; this skill is not project guidance.
 
+## Local model configuration
+
+The distributed `models.json` remains the defaults file. The controller optionally merges a per-user file over those defaults:
+
+- `$XDG_CONFIG_HOME/agent-workbench/models.json` when `XDG_CONFIG_HOME` is nonempty and absolute.
+- Otherwise `~/.config/agent-workbench/models.json`. An unset, empty or relative `XDG_CONFIG_HOME` is ignored, following the XDG base-directory rule.
+
+The controller never creates this directory or file. Missing configuration uses the distributed defaults unchanged. Updating or reinstalling the skill does not overwrite the per-user file. Show the effective JSON and both source paths with `python3 ~/.agents/skills/orchestrate-harnesses/scripts/harness.py models show`; this read-only command creates no task and invokes no model. It exits with an error naming the configuration path and field when the file is invalid.
+
+Use partial JSON to change only selected values, for example:
+
+~~~json
+{
+  "roles": {
+    "manager": {"timeout_s": 240}
+  }
+}
+~~~
+
+The role keys are `manager`, `luna`, `sol`, `preflight` and `acceptance`; Worker dispatches use either `luna` or `sol`. The supported fields are `model`, `effort`, `timeout_s` and, where present in the defaults, `budget_usd` under an existing role, plus the existing top-level `max_auto_rework`, `sol_weekly_brake_percent`, `max_log_bytes` and `max_prompt_bytes` knobs. `version` may be omitted or set to `1`. Executable routing (`cli`) is fixed and cannot be overridden. Values are validated before dispatch. Configured byte limits cannot exceed their hard caps; runtime also caps prompts at 256 KiB, logs at 8 MiB and dispatch timeouts at 3600 seconds. `max_auto_rework` accepts any nonnegative integer, including zero.
+
+Changes are read on the next dispatch. A running model invocation keeps its current model; resuming an owned session after changing that role's model is rejected unless the configured model again matches the recorded session. To restore distributed defaults, delete or rename the user file.
+
 ## Gateway operations
 
 The bundled controller supports Linux and requires Python 3.11+ and the native CLIs already authenticated in the user's environment. Installing this skill does not install those tools or provide credentials. Use `scripts/harness.py` without reading credentials. State is private under `~/.local/state/harness-orchestration/tasks/`, outside repositories. It has no daemon or automatic startup. Commands below use `H` to mean the absolute path of that script.

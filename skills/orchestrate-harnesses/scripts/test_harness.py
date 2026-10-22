@@ -172,13 +172,16 @@ class HarnessTests(unittest.TestCase):
         self.home = self.root / 'home'
         (self.home / '.codex').mkdir(parents=True)
         (self.home / '.codex/AGENTS.md').write_text('# Thermal protection\nCanonical thermal sentinel; no CPU checks.\n')
+        self.xdg = self.root / 'xdg'
+        self.xdg.mkdir()
         self.bin = self.root / 'bin'
         self.bin.mkdir()
         for name in ('codex', 'claude'):
             path = self.bin / name
             path.write_text('#!' + sys.executable + '\n' + FAKE)
             path.chmod(0o700)
-        self.env = dict(os.environ, HOME=str(self.home), HARNESS_STATE_HOME=str(self.root / 'state'),
+        self.env = dict(os.environ, HOME=str(self.home), XDG_CONFIG_HOME=str(self.xdg),
+                        HARNESS_STATE_HOME=str(self.root / 'state'),
                         PATH=str(self.bin) + os.pathsep + os.environ.get('PATH', ''),
                         FAKE_CALLS=str(self.root / 'calls.jsonl'), FAKE_PROBE_CALLS=str(self.root / 'probes.jsonl'))
         for key in ('HARNESS_ROLE', 'CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'FAKE_MODE', 'FAKE_DESCENDANT', 'FAKE_PROBE_MODE'):

@@ -15,6 +15,8 @@ The skills CLI requires Node.js 22.20 or newer.
 
 The bundled orchestration controller is Linux-only and requires Python 3.11+ and the native agent CLIs already installed and authenticated in the user's environment. Installing skills with npx does not install those tools or provide credentials.
 
+Orchestration keeps its distributed model settings as defaults and supports partial per-user overrides at `$XDG_CONFIG_HOME/agent-workbench/models.json` (or `~/.config/agent-workbench/models.json` when XDG is unset, empty or relative). Skill updates leave that user file alone. See [local model configuration](skills/orchestrate-harnesses/SKILL.md#local-model-configuration) for supported fields, precedence, and the read-only effective-config command.
+
 OS sandboxing is optional. Workers use the user's explicitly evidenced permission policy: `danger-full-access` runs without an additional Codex OS sandbox, while `workspace-write` and `read-only` request isolation. Worktrees keep task changes separate; they do not enforce a security boundary. The editable task example shows an explicit full-access choice; replace its policy and evidence with the current user's actual choice.
 
 Worker dispatch requires an explicit v2 contract recording policy source/evidence, sandbox mode and approval policy. Read-only tasks are capped at read-only. A bounded no-inference startup probe validates resolved CLI policy and execution before each Worker run; failures block without widening permissions or consuming inference attempts. Historical v1 status and reviews remain available, but v1 Worker dispatch requires a new v2 task. See [Worker permission policy](skills/orchestrate-harnesses/references/worker-permissions.md).
