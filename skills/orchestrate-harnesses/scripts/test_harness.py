@@ -20,6 +20,19 @@ spec = importlib.util.spec_from_file_location('harness', SOURCE)
 h = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(h)
 
+
+def _control_when_free(task, action, timeout=5):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return h.control(task, action)
+        except h.Error as error:
+            if 'task busy' not in str(error) or time.monotonic() >= deadline:
+                raise
+            remaining = deadline - time.monotonic()
+            time.sleep(min(.05, max(0, remaining)))
+
+
 FAKE = r'''
 import json, os, pathlib, signal, subprocess, sys, time
 p = json.load(sys.stdin)
@@ -305,12 +318,14 @@ class HarnessTests(unittest.TestCase):
         for action in ('pause', 'cancel'):
             with self.controller(request=action) as process:
                 active = self.task.get()['active']
-                with self.assertRaises(h.Error):
-                    h.control(self.task, 'recover')
-                h.control(self.task, action)
+                with self.assertRaises(h.Error) as error:
+                    _control_when_free(self.task, 'recover')
+                self.assertNotIn('task busy', str(error.exception))
+                _control_when_free(self.task, action)
                 if action == 'pause':
-                    with self.assertRaises(h.Error):
-                        h.control(self.task, 'resume')
+                    with self.assertRaises(h.Error) as error:
+                        _control_when_free(self.task, 'resume')
+                    self.assertNotIn('task busy', str(error.exception))
                 process.communicate(timeout=6)
                 state = self.task.get()
                 self.assertIsNone(state['active'])
@@ -318,7 +333,7 @@ class HarnessTests(unittest.TestCase):
                 self.assertFalse(h.group_alive(active['child_pid']))
                 self.assertFalse(state['messages'][0]['acknowledgements'])
             if action == 'pause':
-                h.control(self.task, 'resume')
+                _control_when_free(self.task, 'resume')
 
     def test_sigterm_controller_preserves_uncertainty(self):
         with self.controller() as process:
