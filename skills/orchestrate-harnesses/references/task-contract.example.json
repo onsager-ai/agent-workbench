@@ -34,11 +34,9 @@
   },
   "worker_permissions": {
     "source": "user_message",
-    "evidence_ref": "The current user explicitly selected workspace-write/never for this task",
-    "sandbox_mode": "workspace-write",
+    "evidence_ref": "Replace with the actual current user message explicitly selecting full access without an additional OS sandbox and approvals never for this task",
+    "sandbox_mode": "danger-full-access",
     "approval_policy": "never",
-    "network_access": false,
-    "writable_roots": [],
     "adapter": "codex-cli-config-overrides"
   }
 }
