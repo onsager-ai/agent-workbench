@@ -12,6 +12,7 @@ EXPECTED_SKILLS = {
     "orchestrate-harnesses",
     "prompt-for-decisions",
     "review-storybook",
+    "workbench-setup",
 }
 
 
@@ -66,6 +67,8 @@ class PublicLayoutTests(unittest.TestCase):
             "skills/orchestrate-harnesses/scripts/test_harness.py",
             "skills/orchestrate-harnesses/references/task-contract.schema.json",
             "skills/orchestrate-harnesses/references/response.schema.json",
+            "skills/workbench-setup/assets/AGENTS.md",
+            "skills/workbench-setup/scripts/workbench.py",
         )
         for relative_path in required:
             with self.subTest(path=relative_path):
