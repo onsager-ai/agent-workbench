@@ -7,6 +7,7 @@ import datetime
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from copy import deepcopy
 
 from worker_policy import policy_check, overrides, startup_probe
 
@@ -23,6 +25,11 @@ BASE = Path(__file__).resolve().parent.parent
 ROLES = ('manager', 'worker', 'preflight', 'acceptance')
 LIMIT = 1024 * 1024
 TERMINAL = ('cancelled', 'abandoned')
+HARD_MAX_LOG_BYTES = 8 * 1024 * 1024
+HARD_MAX_PROMPT_BYTES = 262144
+MAX_FINITE_FLOAT_INT = int(sys.float_info.max)
+FIXED_CLIS = {'manager': 'claude', 'luna': 'codex', 'sol': 'codex',
+              'preflight': 'claude', 'acceptance': 'claude'}
 
 
 
@@ -49,6 +56,160 @@ def read(path, cap=LIMIT):
 
 def load(path):
     return json.loads(read(path))
+
+
+class _JSONConstant:
+    def __init__(self, name):
+        self.name = name
+
+
+class _JSONIntegerTooLarge:
+    pass
+
+
+def _parse_json_integer(value):
+    digit_limit = sys.get_int_max_str_digits()
+    if digit_limit and len(value.lstrip('-')) > digit_limit:
+        return _JSONIntegerTooLarge()
+    try:
+        return int(value)
+    except ValueError:
+        return _JSONIntegerTooLarge()
+
+
+def user_models_path(env=None, home=None):
+    env = os.environ if env is None else env
+    xdg = env.get('XDG_CONFIG_HOME')
+    if xdg and Path(xdg).is_absolute():
+        root = Path(xdg)
+    else:
+        root = Path.home() if home is None else Path(home)
+        root = root / '.config'
+    return root / 'agent-workbench' / 'models.json'
+
+
+def _models_json(path):
+    try:
+        data = read(path)
+    except (Error, OSError) as exc:
+        raise Error(f'{path}: <root>: cannot read configuration: {exc}') from exc
+    try:
+        return json.loads(data, parse_constant=_JSONConstant, parse_int=_parse_json_integer)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise Error(f'{path}: <root>: malformed JSON: {exc}') from exc
+
+
+def _config_error(path, field, message):
+    raise Error(f'{path}: {field}: {message}')
+
+
+def _finite_number(value):
+    return type(value) is int or (type(value) is float and math.isfinite(value))
+
+
+def _validate_models(models, path, defaults):
+    def exact_type(value, expected, field):
+        if type(value) is not expected:
+            _config_error(path, field, f'expected {expected.__name__}')
+
+    def finite_positive(value, field):
+        if not _finite_number(value) or value <= 0:
+            _config_error(path, field, 'expected a finite positive number')
+        if type(value) is int and value > MAX_FINITE_FLOAT_INT:
+            _config_error(path, field, 'integer is too large to represent as a finite number')
+
+    if type(models) is not dict:
+        _config_error(path, '<root>', 'expected an object')
+    for key in models:
+        if key not in ('version', 'roles', 'max_auto_rework', 'sol_weekly_brake_percent',
+                        'max_log_bytes', 'max_prompt_bytes'):
+            _config_error(path, key, 'unknown configuration key')
+    exact_type(models.get('version'), int, 'version')
+    if models['version'] != 1:
+        _config_error(path, 'version', 'unsupported version; expected 1')
+    exact_type(models.get('roles'), dict, 'roles')
+    if models['roles'].keys() != defaults['roles'].keys():
+        _config_error(path, 'roles', 'role set does not match distributed defaults')
+    for role, config in models['roles'].items():
+        field = f'roles.{role}'
+        exact_type(config, dict, field)
+        if config.keys() != defaults['roles'][role].keys():
+            _config_error(path, field, 'fields do not match distributed defaults')
+        if config['cli'] != FIXED_CLIS.get(role):
+            _config_error(path, f'{field}.cli', 'executable routing must match the distributed default')
+        for name, value in config.items():
+            item = f'{field}.{name}'
+            if name in ('cli', 'model', 'effort'):
+                exact_type(value, str, item)
+                if not value.strip():
+                    _config_error(path, item, 'must be a nonempty string')
+            elif name in ('timeout_s', 'budget_usd'):
+                finite_positive(value, item)
+            else:
+                _config_error(path, item, 'unsupported role field')
+
+    exact_type(models.get('max_auto_rework'), int, 'max_auto_rework')
+    if models['max_auto_rework'] < 0:
+        _config_error(path, 'max_auto_rework', 'must be a nonnegative integer')
+    finite_positive(models.get('sol_weekly_brake_percent'), 'sol_weekly_brake_percent')
+    if models['sol_weekly_brake_percent'] > 100:
+        _config_error(path, 'sol_weekly_brake_percent', 'must not exceed 100')
+    for name, ceiling in (('max_log_bytes', HARD_MAX_LOG_BYTES),
+                          ('max_prompt_bytes', HARD_MAX_PROMPT_BYTES)):
+        exact_type(models.get(name), int, name)
+        if not 0 < models[name] <= ceiling:
+            _config_error(path, name, f'must be positive and no greater than hard ceiling {ceiling}')
+
+
+def load_effective_models(base=None, env=None, home=None):
+    defaults_path = (BASE if base is None else Path(base)) / 'models.json'
+    defaults = _models_json(defaults_path)
+    _validate_models(defaults, defaults_path, defaults)
+    config_path = user_models_path(env, home)
+    exists = config_path.exists()
+    effective = deepcopy(defaults)
+    if exists:
+        override = _models_json(config_path)
+        if type(override) is not dict:
+            _config_error(config_path, '<root>', 'expected an object')
+        allowed = {'version', 'roles', 'max_auto_rework', 'sol_weekly_brake_percent',
+                   'max_log_bytes', 'max_prompt_bytes'}
+        for key in override:
+            if key not in allowed:
+                _config_error(config_path, key, 'unknown configuration key')
+        if 'version' in override:
+            if type(override['version']) is not int or override['version'] != defaults['version']:
+                _config_error(config_path, 'version', 'unsupported version; expected 1')
+        if 'roles' in override:
+            roles = override['roles']
+            if type(roles) is not dict:
+                _config_error(config_path, 'roles', 'expected an object')
+            for role, role_override in roles.items():
+                if role not in defaults['roles']:
+                    _config_error(config_path, f'roles.{role}', 'unknown role')
+                if type(role_override) is not dict:
+                    _config_error(config_path, f'roles.{role}', 'expected an object')
+                for name, value in role_override.items():
+                    field = f'roles.{role}.{name}'
+                    if name not in defaults['roles'][role]:
+                        _config_error(config_path, field, 'unknown role field')
+                    if name == 'cli':
+                        _config_error(config_path, field, 'executable routing cannot be overridden')
+                    if isinstance(value, _JSONConstant) or (type(value) is float and not math.isfinite(value)):
+                        _config_error(config_path, field, 'non-finite numbers are not allowed')
+                    if name in ('model', 'effort'):
+                        if type(value) is not str or not value.strip():
+                            _config_error(config_path, field, 'expected a nonempty string')
+                    elif name in ('timeout_s', 'budget_usd'):
+                        if not _finite_number(value) or value <= 0:
+                            _config_error(config_path, field, 'expected a finite positive number')
+                effective['roles'][role].update(role_override)
+        for name in ('max_auto_rework', 'sol_weekly_brake_percent', 'max_log_bytes', 'max_prompt_bytes'):
+            if name in override:
+                effective[name] = override[name]
+    _validate_models(effective, config_path if exists else defaults_path, defaults)
+    return effective, dict(defaults_path=str(defaults_path), user_config_path=str(config_path),
+                           user_config_exists=exists, user_config_used=exists)
 
 
 def encoded(value):
@@ -556,9 +717,7 @@ def run(task, role, request_id, tier=None, resume=False):
             if role == 'worker':
                 policy_check(contract)  # v1/missing evidence blocks before any probe or model spawn.
             contract_check(contract)
-            models = load(BASE / 'models.json')
-            require(type(models['max_auto_rework']) is int and models['max_auto_rework'] >= 0, 'invalid rework limit')
-            require(0 < float(models['sol_weekly_brake_percent']) <= 100, 'invalid Sol brake')
+            models, _ = load_effective_models()
             chosen = route(state, contract, role, tier, models)
             config = models['roles'][chosen]
             session = state['sessions'].get(role) if resume else None
@@ -755,6 +914,11 @@ def run(task, role, request_id, tier=None, resume=False):
             signal.signal(sig, handler)
 
 
+def models_show():
+    effective, source = load_effective_models()
+    return dict(**source, effective=effective)
+
+
 def main(argv=None):
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -776,8 +940,15 @@ def main(argv=None):
             item.add_argument('--resume-session', action='store_true')
         if action == 'recover':
             item.add_argument('--abandon', action='store_true', help='terminal uncertainty; does NOT certify the process stopped')
+    models = sub.add_parser('models', help='inspect model configuration')
+    models_sub = models.add_subparsers(dest='models_action', required=True)
+    models_sub.add_parser('show', help='show effective settings and source paths')
     args = parser.parse_args(argv)
     try:
+        if args.action == 'models':
+            result = models_show()
+            print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+            return 0
         require(args.action == 'status' or os.environ.get('HARNESS_ROLE') not in ROLES, 'role guard prohibits nested mutation/dispatch')
         task = Task(args.task, initialize=args.action == 'create')
         if args.action == 'create':
