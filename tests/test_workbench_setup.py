@@ -24,7 +24,10 @@ class SetupTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.home = Path(self.temporary.name) / "selected"
+        self.configure_home(Path(self.temporary.name) / "selected")
+
+    def configure_home(self, home):
+        self.home = Path(home)
         self.skill = self.home / ".agents/skills/workbench-setup"
         shutil.copytree(SKILL, self.skill)
         self.script = self.skill / "scripts/workbench.py"
@@ -104,6 +107,93 @@ class SetupTests(unittest.TestCase):
         self.run_setup("install")
         self.run_setup("uninstall")
         self.assertEqual(self.claude.read_bytes(), data)
+
+    def test_preexisting_equivalent_import_forms_are_reused(self):
+        forms = (
+            b"@~/.agents/AGENTS.md",
+            b"@../.agents/AGENTS.md",
+            b"@./../.agents/AGENTS.md",
+            None,
+        )
+        # Build the absolute form from each selected home at runtime.
+        for index, form in enumerate(forms):
+            with self.subTest(form=form or "absolute"):
+                selected = Path(self.temporary.name) / f"equivalent-{index}"
+                self.configure_home(selected)
+                import_line = form or b"@" + os.fsencode(self.shared)
+                original = "Claude café before\n".encode() + import_line + "\nAfter 雪".encode()
+                self.write(self.claude, original)
+
+                self.run_setup("install")
+                self.assertEqual(self.claude.read_bytes(), original)
+                state = json.loads((self.state / "state.json").read_bytes())
+                self.assertFalse(state["claude_import"]["owned"])
+                before_reinstall = self.claude.read_bytes()
+                self.assertIn("no-op", self.run_setup("install").stdout)
+                self.assertEqual(self.claude.read_bytes(), before_reinstall)
+                self.run_setup("status")
+                self.run_setup("uninstall")
+                self.assertEqual(self.claude.read_bytes(), original)
+
+    def test_mixed_equivalent_import_duplicates_refuse_without_writes(self):
+        cases = (
+            (b"@~/.agents/AGENTS.md", b"@../.agents/AGENTS.md"),
+            (b"@../.agents/AGENTS.md", None),
+        )
+        for index, (first, second) in enumerate(cases):
+            with self.subTest(index=index):
+                selected = Path(self.temporary.name) / f"duplicate-{index}"
+                self.configure_home(selected)
+                absolute = b"@" + os.fsencode(self.shared)
+                data = b"Before \xc3\xa9\n" + first + b"\n" + (second or absolute) + b"\nAfter"
+                self.write(self.claude, data)
+                before = self.snapshot()
+                result = self.run_setup("install", ok=False)
+                self.assertIn("duplicate Claude imports", result.stderr)
+                self.assertEqual(before, self.snapshot())
+                self.assertFalse((self.state / "state.json").exists())
+
+    def test_foreign_import_is_preserved_and_owned_import_is_appended_once(self):
+        original = b"Personal caf\xc3\xa9\n@../other/AGENTS.md\nAfter \xe9\x9b\xaa"
+        self.write(self.claude, original)
+        self.run_setup("install")
+        expected = original + b"\n" + IMPORT + b"\n"
+        self.assertEqual(self.claude.read_bytes(), expected)
+        self.run_setup("install")
+        self.assertEqual(self.claude.read_bytes(), expected)
+        self.assertEqual(self.claude.read_bytes().count(IMPORT), 1)
+        self.run_setup("uninstall")
+        self.assertEqual(self.claude.read_bytes(), original)
+
+    def test_personal_claude_edit_survives_owned_import_uninstall(self):
+        self.run_setup("install")
+        self.claude.write_bytes(self.claude.read_bytes() + b"personal edit \xcf\x80\n")
+        self.run_setup("uninstall")
+        self.assertEqual(self.claude.read_bytes(), b"personal edit \xcf\x80\n")
+
+    def test_legacy_reused_import_remains_non_owned(self):
+        original = b"Prior caf\xc3\xa9\n" + IMPORT + b"\nAfter"
+        self.write(self.claude, original)
+        self.run_setup("install")
+        state_path = self.state / "state.json"
+        state = json.loads(state_path.read_bytes())
+        self.assertFalse(state["import_added"])
+        state.pop("claude_import")
+        state_path.write_text(json.dumps(state) + "\n")
+        self.run_setup("status")
+        self.run_setup("uninstall")
+        self.assertEqual(self.claude.read_bytes(), original)
+
+    def test_legacy_added_import_remains_owned(self):
+        self.run_setup("install")
+        state_path = self.state / "state.json"
+        state = json.loads(state_path.read_bytes())
+        self.assertTrue(state["import_added"])
+        state.pop("claude_import")
+        state_path.write_text(json.dumps(state) + "\n")
+        self.run_setup("status")
+        self.run_setup("uninstall")
+        self.assertEqual(self.claude.read_bytes(), b"")
 
     def test_foreign_link_refuses_without_writes(self):
         target = self.home / "foreign"

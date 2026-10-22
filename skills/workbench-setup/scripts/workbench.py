@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import contextlib
 import fcntl
 import hashlib
@@ -83,9 +85,34 @@ def split_block(data):
     return data[start:end], data[:start] + data[end:]
 
 
-def import_lines(data):
-    return [line for line in data.splitlines(keepends=True)
-            if line.strip() == IMPORT]
+def import_lines(data, home, claude_parent, shared):
+    """Return import lines resolving lexically to the shared instructions."""
+    matches = []
+    shared_path = os.path.normpath(shared)
+    for line in data.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped.startswith(b"@"):
+            continue
+        token = stripped[1:]
+        if not token or len(token.split()) != 1:
+            continue
+        path = os.fsdecode(token)
+        if path.startswith("~/"):
+            path = os.path.join(os.fspath(home), path[2:])
+        elif not os.path.isabs(path):
+            path = os.path.join(os.fspath(claude_parent), path)
+        if os.path.normpath(path) == shared_path:
+            matches.append(line)
+    return matches
+
+
+def remove_exact_line(data, line):
+    lines = data.splitlines(keepends=True)
+    for index, current in enumerate(lines):
+        if current == line:
+            del lines[index]
+            return b"".join(lines)
+    raise Conflict("managed Claude import missing or modified; left unchanged")
 
 
 def atomic(path, data, mode=0o600):
@@ -208,9 +235,28 @@ class Setup:
                     or not isinstance(state["import_added"], bool)
                     or state["import_suffix"] not in ("", IMPORT.decode() + "\n", "\n" + IMPORT.decode() + "\n")):
                 raise ValueError("invalid ownership metadata")
+            if "claude_import" in state:
+                imported = state["claude_import"]
+                if (not isinstance(imported, dict) or not isinstance(imported.get("owned"), bool)
+                        or not isinstance(imported.get("line"), str)):
+                    raise ValueError("invalid Claude import ownership metadata")
+                base64.b64decode(imported["line"], validate=True)
             return state
-        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        except (ValueError, KeyError, TypeError, AttributeError, binascii.Error) as exc:
             raise Conflict("invalid setup state; retain backups and repair state before retrying") from exc
+
+    @staticmethod
+    def claude_import_record(state, current_line=None):
+        if "claude_import" in state:
+            saved = state["claude_import"]
+            return {"owned": saved["owned"], "line": base64.b64decode(saved["line"], validate=True)}
+        if state["import_added"]:
+            return {"owned": True, "line": IMPORT + b"\n"}
+        return {"owned": False, "line": current_line}
+
+    @staticmethod
+    def encode_claude_import(owned, line):
+        return {"owned": bool(owned), "line": base64.b64encode(line).decode("ascii")}
 
     def preflight(self, *, uninstall=False, status=False):
         state = self.load()
@@ -254,14 +300,18 @@ class Setup:
         elif block is not None:
             raise Conflict("managed markers have no ownership record; left unchanged")
         claude = read(self.claude)
-        lines = import_lines(claude)
+        lines = import_lines(claude, self.home, self.claude.parent, self.shared)
         if len(lines) > 1:
             raise Conflict("duplicate Claude imports; keep one import before retrying")
-        equivalent = b"@" + str(self.shared).encode()
-        if any(line.strip() == equivalent for line in claude.splitlines()):
-            raise Conflict("absolute Claude import already exists; use the documented home-relative import")
         if state and len(lines) != 1:
             raise Conflict("managed Claude import is missing or modified; left unchanged")
+        if state:
+            imported = self.claude_import_record(state, lines[0])
+            if imported["owned"]:
+                if lines[0] != imported["line"]:
+                    raise Conflict("managed Claude import missing or modified; left unchanged")
+            elif "claude_import" not in state and lines[0].strip() != IMPORT:
+                raise Conflict("managed Claude import missing or modified; left unchanged")
         if not uninstall:
             inspect(self.script, self.home)
             inspect(self.template, self.home)
@@ -313,17 +363,29 @@ class Setup:
                 if codex_private != private:
                     private += codex_private
             claude = read(self.claude)
-            added = state["import_added"] if state else not import_lines(claude)
-            suffix = state["import_suffix"] if state else ""
-            if not import_lines(claude):
+            lines = import_lines(claude, self.home, self.claude.parent, self.shared)
+            if state:
+                imported = self.claude_import_record(state, lines[0])
+                added = state["import_added"]
+                suffix = state["import_suffix"]
+            else:
+                added = not lines
+                suffix = ""
+                if lines:
+                    imported = {"owned": False, "line": lines[0]}
+                else:
+                    imported = {"owned": True, "line": IMPORT + b"\n"}
+            if not lines:
                 suffix = ("\n" if claude and not claude.endswith(b"\n") else "") + IMPORT.decode() + "\n"
                 claude += suffix.encode()
+                imported = {"owned": True, "line": IMPORT + b"\n"}
             for name in ("shared", "codex", "claude", "launcher"):
                 self.backup(name, getattr(self, name))
             record = {"schema": 1, "version": VERSION, "template_hash": digest(template),
                       "block_hash": digest(block), "block_text": block.decode("utf-8"), "target": self.target,
                       "launcher_hash": digest(self.launcher_bytes()), "import_added": bool(added),
                       "import_suffix": suffix,
+                      "claude_import": self.encode_claude_import(imported["owned"], imported["line"]),
                       "owned": {"shared": "managed-block", "codex": "symlink",
                                 "claude": "import-line", "launcher": "file"}}
             shared = read(self.shared).replace(old_block, block, 1) if old_block else block + private
@@ -362,13 +424,14 @@ class Setup:
         with self.lock():
             state, _, private = self.preflight(uninstall=True)
             claude = read(self.claude)
-            if state["import_added"]:
-                suffix = state["import_suffix"].encode()
-                if suffix and claude.endswith(suffix):
+            lines = import_lines(claude, self.home, self.claude.parent, self.shared)
+            imported = self.claude_import_record(state, lines[0])
+            if imported["owned"]:
+                suffix = state["import_suffix"].encode() if state["import_added"] else b""
+                if suffix and claude.endswith(suffix) and imported["line"] == IMPORT + b"\n":
                     claude = claude[:-len(suffix)]
                 else:
-                    claude = b"".join(line for line in claude.splitlines(keepends=True)
-                                      if line.strip() != IMPORT)
+                    claude = remove_exact_line(claude, imported["line"])
             # Keep current personal bytes, never restore an old snapshot over them.
             plans = {self.shared: ("file", private, 0o600), self.codex: ("file", private, 0o600),
                      self.claude: ("file", claude, 0o600), self.launcher: ("absent", None, None),

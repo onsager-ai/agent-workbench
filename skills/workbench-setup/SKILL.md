@@ -12,7 +12,7 @@ python3 ~/.agents/skills/workbench-setup/scripts/workbench.py install
 ~/.local/bin/agent-workbench status
 ```
 
-The installer creates `~/.agents/AGENTS.md`, links Codex's `~/.codex/AGENTS.md`, and adds Claude's native `@~/.agents/AGENTS.md` import to `~/.claude/CLAUDE.md`. Personal text belongs outside `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->` in the shared file. Existing Codex regular-file bytes migrate there on first installation; existing Claude text stays in its file.
+The installer creates `~/.agents/AGENTS.md`, links Codex's `~/.codex/AGENTS.md`, and ensures `~/.claude/CLAUDE.md` has one native import resolving to the shared instructions. An existing equivalent Claude import is reused. Personal text belongs outside `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->` in the shared file. Existing Codex regular-file bytes migrate there on first installation; existing Claude text stays in its file.
 
 `agent-workbench install` reapplies distributed assets. `agent-workbench update` first updates only installed skills owned by `onsager-ai/agent-workbench` through the native skills lock, then runs freshly distributed setup code. Node.js 22.20+ and npx are needed for distribution and updates. Do not edit the native skills lock yourself.
 

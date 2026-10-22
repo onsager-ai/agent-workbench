@@ -1,7 +1,7 @@
-# Shared working instructions
+# Shared agent instructions
 
-Follow the user's current goal and preserve unrelated work. Keep changes within the authorized scope.
-
-Inspect the relevant context before changing files. Prefer small, reviewable changes and verify the behavior affected by them.
-
-Report the outcome, validation performed, and any remaining limitations accurately. Ask for clarification when a material decision cannot be inferred from the available context.
+- Follow the user's current goal and preserve unrelated work.
+- If a task contract or role marker assigns Worker or reviewer work, obey that role first; do not act as the user-facing gateway or launch nested harnesses, controllers, or agents.
+- For user-facing substantial engineering or explicit cross-harness work, use the `orchestrate-harnesses` skill. Handle small answers and routine edits directly.
+- Keep workflow details, per-role models, and budgets in that skill's own files.
+- The user's current instructions and native permission settings remain authoritative.
