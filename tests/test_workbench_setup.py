@@ -238,7 +238,10 @@ class SetupTests(unittest.TestCase):
 
     def test_manual_managed_drift_refuses_install_and_uninstall(self):
         self.run_setup("install")
-        self.shared.write_bytes(self.shared.read_bytes().replace(b"Shared working", b"Edited working"))
+        original = self.shared.read_bytes()
+        drifted = original.replace(BEGIN + b"\n", BEGIN + b"\nmanual drift\n", 1)
+        self.assertNotEqual(original, drifted)
+        self.shared.write_bytes(drifted)
         before = self.snapshot()
         for command in ("status", "install", "uninstall"):
             self.assertIn("drift", self.run_setup(command, ok=False).stderr)
