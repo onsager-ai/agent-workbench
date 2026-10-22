@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "task_id": {"type": "string"},
+    "ack_message_ids": {"type": "array", "items": {"type": "string"}},
+    "outcome": {"type": "string", "enum": ["plan", "complete", "pass", "fail", "blocked", "accepted"]},
+    "summary": {"type": "string"},
+    "findings": {"type": "array", "items": {"type": "string"}},
+    "next_role": {"type": "string", "enum": ["worker", "manager", "preflight", "acceptance", "none"]},
+    "worker_tier": {"type": "string", "enum": ["luna", "sol"]},
+    "decision": {"type": "string"},
+    "evidence": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": ["task_id", "ack_message_ids", "outcome", "summary", "findings", "next_role", "worker_tier", "decision", "evidence"],
+  "additionalProperties": false
+}

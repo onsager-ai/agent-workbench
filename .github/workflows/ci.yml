@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run layout and controller tests
+        run: |
+          python -m unittest discover -s tests -v
+          python -m unittest discover -s skills/orchestrate-harnesses/scripts -p 'test_*.py' -v
+      - name: Verify skill discovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          npm_config_cache="$tmp/npm-cache" npx --yes skills@1.7.4 add "$GITHUB_WORKSPACE" --list | tee "$tmp/available.txt"
+          for skill in disk-cleanup manage-lane orchestrate-harnesses prompt-for-decisions review-storybook; do
+            grep -F "$skill" "$tmp/available.txt" >/dev/null || {
+              echo "skills CLI did not discover $skill" >&2
+              exit 1
+            }
+          done
+      - name: Verify project-local copy installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          project="$tmp/project"
+          mkdir -p "$project"
+
+          global_snapshot() {
+            for root in "$HOME/.agents" "$HOME/.codex" "$HOME/.claude"; do
+              if [ -e "$root" ] || [ -L "$root" ]; then
+                find -P "$root" -maxdepth 4 -printf '%y %P %s %T@ %C@ %i\n' | LC_ALL=C sort
+              else
+                printf 'absent %s\n' "$root"
+              fi
+            done
+            for file in "$HOME/AGENTS.md" "$HOME/CLAUDE.md" "$HOME/.codex/AGENTS.md" "$HOME/.claude/CLAUDE.md"; do
+              if [ -e "$file" ] || [ -L "$file" ]; then
+                stat -c 'file %n %s %Y %Z %i' "$file"
+              else
+                printf 'absent %s\n' "$file"
+              fi
+            done
+          }
+
+          global_snapshot > "$tmp/global-before.txt"
+          cd "$project"
+          npm_config_cache="$tmp/npm-cache" npx --yes skills@1.7.4 add "$GITHUB_WORKSPACE" -a codex -a claude-code --skill '*' --copy -y
+          for skill in disk-cleanup manage-lane orchestrate-harnesses prompt-for-decisions review-storybook; do
+            installed="$(find "$project" -type f -path "*/$skill/SKILL.md" -print -quit)"
+            test -n "$installed" || {
+              echo "project install did not create $skill/SKILL.md" >&2
+              exit 1
+            }
+            test ! -L "$installed" || {
+              echo "$skill was linked instead of copied" >&2
+              exit 1
+            }
+          done
+          global_snapshot > "$tmp/global-after.txt"
+          diff -u "$tmp/global-before.txt" "$tmp/global-after.txt"
