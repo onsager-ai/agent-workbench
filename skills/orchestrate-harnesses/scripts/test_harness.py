@@ -33,6 +33,18 @@ def _control_when_free(task, action, timeout=5):
             time.sleep(min(.05, max(0, remaining)))
 
 
+def _identity_complete(active):
+    fields = (
+        'controller_pid',
+        'controller_start',
+        'controller_boot_id',
+        'child_pid',
+        'child_start',
+        'child_boot_id',
+    )
+    return bool(active) and all(active.get(field) for field in fields)
+
+
 FAKE = r'''
 import json, os, pathlib, signal, subprocess, sys, time
 p = json.load(sys.stdin)
@@ -170,7 +182,7 @@ class HarnessTests(unittest.TestCase):
         process = subprocess.Popen([sys.executable, str(self.script), 'run', self.task.id, 'worker', '--request-id', request],
                                    env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            self.until(lambda: self.task.get()['active'] and self.task.get()['active'].get('child_pid'))
+            self.until(lambda: _identity_complete(self.task.get()['active']))
             yield process
         finally:
             if process.poll() is None:
@@ -181,7 +193,7 @@ class HarnessTests(unittest.TestCase):
                 process.kill()
                 process.communicate(timeout=2)
             active = self.task.get()['active']
-            if active and active.get('child_pid'):
+            if _identity_complete(active):
                 # Only test-owned identity, even in test cleanup.
                 if h.identity(active['child_pid'], active['child_start'], active['child_boot_id']):
                     h.stop_group(active)
