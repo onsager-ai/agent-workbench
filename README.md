@@ -69,17 +69,6 @@ Setup refuses foreign links or same-name commands, masking Codex overrides, dupl
 
 For disposable fixtures, copy the skill beneath a selected home's `.agents/skills/workbench-setup`, then use `python3 .../scripts/workbench.py --home PATH install`. An alternate-home `update` requires an explicit `--skills-cmd` command and never defaults to the real user's global npx update.
 
-### Review-time branch installation
-
-While this change is unmerged, explicitly select its branch ref to try the candidate:
-
-~~~sh
-npx skills add 'onsager-ai/agent-workbench#codex/global-instructions' -g -a codex -a claude-code --skill '*' -y
-python3 ~/.agents/skills/workbench-setup/scripts/workbench.py install
-~~~
-
-The quoted fragment selects the branch, including its slash. This is an unmerged review candidate; distributing it still does not apply global prompts until the Python installer runs. Merge is a separate action.
-
 ## Project-local install
 
 From the project where you want the skills available, omit -g:
