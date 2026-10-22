@@ -1,13 +1,42 @@
 {
-  "version": 1,
+  "version": 2,
   "cwd": "/workspace/owned-worktree",
   "objective": "Concrete intended behavior",
   "complexity": "normal",
-  "allowed_paths": ["src/example.py"],
-  "acceptance_criteria": ["Observable acceptance criterion based on the original request", "Complete any commit or remote delivery explicitly authorized by the original user sources and verify its resulting revision"],
-  "authorization": {"implementation": true, "commit": false, "push": false, "merge": false, "deploy": false, "publish": false},
+  "allowed_paths": [
+    "src/example.py"
+  ],
+  "acceptance_criteria": [
+    "Observable acceptance criterion based on the original request",
+    "Complete any commit or remote delivery explicitly authorized by the original user sources and verify its resulting revision"
+  ],
+  "authorization": {
+    "implementation": true,
+    "commit": false,
+    "push": false,
+    "merge": false,
+    "deploy": false,
+    "publish": false
+  },
   "read_only": false,
-  "verification": {"ci_required": true, "evidence_files": [], "exemption_reason": ""},
-  "sol_usage": {"weekly_percent": null, "observed_at": null},
-  "source": {"kind": "user_message", "reference": "Reference the actual user message or other trusted source that grants each requested authorization"}
+  "verification": {
+    "ci_required": true,
+    "evidence_files": [],
+    "exemption_reason": ""
+  },
+  "sol_usage": {
+    "weekly_percent": null,
+    "observed_at": null
+  },
+  "source": {
+    "kind": "user_message",
+    "reference": "Reference the actual user message or other trusted source that grants each requested authorization"
+  },
+  "worker_permissions": {
+    "source": "user_message",
+    "evidence_ref": "Replace with the actual current user message explicitly selecting full access without an additional OS sandbox and approvals never for this task",
+    "sandbox_mode": "danger-full-access",
+    "approval_policy": "never",
+    "adapter": "codex-cli-config-overrides"
+  }
 }

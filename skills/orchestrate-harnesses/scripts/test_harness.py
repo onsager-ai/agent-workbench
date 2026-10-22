@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 SOURCE = Path(__file__).with_name('harness.py')
+sys.path.insert(0, str(SOURCE.parent))
 spec = importlib.util.spec_from_file_location('harness', SOURCE)
 h = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(h)
@@ -47,6 +48,61 @@ def _identity_complete(active):
 
 FAKE = r'''
 import json, os, pathlib, signal, subprocess, sys, time
+if 'app-server' in sys.argv:
+    mode = os.environ.get('FAKE_PROBE_MODE', '')
+    if mode == 'early-close':
+        os.write(2, b'bwrap RTM_NEWADDR EPERM')
+        sys.exit(1)
+    values = {}
+    for index, arg in enumerate(sys.argv):
+        if arg == '-c':
+            key, value = sys.argv[index + 1].split('=', 1)
+            values[key] = json.loads(value)
+    with open(os.environ['FAKE_PROBE_CALLS'], 'a') as f:
+        f.write(json.dumps({'args': sys.argv[1:]}) + '\n')
+    for line in sys.stdin:
+        message = json.loads(line)
+        with open(os.environ['FAKE_PROBE_CALLS'], 'a') as f:
+            f.write(json.dumps({'method': message['method'], 'params': message.get('params')}) + '\n')
+        if 'id' not in message:
+            continue
+        method = message['method']
+        if mode == 'hang':
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            while True:
+                time.sleep(.1)
+        if mode in ('stdout-flood', 'stderr-flood'):
+            while True:
+                os.write(1 if mode == 'stdout-flood' else 2, b'x' * 8192)
+        if mode == 'protocol':
+            print('invalid JSON', flush=True)
+            continue
+        result = {}
+        if method == 'config/read':
+            workspace = {'network_access': values.get('sandbox_workspace_write.network_access'),
+                         'writable_roots': values.get('sandbox_workspace_write.writable_roots', [])}
+            result = {'config': {'sandbox_mode': values['sandbox_mode'],
+                      'approval_policy': values['approval_policy'], 'sandbox_workspace_write': workspace, 'profiles': {},
+                      'auth': 'SECRET_CONFIG_AUTH', 'mcp_servers': {'token': 'SECRET_MCP'},
+                      'env': {'SECRET': 'SECRET_ENV'}}}
+            if mode == 'mismatch':
+                result['config']['sandbox_mode'] = 'unknown-mode'
+            if mode == 'profile':
+                result['config']['profile'] = 'SECRET_PROFILE'
+            if mode == 'profile-definitions':
+                result['config']['profiles'] = {'SECRET_PROFILE': {'env': 'SECRET_PROFILE_ENV'}}
+            if mode == 'network-mismatch':
+                result['config']['sandbox_workspace_write']['network_access'] = True
+            if mode == 'roots-mismatch':
+                result['config']['sandbox_workspace_write']['writable_roots'] = ['/outside']
+        elif method == 'configRequirements/read':
+            result = {'requirements': {'env': 'SECRET_MANAGED'} if mode == 'managed' else None,
+                      'auth': 'SECRET_REQUIREMENTS_AUTH'}
+        elif method == 'command/exec':
+            result = {'exitCode': 1 if mode in ('namespace', 'sandbox') else 0,
+                      'stdout': '', 'stderr': 'bwrap RTM_NEWADDR EPERM' if mode == 'namespace' else ''}
+        print(json.dumps({'id': message['id'], 'result': result}), flush=True)
+    sys.exit(0)
 p = json.load(sys.stdin)
 role = os.environ['HARNESS_ROLE']
 mode = os.environ.get('FAKE_MODE', '')
@@ -112,6 +168,7 @@ class HarnessTests(unittest.TestCase):
         shutil.copyfile(SOURCE.parent.parent / 'models.json', self.base / 'models.json')
         self.script = self.base / 'scripts/harness.py'
         shutil.copyfile(SOURCE, self.script)
+        shutil.copyfile(SOURCE.with_name('worker_policy.py'), self.script.with_name('worker_policy.py'))
         self.home = self.root / 'home'
         (self.home / '.codex').mkdir(parents=True)
         (self.home / '.codex/AGENTS.md').write_text('# Thermal protection\nCanonical thermal sentinel; no CPU checks.\n')
@@ -123,8 +180,8 @@ class HarnessTests(unittest.TestCase):
             path.chmod(0o700)
         self.env = dict(os.environ, HOME=str(self.home), HARNESS_STATE_HOME=str(self.root / 'state'),
                         PATH=str(self.bin) + os.pathsep + os.environ.get('PATH', ''),
-                        FAKE_CALLS=str(self.root / 'calls.jsonl'))
-        for key in ('HARNESS_ROLE', 'CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'FAKE_MODE', 'FAKE_DESCENDANT'):
+                        FAKE_CALLS=str(self.root / 'calls.jsonl'), FAKE_PROBE_CALLS=str(self.root / 'probes.jsonl'))
+        for key in ('HARNESS_ROLE', 'CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'FAKE_MODE', 'FAKE_DESCENDANT', 'FAKE_PROBE_MODE'):
             self.env.pop(key, None)
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, self.env, clear=True).start()
@@ -135,11 +192,13 @@ class HarnessTests(unittest.TestCase):
         self.original = self.root / 'original.txt'
         self.original.write_bytes('原始请求\r\nexact bytes\n'.encode())
         self.contract_file = self.root / 'contract.json'
-        self.contract = dict(version=1, cwd=str(self.root), objective='bounded fake task', complexity='simple',
+        self.contract = dict(version=2, cwd=str(self.root), objective='bounded fake task', complexity='simple',
                              allowed_paths=['target.py'], acceptance_criteria=['observable result'],
                              authorization=dict(implementation=True, commit=False, push=False, merge=False, deploy=False, publish=False),
                              read_only=True, verification=dict(ci_required=False, evidence_files=[], exemption_reason='CI-only fake control test'),
-                             source=dict(kind='user_message', reference='test attachment'))
+                             source=dict(kind='user_message', reference='test attachment'),
+                             worker_permissions=dict(source='user_message', evidence_ref='explicit test policy',
+                                 sandbox_mode='read-only', approval_policy='never', adapter='codex-cli-config-overrides'))
         self.contract_file.write_text(json.dumps(self.contract))
         self.task = h.Task('task')
         h.create(self.task, self.original, self.contract_file)
@@ -177,12 +236,12 @@ class HarnessTests(unittest.TestCase):
         self.fail('bounded condition did not settle')
 
     @contextlib.contextmanager
-    def controller(self, request='active', mode='hang'):
+    def controller(self, request='active', mode='hang', phase='model'):
         env = dict(os.environ, FAKE_MODE=mode)
         process = subprocess.Popen([sys.executable, str(self.script), 'run', self.task.id, 'worker', '--request-id', request],
                                    env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            self.until(lambda: _identity_complete(self.task.get()['active']))
+            self.until(lambda: _identity_complete(self.task.get()['active']) and self.task.get()['active']['phase'] == phase)
             yield process
         finally:
             if process.poll() is None:
@@ -252,7 +311,9 @@ class HarnessTests(unittest.TestCase):
         self.run_role(request='continued', resume=True)
         args = self.calls()[-1]['args']
         self.assertLess(args.index('-m'), args.index('exec'))
-        self.assertEqual(args[args.index('-s') + 1], 'read-only')
+        self.assertIn('sandbox_mode="read-only"', args)
+        self.assertNotIn('-s', args)
+        self.assertNotIn('-a', args)
         self.assertEqual(args[args.index('resume') + 1], 'owned-worker-thread')
         self.assertEqual(args[args.index('-m') + 1], 'gpt-6.1-sol')
         with self.assertRaises(h.Error):
@@ -621,6 +682,265 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.task.get()['worker_runs'], 0)
         self.run_role('manager', 'approved-plan', 'sol')
         self.assertEqual(self.run_role()['execution_status'], 'completed')
+
+
+    def probe_calls(self):
+        path = Path(os.environ['FAKE_PROBE_CALLS'])
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_permissions_validation_and_schema(self):
+        import worker_policy as policy
+        base = self.contract['worker_permissions']
+        for sandbox in policy.MODES:
+            for approval in policy.APPROVALS:
+                candidate = dict(self.contract, read_only=sandbox == 'read-only',
+                                 worker_permissions=dict(base, sandbox_mode=sandbox, approval_policy=approval))
+                h.contract_check(candidate)
+        invalid = [dict(source='user_config_fields'), dict(approval_policy='untrusted'),
+                   dict(profile='named'), dict(default_permissions={}), {'-p': 'named'}, {'-P': 'named'},
+                   dict(named_profile='named'), dict(adapter='native-fallback'), dict(evidence_ref=' '),
+                   dict(network_access=True), dict(writable_roots=[str(self.root)]),
+                   dict(supporting_evidence=[dict(kind='user_config_fields', ref=' ')])]
+        for changes in invalid:
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, 'unsupported_policy'):
+                h.contract_check(dict(self.contract, worker_permissions=dict(base, **changes)))
+        for name in ('profile', 'default_permissions', '-p', '-P', 'named-profile'):
+            with self.assertRaisesRegex(ValueError, 'unsupported_policy'):
+                h.contract_check(dict(self.contract, **{name: 'unsupported'}))
+        for mode in ('workspace-write', 'danger-full-access'):
+            with self.assertRaisesRegex(ValueError, 'read_only'):
+                h.contract_check(dict(self.contract, worker_permissions=dict(base, sandbox_mode=mode)))
+        candidate = dict(self.contract, read_only=False, worker_permissions=dict(base, sandbox_mode='workspace-write',
+                         writable_roots=[str(self.root)], network_access=False,
+                         supporting_evidence=[dict(kind='user_config_fields', ref='supporting fields only')]))
+        h.contract_check(candidate)
+        for roots in (['relative'], [str(self.root.parent)]):
+            with self.assertRaises(ValueError):
+                h.contract_check(dict(candidate, worker_permissions=dict(candidate['worker_permissions'], writable_roots=roots)))
+        # The public schema independently requires v2 evidence and enforces the read-only cap.
+        no_policy = dict(self.contract)
+        del no_policy['worker_permissions']
+        with self.assertRaises(h.Error):
+            h.schema(no_policy, h.load(self.base / 'references/task-contract.schema.json'))
+        self.assertRaises(h.Error, h.schema, dict(self.contract, worker_permissions=dict(base, sandbox_mode='workspace-write')),
+                          h.load(self.base / 'references/task-contract.schema.json'))
+
+    def test_explicit_git_common_root_only(self):
+        repo = self.root / 'repo'
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        # A worktree's shared git directory is not implicitly added to the policy.
+        working = self.root / 'linked'
+        subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                        'commit', '--allow-empty', '-qm', 'fixture'], check=True)
+        subprocess.run(['git', '-C', str(repo), 'worktree', 'add', '-q', str(working)], check=True)
+        candidate = dict(self.contract, cwd=str(working), read_only=False,
+                         worker_permissions=dict(self.contract['worker_permissions'], sandbox_mode='workspace-write',
+                                                 writable_roots=[str(repo / '.git')]))
+        h.contract_check(candidate)
+        self.assertIn('sandbox_workspace_write.writable_roots=' + json.dumps([str(repo / '.git')]),
+                      h.overrides(candidate['worker_permissions']))
+        candidate['worker_permissions']['writable_roots'] = [str(repo)]
+        with self.assertRaisesRegex(ValueError, 'outside cwd/git common dir'):
+            h.contract_check(candidate)
+
+    def test_v1_historical_paths_immutable_but_all_workers_block(self):
+        legacy = dict(self.contract)
+        legacy.pop('worker_permissions')
+        self.contract = legacy
+        for read_only in (True, False):
+            self.scenario(**dict(legacy, version=1, read_only=read_only))
+            raw = (self.task.path / 'contract.json').read_bytes()
+            hashes = dict(self.task.get()['immutable_hashes'])
+            self.assertEqual(self.cli('status', self.task.id).returncode, 0)
+            for role in ('manager', 'preflight', 'acceptance'):
+                self.assertEqual(self.run_role(role, role)['execution_status'], 'completed')
+            before = len(self.calls())
+            with patch.object(h.subprocess, 'Popen', side_effect=AssertionError('v1 spawn prohibited')):
+                with self.assertRaisesRegex(ValueError, 'create a v2 task'):
+                    self.run_role(request='blocked')
+            self.assertEqual(len(self.calls()), before)
+            self.assertEqual(self.probe_calls(), [])
+            self.assertEqual((self.task.path / 'contract.json').read_bytes(), raw)
+            self.assertEqual(self.task.get()['immutable_hashes'], hashes)
+            self.assertEqual(self.task.get()['worker_runs'], 0)
+
+    def test_shared_policy_argv_probe_order_and_privacy(self):
+        from worker_policy import probe_command
+        base = dict(self.contract['worker_permissions'])
+        for index, sandbox in enumerate(('read-only', 'workspace-write', 'danger-full-access')):
+            policy = dict(base, sandbox_mode=sandbox)
+            if sandbox == 'workspace-write':
+                policy.update(network_access=False, writable_roots=[str(self.root)])
+            self.scenario(read_only=sandbox == 'read-only', worker_permissions=policy)
+            record = self.run_role(request='policy' + str(index))
+            self.assertEqual(record['execution_status'], 'completed')
+            probe_args = probe_command(self.contract)
+            worker_args = self.calls()[-1]['args']
+            expected = h.overrides(policy)
+            self.assertEqual(probe_args[4:-1], expected)
+            self.assertEqual(worker_args[3:3 + len(expected)], expected)
+            for flag in ('-s', '-a', '-p', '-P'):
+                self.assertNotIn(flag, probe_args + worker_args)
+            methods = [entry['method'] for entry in self.probe_calls() if 'method' in entry]
+            self.assertEqual(methods[-5:], ['initialize', 'initialized', 'config/read', 'configRequirements/read', 'command/exec'])
+            command_params = self.probe_calls()[-1]['params']
+            self.assertEqual(command_params, dict(command=['/bin/true'], cwd=str(self.root), timeoutMs=2000))
+            audit = (self.task.path / 'probe-audit.jsonl').read_text()
+            self.assertEqual(json.loads(audit)['classification'], 'ok')
+            self.assertNotIn('SECRET_', audit + json.dumps(self.task.get()))
+            self.assertEqual(record['probe']['selected'], policy)
+            self.assertTrue(record['probe']['termination_confirmed'])
+        # Resume always probes again before the actual owned model session is resumed.
+        before = len(self.probe_calls())
+        self.run_role(request='resume-policy', resume=True)
+        self.assertGreater(len(self.probe_calls()), before)
+        self.assertIn('resume', self.calls()[-1]['args'])
+
+    def test_probe_failures_block_before_inference_and_audit(self):
+        for mode, classification in (('namespace', 'namespace'), ('early-close', 'namespace'), ('sandbox', 'sandbox'),
+                                     ('mismatch', 'config_mismatch'), ('managed', 'managed_constraint'),
+                                     ('protocol', 'protocol'), ('profile', 'unsupported_policy'),
+                                     ('profile-definitions', 'unsupported_policy')):
+            with self.subTest(mode=mode):
+                self.scenario()
+                before = len(self.calls())
+                with patch.dict(os.environ, {'FAKE_PROBE_MODE': mode}):
+                    record = self.run_role(request='probe-' + mode)
+                self.assertEqual(record['execution_status'], 'failed')
+                self.assertEqual(record['probe']['classification'], classification)
+                self.assertIn('no inference started', record['error'])
+                self.assertEqual(len(self.calls()), before)
+                self.assertEqual(self.task.get()['worker_runs'], 0)
+                self.assertFalse(record['worker_counted'])
+                self.assertIsNone(self.task.get()['active'])
+                audit = (self.task.path / 'probe-audit.jsonl').read_text()
+                self.assertNotIn('SECRET_', audit + json.dumps(self.task.get()))
+                self.assertEqual(json.loads(audit)['classification'], classification)
+                if mode in ('mismatch', 'managed', 'profile', 'profile-definitions'):
+                    self.assertNotEqual(self.probe_calls()[-1].get('method'), 'command/exec')
+
+    def test_probe_timeout_and_log_caps(self):
+        import worker_policy
+        with patch.object(worker_policy, 'PROBE_TIMEOUT_S', .2), patch.dict(os.environ, {'FAKE_PROBE_MODE': 'hang'}):
+            record = self.run_role(request='probe-timeout')
+        self.assertEqual(record['probe']['classification'], 'timeout')
+        self.assertTrue(record['probe']['termination_confirmed'])
+        self.assertEqual(self.task.get()['worker_runs'], 0)
+        self.assertEqual(self.task.get()['messages'][0]['submissions']['worker']['execution_status'], 'timeout')
+        models = h.load(self.base / 'models.json')
+        models['max_log_bytes'] = 4096
+        h.atomic(self.base / 'models.json', h.encoded(models))
+        for mode in ('stdout-flood', 'stderr-flood'):
+            with patch.dict(os.environ, {'FAKE_PROBE_MODE': mode}):
+                record = self.run_role(request=mode)
+            self.assertEqual(record['probe']['classification'], 'protocol')
+            self.assertTrue(record['probe']['truncated'])
+            self.assertLessEqual(len(record['probe']['stderr'].encode()), 4096)
+            self.assertEqual(self.task.get()['worker_runs'], 0)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(len((self.task.path / 'probe-audit.jsonl').read_text().splitlines()), 3)
+
+    def test_probe_cancel_identity_and_recovery_do_not_count(self):
+        with patch.dict(os.environ, {'FAKE_PROBE_MODE': 'hang'}):
+            with self.controller(request='probe-cancel', phase='probe') as process:
+                active = self.task.get()['active']
+                self.assertIsNotNone(h.identity(active['child_pid'], active['child_start'], active['child_boot_id']))
+                _control_when_free(self.task, 'cancel')
+                process.communicate(timeout=6)
+                state = self.task.get()
+                self.assertEqual(state['status'], 'cancelled')
+                self.assertIsNone(state['active'])
+                self.assertFalse(h.group_alive(active['child_pid']))
+                self.assertEqual(state['requests']['probe-cancel']['probe']['classification'], 'cancelled')
+                self.assertEqual(state['worker_runs'], 0)
+                message = state['messages'][0]
+                self.assertEqual(message['submissions']['worker']['execution_status'], 'cancelled')
+                self.assertFalse(message['acknowledgements'])
+        for phase in ('probe', 'probe-complete'):
+            for abandon in (False, True):
+                self.scenario()
+                self.lease()
+                state = self.task.get()
+                state['active']['phase'] = phase
+                self.task.save(state)
+                with patch.object(h, 'boot_id', return_value='new-boot'), patch.object(h.os, 'killpg') as kill:
+                    state = h.control(self.task, 'recover', abandon=abandon)
+                kill.assert_not_called()
+                self.assertEqual(state['worker_runs'], 0)
+                self.assertFalse(state['requests']['uncertain']['worker_counted'])
+        self.assertEqual(self.calls(), [])
+
+    def test_invalid_v2_worker_evidence_blocks_all_spawns(self):
+        base = dict(self.contract)
+        cases = [None, dict(base['worker_permissions'], approval_policy='untrusted'),
+                 dict(base['worker_permissions'], source='user_config_fields')]
+        for index, policy in enumerate(cases):
+            candidate = dict(base)
+            if policy is None:
+                candidate.pop('worker_permissions')
+            else:
+                candidate['worker_permissions'] = policy
+            # Simulate an externally supplied invalid record at intake, without changing its bytes later.
+            self.contract_file.write_text(json.dumps(candidate))
+            self.task = h.Task('invalid-policy-' + str(index))
+            with patch.object(h, 'contract_check'):
+                h.create(self.task, self.original, self.contract_file)
+            raw = (self.task.path / 'contract.json').read_bytes()
+            with patch.object(h.subprocess, 'Popen', side_effect=AssertionError('invalid v2 spawn prohibited')):
+                with self.assertRaisesRegex(ValueError, 'unsupported_policy'):
+                    self.run_role()
+            self.assertEqual(self.task.get()['worker_runs'], 0)
+            self.assertEqual((self.task.path / 'contract.json').read_bytes(), raw)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.probe_calls(), [])
+
+    def test_workspace_network_and_roots_mismatch_block(self):
+        self.scenario(read_only=False, worker_permissions=dict(self.contract['worker_permissions'],
+                      sandbox_mode='workspace-write', network_access=False))
+        for mode in ('network-mismatch', 'roots-mismatch'):
+            with patch.dict(os.environ, {'FAKE_PROBE_MODE': mode}):
+                record = self.run_role(request=mode)
+            self.assertEqual(record['probe']['classification'], 'config_mismatch')
+            self.assertEqual(self.probe_calls()[-1]['method'], 'configRequirements/read')
+            self.assertEqual(self.task.get()['worker_runs'], 0)
+        self.assertEqual(self.calls(), [])
+
+    def test_probe_pipe_close_failure_still_persists_audit(self):
+        actual = subprocess.Popen
+        class FailingClose:
+            def __init__(self, stream):
+                self.stream = stream
+            def __getattr__(self, name):
+                return getattr(self.stream, name)
+            def close(self):
+                self.stream.close()
+                raise BrokenPipeError('closed protocol peer')
+        def launch(*args, **kwargs):
+            child = actual(*args, **kwargs)
+            if 'app-server' in args[0]:
+                child.stdin = FailingClose(child.stdin)
+            return child
+        with patch.object(h.subprocess, 'Popen', side_effect=launch), patch.dict(os.environ, {'FAKE_PROBE_MODE': 'early-close'}):
+            record = self.run_role()
+        self.assertEqual(record['probe']['classification'], 'namespace')
+        self.assertTrue(record['probe']['termination_confirmed'])
+        self.assertEqual(json.loads((self.task.path / 'probe-audit.jsonl').read_text())['classification'], 'namespace')
+        self.assertEqual(self.task.get()['worker_runs'], 0)
+        self.assertIsNone(self.task.get()['active'])
+        self.assertEqual(self.calls(), [])
+
+    def test_stop_between_probe_and_model_never_launches_model(self):
+        actual = h.startup_probe
+        def stop_after_probe(*args, **kwargs):
+            audit = actual(*args, **kwargs)
+            h.control(self.task, 'pause')
+            return audit
+        with patch.object(h, 'startup_probe', side_effect=stop_after_probe):
+            record = self.run_role()
+        self.assertEqual(record['execution_status'], 'failed')
+        self.assertEqual(self.task.get()['status'], 'paused')
+        self.assertEqual(self.task.get()['worker_runs'], 0)
+        self.assertEqual(self.calls(), [])
 
 
 if __name__ == '__main__':
