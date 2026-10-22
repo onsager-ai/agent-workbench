@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run layout and controller tests
+      - name: Run layout, setup and controller tests
         run: |
           python -m unittest discover -s tests -v
           python -m unittest discover -s skills/orchestrate-harnesses/scripts -p 'test_*.py' -v
@@ -29,7 +29,7 @@ jobs:
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
           npm_config_cache="$tmp/npm-cache" npx --yes skills@1.7.4 add "$GITHUB_WORKSPACE" --list | tee "$tmp/available.txt"
-          for skill in disk-cleanup manage-lane orchestrate-harnesses prompt-for-decisions review-storybook; do
+          for skill in disk-cleanup manage-lane orchestrate-harnesses prompt-for-decisions review-storybook workbench-setup; do
             grep -F "$skill" "$tmp/available.txt" >/dev/null || {
               echo "skills CLI did not discover $skill" >&2
               exit 1
@@ -64,7 +64,7 @@ jobs:
           global_snapshot > "$tmp/global-before.txt"
           cd "$project"
           npm_config_cache="$tmp/npm-cache" npx --yes skills@1.7.4 add "$GITHUB_WORKSPACE" -a codex -a claude-code --skill '*' --copy -y
-          for skill in disk-cleanup manage-lane orchestrate-harnesses prompt-for-decisions review-storybook; do
+          for skill in disk-cleanup manage-lane orchestrate-harnesses prompt-for-decisions review-storybook workbench-setup; do
             installed="$(find "$project" -type f -path "*/$skill/SKILL.md" -print -quit)"
             test -n "$installed" || {
               echo "project install did not create $skill/SKILL.md" >&2
