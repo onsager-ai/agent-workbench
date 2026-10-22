@@ -1,18 +1,266 @@
 {
   "type": "object",
-  "required": ["version", "cwd", "objective", "complexity", "allowed_paths", "acceptance_criteria", "authorization", "read_only", "verification", "source"],
+  "required": [
+    "version",
+    "cwd",
+    "objective",
+    "complexity",
+    "allowed_paths",
+    "acceptance_criteria",
+    "authorization",
+    "read_only",
+    "verification",
+    "source"
+  ],
   "properties": {
-    "version": {"const": 1},
-    "cwd": {"type": "string"},
-    "objective": {"type": "string", "minLength": 1},
-    "complexity": {"enum": ["simple", "normal", "complex", "critical"]},
-    "allowed_paths": {"type": "array", "items": {"type": "string"}},
-    "acceptance_criteria": {"type": "array", "minItems": 1, "items": {"type": "string"}},
-    "authorization": {"type": "object", "required": ["implementation", "commit", "push", "merge", "deploy", "publish"], "properties": {"implementation": {"type": "boolean"}, "commit": {"type": "boolean"}, "push": {"type": "boolean"}, "merge": {"const": false}, "deploy": {"const": false}, "publish": {"const": false}}},
-    "read_only": {"type": "boolean"},
-    "verification": {"type": "object", "required": ["ci_required", "evidence_files", "exemption_reason"], "properties": {"ci_required": {"type": "boolean"}, "evidence_files": {"type": "array", "items": {"type": "string"}}, "exemption_reason": {"type": "string"}}},
-    "sol_usage": {"type": "object"},
-    "source": {"type": "object", "required": ["kind", "reference"], "properties": {"kind": {"const": "user_message"}, "reference": {"type": "string", "minLength": 1}}}
+    "version": {
+      "type": "integer",
+      "enum": [
+        1,
+        2
+      ]
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "complexity": {
+      "enum": [
+        "simple",
+        "normal",
+        "complex",
+        "critical"
+      ]
+    },
+    "allowed_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "required": [
+        "implementation",
+        "commit",
+        "push",
+        "merge",
+        "deploy",
+        "publish"
+      ],
+      "properties": {
+        "implementation": {
+          "type": "boolean"
+        },
+        "commit": {
+          "type": "boolean"
+        },
+        "push": {
+          "type": "boolean"
+        },
+        "merge": {
+          "const": false
+        },
+        "deploy": {
+          "const": false
+        },
+        "publish": {
+          "const": false
+        }
+      }
+    },
+    "read_only": {
+      "type": "boolean"
+    },
+    "verification": {
+      "type": "object",
+      "required": [
+        "ci_required",
+        "evidence_files",
+        "exemption_reason"
+      ],
+      "properties": {
+        "ci_required": {
+          "type": "boolean"
+        },
+        "evidence_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exemption_reason": {
+          "type": "string"
+        }
+      }
+    },
+    "sol_usage": {
+      "type": "object"
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "kind",
+        "reference"
+      ],
+      "properties": {
+        "kind": {
+          "const": "user_message"
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "worker_permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "evidence_ref",
+        "sandbox_mode",
+        "approval_policy",
+        "adapter"
+      ],
+      "properties": {
+        "source": {
+          "enum": [
+            "native_trusted_context",
+            "user_message"
+          ]
+        },
+        "evidence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "supporting_evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "ref"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "user_config_fields",
+                  "other"
+                ]
+              },
+              "ref": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "sandbox_mode": {
+          "enum": [
+            "read-only",
+            "workspace-write",
+            "danger-full-access"
+          ]
+        },
+        "approval_policy": {
+          "enum": [
+            "never",
+            "on-request"
+          ]
+        },
+        "network_access": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "writable_roots": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "adapter": {
+          "const": "codex-cli-config-overrides"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "sandbox_mode": {
+                "enum": [
+                  "read-only",
+                  "danger-full-access"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "network_access": {
+                "type": "null"
+              },
+              "writable_roots": {
+                "const": []
+              }
+            }
+          }
+        }
+      ]
+    }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "version": {
+            "const": 2
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "worker_permissions"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "version": {
+            "const": 2
+          },
+          "read_only": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "worker_permissions": {
+            "properties": {
+              "sandbox_mode": {
+                "const": "read-only"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

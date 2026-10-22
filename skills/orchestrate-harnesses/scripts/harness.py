@@ -17,6 +17,8 @@ import sys
 import tempfile
 import time
 
+from worker_policy import policy_check, overrides, startup_probe
+
 BASE = Path(__file__).resolve().parent.parent
 ROLES = ('manager', 'worker', 'preflight', 'acceptance')
 LIMIT = 1024 * 1024
@@ -83,9 +85,19 @@ def compact(record):
 
 
 def schema(value, spec):
-    types = {'object': dict, 'array': list, 'string': str, 'boolean': bool, 'integer': int}
+    types = {'object': dict, 'array': list, 'string': str, 'boolean': bool, 'integer': int, 'null': type(None)}
     if 'type' in spec:
-        require(type(value) is types[spec['type']], 'invalid JSON type')
+        names = spec['type'] if isinstance(spec['type'], list) else [spec['type']]
+        require(any(type(value) is types[name] for name in names), 'invalid JSON type')
+    for part in spec.get('allOf', []):
+        schema(value, part)
+    if 'if' in spec:
+        try:
+            schema(value, spec['if'])
+        except Error:
+            schema(value, spec.get('else', {}))
+        else:
+            schema(value, spec.get('then', {}))
     if 'const' in spec:
         require(type(value) is type(spec['const']) and value == spec['const'], 'invalid constant')
     if 'enum' in spec:
@@ -105,6 +117,8 @@ def schema(value, spec):
 
 
 def contract_check(contract):
+    if contract.get('version') == 2:
+        policy_check(contract)
     schema(contract, load(BASE / 'references/task-contract.schema.json'))
     cwd = Path(contract['cwd'])
     require(cwd.is_absolute() and cwd.is_dir() and cwd.resolve() == cwd, 'cwd must be an existing canonical absolute directory')
@@ -361,7 +375,8 @@ def control(task, action, abandon=False):
             if not abandon:
                 require(stop_group(active), 'group continuity/termination unverified; recover --abandon available')
             record = state['requests'][active['request_id']]
-            count_worker(state, record)
+            if active.get('phase') not in ('probe', 'probe-complete'):
+                count_worker(state, record)
             record.update(execution_status='uncertain', error='abandoned without stopping; possible orphan' if abandon else 'controller recovered; inspect partial effects',
                           finished_at=now(), termination_confirmed=not abandon)
             submission(state, record, 'uncertain')
@@ -453,7 +468,8 @@ def prompt_for(task, state, contract, role, models):
 def command(contract, role, config, result_file, session):
     response = str(BASE / 'references/response.schema.json')
     if role == 'worker':
-        args = ['codex', '--no-daemon', '-C', contract['cwd'], '-s', 'read-only' if contract['read_only'] else 'workspace-write',
+        policy = policy_check(contract)
+        args = ['codex', '--no-daemon', '-C', contract['cwd'], *overrides(policy),
                 '-m', config['model'], '-c', 'model_reasoning_effort=' + config['effort'], 'exec']
         if session:
             args += ['resume', session]
@@ -537,6 +553,8 @@ def run(task, role, request_id, tier=None, resume=False):
                 require(old['input'] == fingerprint, 'divergent request ID')
                 return old  # Failed/uncertain IDs are not replayed either.
             require(not state['active'] and state['status'] not in ('paused', *TERMINAL), 'task cannot dispatch')
+            if role == 'worker':
+                policy_check(contract)  # v1/missing evidence blocks before any probe or model spawn.
             contract_check(contract)
             models = load(BASE / 'models.json')
             require(type(models['max_auto_rework']) is int and models['max_auto_rework'] >= 0, 'invalid rework limit')
@@ -559,22 +577,38 @@ def run(task, role, request_id, tier=None, resume=False):
             state['requests'][request_id] = record
             state['latest'][role] = compact(record)
             active = dict(request_id=request_id, controller_pid=os.getpid(), controller_start=proc(os.getpid())['start'],
-                          controller_boot_id=boot_id(), child_pid=None, child_start=None, child_boot_id=None)
+                          controller_boot_id=boot_id(), child_pid=None, child_start=None, child_boot_id=None,
+                          phase='probe' if role == 'worker' else 'model')
             state['active'] = active
             state['status'] = 'running'
             task.save(state)  # Crash before child registration intentionally requires manual reconciliation.
-            try:
-                require(not interrupted, 'controller interrupted before launch')
-                env = os.environ.copy()
-                env['HARNESS_ROLE'] = role
-                if role != 'worker':
-                    env['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] = '1'
+        try:
+            env = os.environ.copy()
+            env['HARNESS_ROLE'] = role
+            if role != 'worker':
+                env['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] = '1'
+            if role == 'worker':
+                audit = startup_probe(task, request_id, contract, models, env, interrupted,
+                                      dict(now=now, Error=Error, require=require, proc=proc, stop_group=stop_group))
+                settled = audit['termination_confirmed']
+                require(audit['classification'] == 'ok' and settled,
+                        'Worker startup probe blocked: ' + audit['classification'] + '; no inference started')
+            with task.lock():
+                state = task.get()
+                active = state['active']
+                record = state['requests'][request_id]
+                require(active and active['request_id'] == request_id, 'active lease changed before model launch')
+                require(not interrupted and state['status'] not in ('paused', *TERMINAL), 'stop requested before model launch')
+                verify_inputs(task, state)
+                active.update(phase='model', child_pid=None, child_start=None, child_boot_id=None)
+                task.save(state)  # A crash in the model launch window is conservatively counted on recovery.
+                settled = False
                 with open(prompt_file, 'rb') as incoming:
                     child = subprocess.Popen(command(contract, role, config, result_file, session['id'] if session else None),
                                              stdin=incoming, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=contract['cwd'], env=env, start_new_session=True)
                 active.update(child_pid=child.pid, child_boot_id=active['controller_boot_id'])
                 count_worker(state, record)
-                task.save(state)  # Persist known PID/boot even if the next metadata read fails.
+                task.save(state)
                 child_info = proc(child.pid)
                 require(child_info is not None, 'child identity unavailable')
                 active['child_start'] = child_info['start']
@@ -582,19 +616,41 @@ def run(task, role, request_id, tier=None, resume=False):
                 record['execution_status'] = 'submitted'
                 submission(state, record, 'submitted')
                 task.save(state)
-            except Exception as exc:
-                if child:
-                    try:
-                        settled = stop_group(active, child)
-                    except (Error, OSError):
-                        settled = False
-                state['active'] = None if not child or settled else active
-                state['status'] = 'blocked' if not state['active'] else 'running'
-                record.update(execution_status='failed' if not state['active'] else 'uncertain', error=str(exc), finished_at=now(), termination_confirmed=not state['active'])
-                submission(state, record, record['execution_status'])
-                state['latest'][role] = compact(record)
-                task.save(state)
-                return record
+        except Exception as exc:
+            if child:
+                try:
+                    settled = stop_group(active, child)
+                except (Error, OSError):
+                    settled = False
+            while True:
+                try:
+                    with task.lock():
+                        state = task.get()
+                        record = state['requests'][request_id]
+                        active = state['active']
+                        require(active and active['request_id'] == request_id, 'active lease changed after startup failure')
+                        # The probe owns its child internally; its audit certifies termination.
+                        if not child:
+                            settled = record.get('probe', {}).get('termination_confirmed', not active.get('child_pid'))
+                        if settled:
+                            state['active'] = None
+                        if state['status'] not in ('paused', *TERMINAL):
+                            state['status'] = 'blocked' if settled else 'running'
+                        record.update(execution_status='uncertain' if not settled or interrupted else 'failed',
+                                      error=str(exc), finished_at=now(), termination_confirmed=settled)
+                        recipient_status = record['execution_status']
+                        if settled and state['status'] in ('paused', 'cancelled'):
+                            recipient_status = state['status']
+                        elif settled and record.get('probe', {}).get('classification') == 'timeout':
+                            recipient_status = 'timeout'
+                        submission(state, record, recipient_status)
+                        state['latest'][role] = compact(record)
+                        task.save(state)
+                        return record
+                except Error as error:
+                    if str(error) != 'task busy; retry explicit command':
+                        raise
+                    time.sleep(.1)
         deadline = time.monotonic() + min(float(config['timeout_s']), 3600)
         reason = None
         cap = min(int(models['max_log_bytes']), 8 * 1024 * 1024)

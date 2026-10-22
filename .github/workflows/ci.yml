@@ -28,6 +28,8 @@ jobs:
           set -euo pipefail
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          mkdir -p "$HOME"
           npm_config_cache="$tmp/npm-cache" npx --yes skills@1.7.4 add "$GITHUB_WORKSPACE" --list | tee "$tmp/available.txt"
           for skill in disk-cleanup manage-lane orchestrate-harnesses prompt-for-decisions review-storybook; do
             grep -F "$skill" "$tmp/available.txt" >/dev/null || {
@@ -41,6 +43,8 @@ jobs:
           set -euo pipefail
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          mkdir -p "$HOME"
           project="$tmp/project"
           mkdir -p "$project"
 

@@ -14,6 +14,8 @@ The skills CLI requires Node.js 22.20 or newer.
 
 The bundled orchestration controller is Linux-only and requires Python 3.11+ and the native agent CLIs already installed and authenticated in the user's environment. Installing skills with npx does not install those tools or provide credentials.
 
+Worker dispatch requires an explicit v2 contract recording policy source/evidence, sandbox mode and approval policy. Read-only tasks are capped at read-only. A bounded no-inference startup probe validates resolved CLI policy and execution before each Worker run; failures block without widening permissions or consuming inference attempts. Historical v1 status and reviews remain available, but v1 Worker dispatch requires a new v2 task. See [Worker permission policy](skills/orchestrate-harnesses/references/worker-permissions.md).
+
 ## Install globally
 
 ~~~sh
