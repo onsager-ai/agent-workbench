@@ -134,8 +134,9 @@ if mode == 'accept' and role == 'manager':
     r['evidence'] = p['original_contract']['verification']['evidence_files']
 if mode in ('sol', 'sol-denied'):
     r['worker_tier'] = 'sol'
-    r['decision'] = ('SOL_USAGE_UNKNOWN_BOUNDED_EXCEPTION: missing usage; subtle invariants\nLADDER_SKIP_JUSTIFIED: bounded fixture exercises direct L3'
+    r['decision'] = ('SOL_USAGE_UNKNOWN_BOUNDED_EXCEPTION: missing usage; subtle invariants'
                      if mode == 'sol' else 'No exception: this is unbounded; do not dispatch')
+    r['decision'] += '\nLADDER_SKIP_JUSTIFIED: bounded fixture isolates Sol brake validation'
 if mode == 'escalate':
     r['decision'] = 'explicit Manager escalation after rework limit'
 if mode == 'verdictfail':
@@ -785,23 +786,36 @@ class HarnessTests(unittest.TestCase):
             for approval in ('never', 'on-request'):
                 candidate = dict(self.contract, read_only=mode == 'read-only',
                                  worker_permissions=dict(base, sandbox_mode=mode, approval_policy=approval))
+                if mode == 'workspace-write':
+                    with self.assertRaisesRegex(ValueError, 'separately evidenced confinement adapter'):
+                        h.command(candidate, 'worker', config, self.root / 'result', None, models)
+                    continue
                 args = h.command(candidate, 'worker', config, self.root / 'result', None, models)
                 tools = args[args.index('--tools') + 1].split(',')
                 self.assertEqual('Bash' in tools, mode == 'danger-full-access')
                 self.assertEqual('Edit' in tools, mode != 'read-only')
                 self.assertEqual('Write' in tools, mode != 'read-only')
-                self.assertEqual(args[args.index('--permission-mode') + 1] == 'bypassPermissions',
-                                 mode == 'danger-full-access' and approval == 'never')
+                self.assertEqual(args[args.index('--permission-mode') + 1], 'dontAsk')
+                self.assertNotIn('bypassPermissions', args)
                 self.assertNotIn('--dangerously-skip-permissions', args)
                 self.assertNotIn('--safe-mode', args)
                 self.assertNotIn('--bare', args)
                 self.assertIn('mcp__*,Agent,Task', args)
                 self.assertEqual(args[args.index('--mcp-config') + 1], '{"mcpServers":{}}')
-                if mode == 'workspace-write':
-                    self.assertIn('Edit(/' + str(self.root) + '/**)', args[args.index('--allowedTools') + 1])
         manager = h.command(self.contract, 'manager', models['roles']['manager'], self.root / 'out', None, models)
         self.assertEqual(manager[manager.index('--tools') + 1], 'Read')
         self.assertNotIn('bypassPermissions', manager)
+
+    def test_unmappable_claude_workspace_blocks_before_launch(self):
+        self.scenario(complexity='normal', read_only=False,
+                      worker_permissions=dict(self.contract['worker_permissions'], sandbox_mode='workspace-write'))
+        self.plan_tier('haiku', 'CLAUDE_COST_JUSTIFIED: bounded check')
+        calls = len(self.calls())
+        with self.assertRaisesRegex(ValueError, 'unsupported_policy'):
+            self.run_role()
+        self.assertEqual(len(self.calls()), calls)
+        self.assertEqual(self.task.get()['worker_runs'], 0)
+        self.assertIsNone(self.task.get()['active'])
 
     def test_context_policy_on_manager_worker_and_resume(self):
         cache = self.home / '.codex/models_cache.json'

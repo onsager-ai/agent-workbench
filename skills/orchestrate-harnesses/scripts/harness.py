@@ -700,24 +700,18 @@ def claude_tools(contract, role):
     if role == 'manager':
         return ['--tools', 'Read']
     policy = policy_check(contract)
+    if policy['sandbox_mode'] == 'workspace-write':
+        raise ValueError('unsupported_policy: Codex workspace-write OS confinement cannot be mapped '
+                         'to Claude file tools without a separately evidenced confinement adapter; use Codex')
     tools = 'Read,Glob,Grep'
     allowed = tools
     if policy['sandbox_mode'] != 'read-only':
         tools += ',Edit,Write'
-        if policy['sandbox_mode'] == 'workspace-write':
-            # No Bash: this adapter has no verified Claude shell-sandbox probe.
-            roots = [Path(contract['cwd']), *map(Path, policy.get('writable_roots', []))]
-            allowed += ''.join(f',Edit(/{root}/**),Write(/{root}/**)' for root in roots)
-        else:
-            tools += ',Bash'
-            allowed = tools if policy['approval_policy'] == 'never' else 'Read,Glob,Grep,Edit,Write'
-    args = ['--tools', tools, '--allowedTools', allowed, '--permission-prompts', 'none']
-    if policy['sandbox_mode'] == 'danger-full-access' and policy['approval_policy'] == 'never':
-        # Exact equivalence to the evidenced no-sandbox/no-approval native policy.
-        args += ['--permission-mode', 'bypassPermissions']
-    else:
-        args += ['--permission-mode', 'dontAsk']
-    return args
+        tools += ',Bash'
+        allowed = tools if policy['approval_policy'] == 'never' else 'Read,Glob,Grep,Edit,Write'
+    # Named tool approval suffices; no bypass mode is needed even for full access.
+    return ['--tools', tools, '--allowedTools', allowed, '--permission-prompts', 'none',
+            '--permission-mode', 'dontAsk']
 
 
 def command(contract, role, config, result_file, session, models=None):
@@ -756,7 +750,7 @@ def validate_result(task, record, role, contract, state, result):
         worker = state['latest'].get('worker')
         require(not worker or (current(worker, state) and worker['result']['outcome'] == 'complete'
                                and record['sequence'] > worker['sequence']), 'current completed Worker evidence required')
-        failures = [item for item in state['requests'].values()
+        failures = [item for item in [*state['requests'].values(), *state['latest'].values()]
                     if item.get('result', {}).get('outcome') == 'fail']
         require(all(worker and worker['sequence'] > item['sequence'] for item in failures),
                 'an existing fail requires new Worker evidence and a fresh Manager verdict')
