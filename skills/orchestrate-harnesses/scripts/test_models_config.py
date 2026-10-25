@@ -92,6 +92,8 @@ class ModelsConfigTests(unittest.TestCase):
             ('negative budget', b'{"roles":{"manager":{"budget_usd":-1}}}', 'roles.manager.budget_usd'),
             ('unknown top-level key', b'{"extra":1}', 'extra'),
             ('unknown role', b'{"roles":{"reviewer":{}}}', 'roles.reviewer'),
+            ('removed preflight role', b'{"roles":{"preflight":{}}}', 'roles.preflight'),
+            ('removed acceptance role', b'{"roles":{"acceptance":{}}}', 'roles.acceptance'),
             ('unknown field', b'{"roles":{"manager":{"unknown":1}}}', 'roles.manager.unknown'),
             ('CLI routing is fixed', b'{"roles":{"manager":{"cli":"other"}}}', 'roles.manager.cli'),
             ('unsupported version', b'{"version":2}', 'version'),
@@ -102,6 +104,11 @@ class ModelsConfigTests(unittest.TestCase):
             ('negative prompt limit', b'{"max_prompt_bytes":-1}', 'max_prompt_bytes'),
             ('above log ceiling', b'{"max_log_bytes":8388609}', 'max_log_bytes'),
             ('above prompt ceiling', b'{"max_prompt_bytes":262145}', 'max_prompt_bytes'),
+            ('above context ceiling', b'{"max_context_tokens":300001}', 'max_context_tokens'),
+            ('zero context', b'{"max_context_tokens":0}', 'max_context_tokens'),
+            ('fractional context', b'{"max_context_tokens":1.5}', 'max_context_tokens'),
+            ('boolean context', b'{"max_context_tokens":true}', 'max_context_tokens'),
+            ('above budget ceiling', b'{"roles":{"opus":{"budget_usd":10.01}}}', 'roles.opus.budget_usd'),
         ]
         for label, content, field in cases:
             with self.subTest(label=label):

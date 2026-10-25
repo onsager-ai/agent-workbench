@@ -107,7 +107,8 @@ p = json.load(sys.stdin)
 role = os.environ['HARNESS_ROLE']
 mode = os.environ.get('FAKE_MODE', '')
 with open(os.environ['FAKE_CALLS'], 'a') as f:
-    f.write(json.dumps({'args': sys.argv[1:], 'role': role, 'prompt': p}) + '\n')
+    f.write(json.dumps({'args': sys.argv[1:], 'role': role, 'prompt': p,
+                       'env': {k: v for k,v in os.environ.items() if k.startswith('CLAUDE_') or k.startswith('DISABLE_COMPACT') or k.startswith('DISABLE_AUTO_COMPACT')}}) + '\n')
 if mode == 'hang':
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     if os.environ.get('FAKE_DESCENDANT'):
@@ -121,7 +122,7 @@ if mode == 'wait':
     while not pathlib.Path(os.environ['FAKE_RELEASE']).exists():
         time.sleep(.05)
 r = dict(task_id=p['task_id'], ack_message_ids=p['message_ids'],
-         outcome={'worker':'complete','manager':'plan','acceptance':'pass','preflight':'pass'}[role],
+         outcome={'worker':'complete','manager':'plan'}[role],
          summary='fake result', findings=[], next_role='worker' if role == 'manager' else 'manager',
          worker_tier='luna', decision='bounded fake plan', evidence=[])
 if mode == 'badack':
@@ -130,15 +131,19 @@ if mode == 'selfaccept':
     r['outcome'] = 'accepted'
 if mode == 'accept' and role == 'manager':
     r['outcome'] = 'accepted'
+    r['evidence'] = p['original_contract']['verification']['evidence_files']
 if mode in ('sol', 'sol-denied'):
     r['worker_tier'] = 'sol'
-    r['decision'] = ('SOL_USAGE_UNKNOWN_BOUNDED_EXCEPTION: missing usage; subtle invariants'
+    r['decision'] = ('SOL_USAGE_UNKNOWN_BOUNDED_EXCEPTION: missing usage; subtle invariants\nLADDER_SKIP_JUSTIFIED: bounded fixture exercises direct L3'
                      if mode == 'sol' else 'No exception: this is unbounded; do not dispatch')
 if mode == 'escalate':
     r['decision'] = 'explicit Manager escalation after rework limit'
 if mode == 'verdictfail':
     r['outcome'] = 'fail'
-if role == 'worker':
+if os.environ.get('FAKE_TIER'):
+    r['worker_tier'] = os.environ['FAKE_TIER']
+    r['decision'] = os.environ.get('FAKE_DECISION', '')
+if '-o' in sys.argv:
     print(json.dumps({'type':'thread.started','thread_id':'owned-worker-thread'}))
     result = pathlib.Path(sys.argv[sys.argv.index('-o') + 1])
     result.write_text(json.dumps(r))
@@ -184,7 +189,7 @@ class HarnessTests(unittest.TestCase):
                         HARNESS_STATE_HOME=str(self.root / 'state'),
                         PATH=str(self.bin) + os.pathsep + os.environ.get('PATH', ''),
                         FAKE_CALLS=str(self.root / 'calls.jsonl'), FAKE_PROBE_CALLS=str(self.root / 'probes.jsonl'))
-        for key in ('HARNESS_ROLE', 'CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'FAKE_MODE', 'FAKE_DESCENDANT', 'FAKE_PROBE_MODE'):
+        for key in ('HARNESS_ROLE', 'CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'FAKE_MODE', 'FAKE_DESCENDANT', 'FAKE_PROBE_MODE', 'FAKE_TIER', 'FAKE_DECISION', 'CODEX_HOME'):
             self.env.pop(key, None)
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, self.env, clear=True).start()
@@ -297,7 +302,7 @@ class HarnessTests(unittest.TestCase):
 
     def test_invalid_and_error_outputs_never_ack(self):
         for index, (role, mode) in enumerate([('worker', 'badack'), ('worker', 'selfaccept'),
-                                             ('worker', 'traceerror'), ('preflight', 'budget'), ('acceptance', 'denied')]):
+                                             ('worker', 'traceerror'), ('manager', 'budget'), ('manager', 'denied')]):
             record = self.run_role(role, 'bad' + str(index), mode)
             self.assertEqual(record['execution_status'], 'failed')
             self.assertFalse(self.task.get()['messages'][0]['acknowledgements'])
@@ -339,11 +344,11 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaises(h.Error):
             self.run_role(request='fifth')
 
-    def test_acceptance_requires_review_and_new_message_stales_it(self):
+    def test_delivery_requires_fresh_manager_and_current_messages(self):
         self.run_role()
-        denied = self.run_role('manager', 'premature', 'accept')
+        self.run_role('manager', 'plan')
+        denied = self.run_role('manager', 'resumed-verdict', 'accept', resume=True)
         self.assertEqual(denied['execution_status'], 'failed')
-        self.run_role('preflight', 'review')
         self.assertEqual(self.run_role('manager', 'deliver', 'accept')['execution_status'], 'completed')
         self.assertEqual(self.task.get()['status'], 'accepted')
         msg = self.root / 'new'
@@ -352,9 +357,8 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.task.get()['status'], 'ready')
         self.assertEqual(self.run_role('manager', 'stale', 'accept')['execution_status'], 'failed')
 
-    def test_failed_worker_invalidates_previous_review(self):
+    def test_failed_worker_blocks_manager_delivery(self):
         self.run_role()
-        self.run_role('preflight', 'review')
         self.run_role(request='badwork', mode='badack')
         self.assertEqual(self.run_role('manager', 'deliver', 'accept')['execution_status'], 'failed')
 
@@ -372,7 +376,7 @@ class HarnessTests(unittest.TestCase):
             h.contract_check(dict(self.contract, allowed_paths=['external/file']))
 
     def test_role_guard_allows_only_status(self):
-        for role in h.ROLES:
+        for role in h.LEGACY_ROLES:
             env = dict(os.environ, HARNESS_ROLE=role)
             self.assertEqual(self.cli('status', 'task', env=env).returncode, 0)
             self.assertEqual(self.cli('cancel', 'task', env=env).returncode, 1)
@@ -527,15 +531,16 @@ class HarnessTests(unittest.TestCase):
         self.run_role(request='next')
         self.assertIn('worker', self.task.get()['messages'][1]['acknowledgements'])
 
-    def test_ci_gate_and_normal_tasks_require_acceptance(self):
+    def test_ci_gate_for_manager_delivery(self):
         self.scenario(complexity='normal', verification=dict(ci_required=True, evidence_files=[], exemption_reason=''))
         self.run_role('manager', 'plan')
         self.run_role()
-        self.run_role('preflight', 'cheap')
-        self.assertEqual(self.run_role('manager', 'cheap-delivery', 'accept')['execution_status'], 'failed')
-        self.run_role('acceptance', 'independent')
         self.assertEqual(self.run_role('manager', 'missing-ci', 'accept')['execution_status'], 'failed')
         self.assertNotEqual(self.task.get()['status'], 'accepted')
+        self.scenario(verification=dict(ci_required=True, evidence_files=['ci-evidence.json'], exemption_reason=''))
+        self.run_role('manager', 'plan')
+        self.run_role()
+        self.assertEqual(self.run_role('manager', 'with-ci', 'accept')['execution_status'], 'completed')
 
     def test_lock_is_nonblocking(self):
         with self.task.lock():
@@ -578,12 +583,12 @@ class HarnessTests(unittest.TestCase):
 
     def test_per_recipient_failure_preserves_acknowledgement_history(self):
         self.run_role()
-        self.run_role('acceptance', 'bad-review', 'badack')
+        self.run_role('manager', 'bad-review', 'badack')
         message = self.task.get()['messages'][0]
         self.assertEqual(message['delivery_status'], 'partially_acknowledged')
         self.assertEqual(message['execution_status'], 'partial')
         self.assertEqual(message['submissions']['worker']['execution_status'], 'completed')
-        self.assertEqual(message['submissions']['acceptance']['execution_status'], 'failed')
+        self.assertEqual(message['submissions']['manager']['execution_status'], 'failed')
         self.assertEqual(set(message['acknowledgements']), {'worker'})
         self.run_role(request='failed-retry', mode='badack')
         message = self.task.get()['messages'][0]
@@ -592,10 +597,13 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(len(message['acknowledgement_history']), 1)
 
     def test_valid_failed_verdict_is_not_acknowledged(self):
-        record = self.run_role('acceptance', 'negative', 'verdictfail')
+        record = self.run_role('manager', 'negative', 'verdictfail')
         self.assertEqual(record['result']['outcome'], 'fail')
         self.assertFalse(self.task.get()['messages'][0]['acknowledgements'])
-        self.assertEqual(self.task.get()['messages'][0]['submissions']['acceptance']['execution_status'], 'fail')
+        self.assertEqual(self.task.get()['messages'][0]['submissions']['manager']['execution_status'], 'fail')
+        self.assertEqual(self.run_role('manager', 'reinterpret', 'accept')['execution_status'], 'failed')
+        self.run_role()
+        self.assertEqual(self.run_role('manager', 'new-verdict', 'accept')['execution_status'], 'completed')
 
     def test_aggregate_ack_requires_all_declared_recipients(self):
         for role in h.ROLES:
@@ -603,11 +611,11 @@ class HarnessTests(unittest.TestCase):
         message = self.task.get()['messages'][0]
         self.assertEqual(message['delivery_status'], 'acknowledged')
         self.assertEqual(message['execution_status'], 'completed')
-        self.run_role('preflight', 'later-failure', 'budget')
+        self.run_role('manager', 'later-failure', 'budget')
         message = self.task.get()['messages'][0]
         self.assertEqual(message['delivery_status'], 'acknowledged')
         self.assertEqual(message['execution_status'], 'partial')
-        self.assertEqual(len(message['acknowledgement_history']), 4)
+        self.assertEqual(len(message['acknowledgement_history']), 2)
 
     def test_launch_and_registration_are_serialized_against_cancel(self):
         actual = subprocess.Popen
@@ -691,6 +699,159 @@ class HarnessTests(unittest.TestCase):
         path = Path(os.environ['FAKE_PROBE_CALLS'])
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
+    def plan_tier(self, tier, decision='bounded Codex dispatch', request='plan'):
+        with patch.dict(os.environ, {'FAKE_TIER': tier, 'FAKE_DECISION': decision}):
+            return self.run_role('manager', request)
+
+    def test_default_luna_and_cost_rejections_do_not_consume_attempts(self):
+        record = self.run_role()
+        self.assertEqual(record['requested_tier'], 'luna')
+        for tier in ('haiku', 'sonnet', 'opus'):
+            self.scenario(complexity='normal')
+            for index, decision in enumerate(('', 'Claude is useful', 'CLAUDE_COST_JUSTIFIED:   ')):
+                self.plan_tier(tier, decision, 'plan' + str(index))
+                calls = len(self.calls())
+                with self.assertRaisesRegex(h.Error, 'CLAUDE_COST_JUSTIFIED'):
+                    self.run_role(request='denied' + str(index))
+                self.assertEqual(len(self.calls()), calls)
+                self.assertEqual(self.task.get()['worker_runs'], 0)
+                self.assertIsNone(self.task.get()['active'])
+
+    def test_adjacent_ladder_and_explicit_skip(self):
+        self.scenario(complexity='normal')
+        self.plan_tier('sol', 'SOL_USAGE_UNKNOWN_BOUNDED_EXCEPTION: one bounded run')
+        with self.assertRaisesRegex(h.Error, 'LADDER_SKIP_JUSTIFIED'):
+            self.run_role()
+        self.plan_tier('terra', request='level2')
+        self.assertEqual(self.run_role()['requested_tier'], 'terra')
+        self.plan_tier('sol', 'SOL_USAGE_UNKNOWN_BOUNDED_EXCEPTION: one bounded escalation', 'level3')
+        self.assertEqual(self.run_role(request='second')['requested_tier'], 'sol')
+        self.scenario()
+        self.plan_tier('opus', 'CLAUDE_COST_JUSTIFIED: one $4/1200s run for provider-specific defect\n'
+                       'LADDER_SKIP_JUSTIFIED: urgent interconnected issue', 'skip')
+        self.assertEqual(self.run_role()['requested_tier'], 'opus')
+
+    def test_all_tiers_dispatch_parse_and_resume_by_provider(self):
+        models = h.load(self.base / 'models.json')
+        for tier in h.TIERS:
+            with self.subTest(tier=tier):
+                self.scenario(complexity='normal')
+                decision = ('CLAUDE_COST_JUSTIFIED: one bounded provider-specific check' if models['roles'][tier]['cli'] == 'claude'
+                            else 'SOL_USAGE_UNKNOWN_BOUNDED_EXCEPTION: one bounded implementation')
+                decision += '\nLADDER_SKIP_JUSTIFIED: exercise exact tier in bounded fixture'
+                self.plan_tier(tier, decision)
+                probes = len(self.probe_calls())
+                record = self.run_role()
+                self.assertEqual(record['execution_status'], 'completed', record)
+                self.assertEqual(record['requested_cli'], models['roles'][tier]['cli'])
+                self.assertEqual(record['requested_effort'], models['roles'][tier]['effort'])
+                self.assertEqual(record['requested_model'], models['roles'][tier]['model'])
+                args = self.calls()[-1]['args']
+                flag = '--model' if record['requested_cli'] == 'claude' else '-m'
+                self.assertEqual(args[args.index(flag) + 1], models['roles'][tier]['model'])
+                if record['requested_cli'] == 'claude':
+                    self.assertEqual(len(self.probe_calls()), probes)
+                    self.assertEqual(args[args.index('--max-budget-usd') + 1], str(models['roles'][tier]['budget_usd']))
+                    self.assertEqual(self.calls()[-1]['env']['CLAUDE_CODE_DISABLE_AUTO_MEMORY'], '1')
+                else:
+                    self.assertGreater(len(self.probe_calls()), probes)
+                self.assertEqual(self.run_role(request='resume', resume=True)['execution_status'], 'completed')
+                self.assertIn('--resume' if record['requested_cli'] == 'claude' else 'resume', self.calls()[-1]['args'])
+
+    def test_resume_rejects_model_provider_and_tier_changes(self):
+        self.run_role()
+        path = self.xdg / 'agent-workbench/models.json'
+        path.parent.mkdir()
+        path.write_text(json.dumps({'roles': {'luna': {'model': 'different'}}}))
+        with self.assertRaisesRegex(h.Error, 'same-role/model/provider/tier'):
+            self.run_role(request='changed-model', resume=True)
+        path.unlink()
+        # Same model string across providers is insufficient to authorize resume.
+        path.write_text(json.dumps({'roles': {'haiku': {'model': 'gpt-6-luna'}}}))
+        self.plan_tier('haiku', 'CLAUDE_COST_JUSTIFIED: bounded same-name provider fixture')
+        with self.assertRaisesRegex(h.Error, 'same-role/model/provider/tier'):
+            self.run_role(request='changed-provider', resume=True)
+        path.write_text(json.dumps({'roles': {'terra': {'model': 'gpt-6-luna'}}}))
+        self.plan_tier('terra', request='terra-plan')
+        with self.assertRaisesRegex(h.Error, 'same-role/model/provider/tier'):
+            self.run_role(request='changed-tier', resume=True)
+        self.assertEqual(self.task.get()['worker_runs'], 1)
+
+    def test_claude_permission_allowlists_never_expand_shell_policy(self):
+        models = h.load(self.base / 'models.json')
+        config = models['roles']['haiku']
+        base = self.contract['worker_permissions']
+        for mode in ('read-only', 'workspace-write', 'danger-full-access'):
+            for approval in ('never', 'on-request'):
+                candidate = dict(self.contract, read_only=mode == 'read-only',
+                                 worker_permissions=dict(base, sandbox_mode=mode, approval_policy=approval))
+                args = h.command(candidate, 'worker', config, self.root / 'result', None, models)
+                tools = args[args.index('--tools') + 1].split(',')
+                self.assertEqual('Bash' in tools, mode == 'danger-full-access')
+                self.assertEqual('Edit' in tools, mode != 'read-only')
+                self.assertEqual('Write' in tools, mode != 'read-only')
+                self.assertEqual(args[args.index('--permission-mode') + 1] == 'bypassPermissions',
+                                 mode == 'danger-full-access' and approval == 'never')
+                self.assertNotIn('--dangerously-skip-permissions', args)
+                self.assertNotIn('--safe-mode', args)
+                self.assertNotIn('--bare', args)
+                self.assertIn('mcp__*,Agent,Task', args)
+                self.assertEqual(args[args.index('--mcp-config') + 1], '{"mcpServers":{}}')
+                if mode == 'workspace-write':
+                    self.assertIn('Edit(/' + str(self.root) + '/**)', args[args.index('--allowedTools') + 1])
+        manager = h.command(self.contract, 'manager', models['roles']['manager'], self.root / 'out', None, models)
+        self.assertEqual(manager[manager.index('--tools') + 1], 'Read')
+        self.assertNotIn('bypassPermissions', manager)
+
+    def test_context_policy_on_manager_worker_and_resume(self):
+        cache = self.home / '.codex/models_cache.json'
+        cache.write_text(json.dumps({'models': [{'slug': 'gpt-6-luna', 'context_window': 128000}]}))
+        self.run_role()
+        self.run_role(request='resume-context', resume=True)
+        for call in self.calls():
+            self.assertIn('model_context_window=128000', call['args'])
+            self.assertIn('model_auto_compact_token_limit=128000', call['args'])
+        self.run_role('manager', 'context')
+        self.run_role('manager', 'context-resume', resume=True)
+        for call in self.calls()[-2:]:
+            self.assertEqual(call['env']['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], '300000')
+            self.assertEqual(call['env']['DISABLE_AUTO_COMPACT'], '0')
+        models = h.load(self.base / 'models.json')
+        models['max_context_tokens'] = 50000
+        args = h.command(self.contract, 'worker', models['roles']['luna'], self.root / 'out', None, models)
+        self.assertIn('model_context_window=50000', args)
+        env = h.dispatch_env('worker', models['roles']['haiku'], models,
+                             {'CLAUDE_CODE_MAX_CONTEXT_TOKENS': '1000000', 'DISABLE_COMPACT': '1'})
+        self.assertEqual(env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], '100000')
+        self.assertEqual(env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'], '50')
+        self.assertNotIn('CLAUDE_CODE_MAX_CONTEXT_TOKENS', env)
+        cache.unlink()
+        args = h.command(self.contract, 'worker', models['roles']['luna'], self.root / 'out', None, models)
+        self.assertFalse(any(x.startswith('model_context_window=') for x in args))
+        self.assertIn('model_auto_compact_token_limit=50000', args)
+
+    def test_removed_roles_block_but_legacy_intake_and_results_survive(self):
+        state = self.task.get()
+        message = state['messages'][0]
+        message['recipient'] = list(h.LEGACY_ROLES)
+        for role in ('preflight', 'acceptance'):
+            message['submissions'][role] = dict(request_id='old-' + role, execution_status='completed')
+            state['latest'][role] = dict(execution_status='completed', message_ids=['original'], sequence=0,
+                                         result=dict(outcome='pass', next_role='manager', worker_tier='luna'))
+        self.task.save(state)
+        raw = (self.task.path / 'original.bin').read_bytes()
+        contract = (self.task.path / 'contract.json').read_bytes()
+        self.assertEqual(self.cli('status', self.task.id).returncode, 0)
+        self.assertEqual(h.control(self.task, 'recover')['latest']['acceptance'], state['latest']['acceptance'])
+        self.assertEqual(self.run_role('manager', 'legacy-manager')['execution_status'], 'completed')
+        for role in ('preflight', 'acceptance'):
+            with self.assertRaisesRegex(h.Error, 'removed or unknown role'):
+                self.run_role(role, 'removed-' + role)
+            self.assertNotEqual(self.cli('run', self.task.id, role, '--request-id', 'removed').returncode, 0)
+        self.assertEqual((self.task.path / 'original.bin').read_bytes(), raw)
+        self.assertEqual((self.task.path / 'contract.json').read_bytes(), contract)
+        self.assertEqual(self.task.get()['worker_runs'], 0)
+
     def test_permissions_validation_and_schema(self):
         import worker_policy as policy
         base = self.contract['worker_permissions']
@@ -755,7 +916,7 @@ class HarnessTests(unittest.TestCase):
             raw = (self.task.path / 'contract.json').read_bytes()
             hashes = dict(self.task.get()['immutable_hashes'])
             self.assertEqual(self.cli('status', self.task.id).returncode, 0)
-            for role in ('manager', 'preflight', 'acceptance'):
+            for role in ('manager',):
                 self.assertEqual(self.run_role(role, role)['execution_status'], 'completed')
             before = len(self.calls())
             with patch.object(h.subprocess, 'Popen', side_effect=AssertionError('v1 spawn prohibited')):

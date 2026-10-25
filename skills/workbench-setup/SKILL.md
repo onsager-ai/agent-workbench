@@ -5,6 +5,8 @@ description: Install, inspect, update, or remove Agent Workbench shared global i
 
 Use the bundled Python 3.11+ installer on Linux or macOS. Native `npx skills` distributes this skill; it does not execute the installer or apply global prompts.
 
+Orchestration's Manager/Worker-only ladder and per-dispatch 300000-token context policy live in the `orchestrate-harnesses` skill. Updating that skill changes its distributed defaults, not Gateway's interactive model/settings or the user's partial model overrides. Remove obsolete `roles.preflight`/`roles.acceptance` overrides as described in that skill before the next dispatch. Setup does not migrate those private settings or rewrite historical tasks.
+
 After global distribution, explicitly apply the setup:
 
 ```sh

@@ -22,14 +22,19 @@ from copy import deepcopy
 from worker_policy import policy_check, overrides, startup_probe
 
 BASE = Path(__file__).resolve().parent.parent
-ROLES = ('manager', 'worker', 'preflight', 'acceptance')
+ROLES = ('manager', 'worker')
+LEGACY_ROLES = ('manager', 'worker', 'preflight', 'acceptance')
+TIERS = ('luna', 'haiku', 'terra', 'sonnet', 'sol', 'opus')
+LEVELS = {tier: index // 2 + 1 for index, tier in enumerate(TIERS)}
 LIMIT = 1024 * 1024
 TERMINAL = ('cancelled', 'abandoned')
 HARD_MAX_LOG_BYTES = 8 * 1024 * 1024
 HARD_MAX_PROMPT_BYTES = 262144
 MAX_FINITE_FLOAT_INT = int(sys.float_info.max)
-FIXED_CLIS = {'manager': 'claude', 'luna': 'codex', 'sol': 'codex',
-              'preflight': 'claude', 'acceptance': 'claude'}
+HARD_MAX_CONTEXT_TOKENS = 300000
+HARD_MAX_BUDGET_USD = 10
+FIXED_CLIS = {'manager': 'claude', **{tier: 'codex' if index % 2 == 0 else 'claude'
+                                    for index, tier in enumerate(TIERS)}}
 
 
 
@@ -122,7 +127,7 @@ def _validate_models(models, path, defaults):
         _config_error(path, '<root>', 'expected an object')
     for key in models:
         if key not in ('version', 'roles', 'max_auto_rework', 'sol_weekly_brake_percent',
-                        'max_log_bytes', 'max_prompt_bytes'):
+                        'max_log_bytes', 'max_prompt_bytes', 'max_context_tokens'):
             _config_error(path, key, 'unknown configuration key')
     exact_type(models.get('version'), int, 'version')
     if models['version'] != 1:
@@ -145,6 +150,8 @@ def _validate_models(models, path, defaults):
                     _config_error(path, item, 'must be a nonempty string')
             elif name in ('timeout_s', 'budget_usd'):
                 finite_positive(value, item)
+                if name == 'budget_usd' and value > HARD_MAX_BUDGET_USD:
+                    _config_error(path, item, f'must not exceed hard ceiling {HARD_MAX_BUDGET_USD} USD')
             else:
                 _config_error(path, item, 'unsupported role field')
 
@@ -155,7 +162,8 @@ def _validate_models(models, path, defaults):
     if models['sol_weekly_brake_percent'] > 100:
         _config_error(path, 'sol_weekly_brake_percent', 'must not exceed 100')
     for name, ceiling in (('max_log_bytes', HARD_MAX_LOG_BYTES),
-                          ('max_prompt_bytes', HARD_MAX_PROMPT_BYTES)):
+                          ('max_prompt_bytes', HARD_MAX_PROMPT_BYTES),
+                          ('max_context_tokens', HARD_MAX_CONTEXT_TOKENS)):
         exact_type(models.get(name), int, name)
         if not 0 < models[name] <= ceiling:
             _config_error(path, name, f'must be positive and no greater than hard ceiling {ceiling}')
@@ -173,7 +181,7 @@ def load_effective_models(base=None, env=None, home=None):
         if type(override) is not dict:
             _config_error(config_path, '<root>', 'expected an object')
         allowed = {'version', 'roles', 'max_auto_rework', 'sol_weekly_brake_percent',
-                   'max_log_bytes', 'max_prompt_bytes'}
+                   'max_log_bytes', 'max_prompt_bytes', 'max_context_tokens'}
         for key in override:
             if key not in allowed:
                 _config_error(config_path, key, 'unknown configuration key')
@@ -204,7 +212,7 @@ def load_effective_models(base=None, env=None, home=None):
                         if not _finite_number(value) or value <= 0:
                             _config_error(config_path, field, 'expected a finite positive number')
                 effective['roles'][role].update(role_override)
-        for name in ('max_auto_rework', 'sol_weekly_brake_percent', 'max_log_bytes', 'max_prompt_bytes'):
+        for name in ('max_auto_rework', 'sol_weekly_brake_percent', 'max_log_bytes', 'max_prompt_bytes', 'max_context_tokens'):
             if name in override:
                 effective[name] = override[name]
     _validate_models(effective, config_path if exists else defaults_path, defaults)
@@ -316,7 +324,7 @@ def verify_inputs(task, state):
     for message in state['messages']:
         name = message_file(message['message_id'])
         require(name not in expected and message['task_id'] == task.id, 'duplicate/mismatched message')
-        require(message['recipient'] == list(ROLES), 'changed message recipients')
+        require(message['recipient'] in (list(ROLES), list(LEGACY_ROLES)), 'changed message recipients')
         expected[name] = message['payload']
     require(hashes.keys() == expected.keys(), 'missing or divergent intake hashes')
     raw = None
@@ -567,6 +575,7 @@ def current(record, state):
 
 
 def route(state, contract, role, tier, models):
+    require(role in ROLES, 'removed or unknown role; use manager or worker')
     if role != 'worker':
         require(tier is None, 'tier only applies to worker')
         return role
@@ -577,6 +586,23 @@ def route(state, contract, role, tier, models):
     else:
         chosen = plan['result']['worker_tier'] if current(plan, state) and plan['result']['outcome'] == 'plan' else 'luna'
     require(tier is None or tier == chosen, 'tier contradicts routing plan')
+    require(chosen in TIERS, 'unknown Worker tier')
+    decision = plan['result']['decision'] if current(plan, state) else ''
+    if models['roles'][chosen]['cli'] == 'claude':
+        marker = 'CLAUDE_COST_JUSTIFIED:'
+        require(decision.startswith(marker) and decision[len(marker):].split('\n', 1)[0].strip(),
+                'Claude Worker requires CLAUDE_COST_JUSTIFIED: and a bounded cost reason')
+    attempts = [r for r in state.get('requests', {}).values()
+                if r.get('role') == 'worker' and r.get('worker_counted')]
+    previous = max(attempts, key=lambda r: r['sequence'], default={})
+    # Old requests have no tier metadata; recognize the two historical Codex models.
+    previous_tier = previous.get('requested_tier') or previous.get('input', {}).get('tier')
+    if previous and previous_tier not in LEVELS:
+        previous_tier = 'sol' if previous.get('requested_model') == 'gpt-6.1-sol' else 'luna'
+    level = LEVELS.get(previous_tier, 1)
+    if LEVELS[chosen] > level + 1:
+        require(re.search(r'(?m)^LADDER_SKIP_JUSTIFIED:[ \t]*\S[^\n]*', decision),
+                'skipping a Worker level requires LADDER_SKIP_JUSTIFIED: and a reason')
     if state['worker_runs'] >= 1 + int(models['max_auto_rework']):
         last_worker = state['latest'].get('worker', {})
         require(current(plan, state) and plan['result']['outcome'] == 'plan'
@@ -622,21 +648,96 @@ def prompt_for(task, state, contract, role, models):
     if parent and role == 'worker':
         body['parent_claude_session_id'] = parent
     data = encoded(body)
-    require(len(data) <= min(models['max_prompt_bytes'], 262144), 'prompt exceeds bound; no originals truncated')
+    require(len(data) <= min(models['max_prompt_bytes'], HARD_MAX_PROMPT_BYTES, models['max_context_tokens']),
+            'prompt exceeds byte/context safety bound; no originals truncated')
     return data
 
 
-def command(contract, role, config, result_file, session):
+def context_limit(models, config):
+    """Use exact installed model metadata when available; never invent a native window."""
+    ceiling = min(models['max_context_tokens'], HARD_MAX_CONTEXT_TOKENS)
+    if config['cli'] == 'codex':
+        catalog = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')) / 'models_cache.json'
+        try:
+            entries = load(catalog).get('models', [])
+            windows = [item['context_window'] for item in entries
+                       if isinstance(item, dict) and item.get('slug') == config['model']
+                       and type(item.get('context_window')) is int and item['context_window'] > 0]
+            if windows:
+                return min(ceiling, *windows), True
+        except (OSError, ValueError, TypeError, AttributeError, Error):
+            pass
+        # Only a compaction threshold is emitted without native metadata. The native
+        # context-window setting is left intact, including any smaller CLI window.
+        return ceiling, False
+    return ceiling, False
+
+
+def dispatch_env(role, config, models, env=None):
+    env = dict(os.environ if env is None else env)
+    env['HARNESS_ROLE'] = role
+    if config['cli'] == 'claude':
+        env['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] = '1'
+        # Do not override the model's native window. The documented auto-compact
+        # window is capped by it. Below the CLI's 100k minimum use an earlier pct.
+        limit, _ = context_limit(models, config)
+        env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = str(max(100000, limit))
+        pct = max(1, min(100, limit * 100 // max(100000, limit)))
+        try:
+            pct = min(pct, max(1, int(env.get('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE', pct))))
+        except ValueError:
+            pass
+        env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'] = str(pct)
+        # Compaction is required for these calls, even if the parent disabled it.
+        env['DISABLE_AUTO_COMPACT'] = '0'
+        env['DISABLE_COMPACT'] = '0'
+        env['CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT'] = '0'
+        env.pop('CLAUDE_CODE_MAX_CONTEXT_TOKENS', None)
+    return env
+
+
+def claude_tools(contract, role):
+    if role == 'manager':
+        return ['--tools', 'Read']
+    policy = policy_check(contract)
+    tools = 'Read,Glob,Grep'
+    allowed = tools
+    if policy['sandbox_mode'] != 'read-only':
+        tools += ',Edit,Write'
+        if policy['sandbox_mode'] == 'workspace-write':
+            # No Bash: this adapter has no verified Claude shell-sandbox probe.
+            roots = [Path(contract['cwd']), *map(Path, policy.get('writable_roots', []))]
+            allowed += ''.join(f',Edit(/{root}/**),Write(/{root}/**)' for root in roots)
+        else:
+            tools += ',Bash'
+            allowed = tools if policy['approval_policy'] == 'never' else 'Read,Glob,Grep,Edit,Write'
+    args = ['--tools', tools, '--allowedTools', allowed, '--permission-prompts', 'none']
+    if policy['sandbox_mode'] == 'danger-full-access' and policy['approval_policy'] == 'never':
+        # Exact equivalence to the evidenced no-sandbox/no-approval native policy.
+        args += ['--permission-mode', 'bypassPermissions']
+    else:
+        args += ['--permission-mode', 'dontAsk']
+    return args
+
+
+def command(contract, role, config, result_file, session, models=None):
+    models = load_effective_models()[0] if models is None else models
     response = str(BASE / 'references/response.schema.json')
-    if role == 'worker':
+    if config['cli'] == 'codex':
         policy = policy_check(contract)
+        limit, known = context_limit(models, config)
+        context = ['-c', f'model_auto_compact_token_limit={limit}',
+                   '-c', 'model_auto_compact_token_limit_scope="total"']
+        if known:
+            context += ['-c', f'model_context_window={limit}']
         args = ['codex', '--no-daemon', '-C', contract['cwd'], *overrides(policy),
-                '-m', config['model'], '-c', 'model_reasoning_effort=' + config['effort'], 'exec']
+                '-m', config['model'], '-c', 'model_reasoning_effort=' + config['effort'], *context, 'exec']
         if session:
             args += ['resume', session]
         return args + ['--json', '--skip-git-repo-check', '--output-schema', response, '-o', str(result_file), '-']
-    args = ['claude', '-p', '--model', config['model'], '--effort', config['effort'], '--tools', 'Read',
-            '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disallowedTools', 'mcp__*',
+    args = ['claude', '-p', '--model', config['model'], '--effort', config['effort'], *claude_tools(contract, role),
+            '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disallowedTools', 'mcp__*,Agent,Task',
+            '--settings', '{"autoMemoryEnabled":false,"autoCompactEnabled":true}',
             '--output-format', 'json', '--json-schema', read(response, 32768).decode(), '--max-budget-usd', str(config['budget_usd'])]
     return args + (['--resume', session] if session else [])
 
@@ -647,25 +748,27 @@ def validate_result(task, record, role, contract, state, result):
     ack = result['ack_message_ids']
     require(result['task_id'] == task.id and len(ack) == len(set(ack))
             and set(ack) == set(record['message_ids']), 'invalid message acknowledgement')
-    outcomes = {'manager': {'plan', 'blocked', 'accepted', 'fail'}, 'worker': {'complete', 'blocked', 'fail'},
-                'preflight': {'pass', 'fail', 'blocked'}, 'acceptance': {'pass', 'fail', 'blocked'}}
+    outcomes = {'manager': {'plan', 'blocked', 'accepted', 'fail'}, 'worker': {'complete', 'blocked', 'fail'}}
     require(result['outcome'] in outcomes[role], 'role cannot claim this outcome')
     if result['outcome'] == 'accepted':
         require(record['message_ids'] == ids(state), 'new messages invalidate acceptance')
-        review = state['latest'].get('acceptance')
-        if contract['complexity'] == 'simple' and not current(review, state):
-            review = state['latest'].get('preflight')
-        require(current(review, state) and review['result']['outcome'] == 'pass', 'fresh independent review required')
+        require(not record['input']['resume_session'], 'delivery verdict requires a fresh Manager session')
         worker = state['latest'].get('worker')
-        require(not worker or review['sequence'] > worker['sequence'], 'review predates implementation')
+        require(not worker or (current(worker, state) and worker['result']['outcome'] == 'complete'
+                               and record['sequence'] > worker['sequence']), 'current completed Worker evidence required')
+        failures = [item for item in state['requests'].values()
+                    if item.get('result', {}).get('outcome') == 'fail']
+        require(all(worker and worker['sequence'] > item['sequence'] for item in failures),
+                'an existing fail requires new Worker evidence and a fresh Manager verdict')
         verification = contract['verification']
         files = set(verification['evidence_files'])
-        require(not verification['ci_required'] or (files & set(review['result']['evidence']) and files & set(result['evidence'])), 'CI evidence references required; Gateway must verify actual CI/head')
+        require(not verification['ci_required'] or files & set(result['evidence']),
+                'CI evidence references required; Gateway must verify actual CI/head and remote SHA')
 
 
-def parse_output(role, stdout, result_file):
+def parse_output(role, stdout, result_file, cli=None):
     metadata = {}
-    if role != 'worker':
+    if (cli or ('codex' if role == 'worker' else 'claude')) == 'claude':
         envelope = json.loads(read(stdout))
         require(isinstance(envelope, dict) and not envelope.get('is_error') and not envelope.get('permission_denials'), 'Claude CLI error/permission denial')
         require(envelope.get('subtype') == 'success', 'Claude did not finish successfully')
@@ -697,6 +800,7 @@ def parse_output(role, stdout, result_file):
 
 
 def run(task, role, request_id, tier=None, resume=False):
+    require(role in ROLES, 'removed or unknown role; use manager or worker')
     component(request_id)
     interrupted = []
     previous_handlers = {}
@@ -722,7 +826,12 @@ def run(task, role, request_id, tier=None, resume=False):
             config = models['roles'][chosen]
             session = state['sessions'].get(role) if resume else None
             if resume:
-                require(role in ('manager', 'worker') and session and session['model'] == config['model'], 'resume requires owned same-role/model session')
+                require(session and session['model'] == config['model']
+                        and session.get('cli', 'codex' if role == 'worker' else 'claude') == config['cli']
+                        and (role != 'worker' or session.get('tier', chosen if chosen in ('luna', 'sol') else None) == chosen),
+                        'resume requires owned same-role/model/provider/tier session')
+            launch_args = command(contract, role, config, task.path / (request_id + '.result'),
+                                  session['id'] if session else None, models)
             prompt = prompt_for(task, state, contract, role, models)
             prefix = task.path / request_id
             prompt_file, stdout, stderr, result_file = [Path(str(prefix) + suffix) for suffix in ('.prompt', '.stdout', '.stderr', '.result')]
@@ -730,6 +839,8 @@ def run(task, role, request_id, tier=None, resume=False):
             record = dict(input=fingerprint, role=role, request_id=request_id, message_ids=ids(state),
                           sequence=len(state['requests']) + 1, execution_status='starting', started_at=now(),
                           requested_model=config['model'], requested_effort=config['effort'], worker_counted=False,
+                          requested_cli=config['cli'], requested_tier=chosen if role == 'worker' else None,
+                          max_context_tokens=models['max_context_tokens'],
                           parent_claude_session_id=os.environ.get('CLAUDE_CODE_SESSION_ID'),
                           parent_codex_thread_id=os.environ.get('CODEX_THREAD_ID'),
                           artifacts=dict(prompt=str(prompt_file), stdout=str(stdout), stderr=str(stderr), result=str(result_file)))
@@ -737,16 +848,13 @@ def run(task, role, request_id, tier=None, resume=False):
             state['latest'][role] = compact(record)
             active = dict(request_id=request_id, controller_pid=os.getpid(), controller_start=proc(os.getpid())['start'],
                           controller_boot_id=boot_id(), child_pid=None, child_start=None, child_boot_id=None,
-                          phase='probe' if role == 'worker' else 'model')
+                          phase='probe' if role == 'worker' and config['cli'] == 'codex' else 'model')
             state['active'] = active
             state['status'] = 'running'
             task.save(state)  # Crash before child registration intentionally requires manual reconciliation.
         try:
-            env = os.environ.copy()
-            env['HARNESS_ROLE'] = role
-            if role != 'worker':
-                env['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] = '1'
-            if role == 'worker':
+            env = dispatch_env(role, config, models)
+            if role == 'worker' and config['cli'] == 'codex':
                 audit = startup_probe(task, request_id, contract, models, env, interrupted,
                                       dict(now=now, Error=Error, require=require, proc=proc, stop_group=stop_group))
                 settled = audit['termination_confirmed']
@@ -763,7 +871,7 @@ def run(task, role, request_id, tier=None, resume=False):
                 task.save(state)  # A crash in the model launch window is conservatively counted on recovery.
                 settled = False
                 with open(prompt_file, 'rb') as incoming:
-                    child = subprocess.Popen(command(contract, role, config, result_file, session['id'] if session else None),
+                    child = subprocess.Popen(launch_args,
                                              stdin=incoming, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=contract['cwd'], env=env, start_new_session=True)
                 active.update(child_pid=child.pid, child_boot_id=active['controller_boot_id'])
                 count_worker(state, record)
@@ -857,7 +965,7 @@ def run(task, role, request_id, tier=None, resume=False):
         if not reason and settled:
             try:
                 require(child.returncode == 0, 'CLI nonzero exit')
-                result, metadata = parse_output(role, stdout, result_file)
+                result, metadata = parse_output(role, stdout, result_file, config['cli'])
                 require(len(encoded(metadata)) <= 16384, 'CLI metadata too large')
             except (Error, ValueError, KeyError, OSError, TypeError) as exc:
                 reason = str(exc)
@@ -883,7 +991,8 @@ def run(task, role, request_id, tier=None, resume=False):
                         record['result'] = result
                         sid = metadata.get('session_id')
                         if sid:
-                            state['sessions'][role] = dict(id=sid, model=config['model'])
+                            state['sessions'][role] = dict(id=sid, model=config['model'], cli=config['cli'],
+                                                           tier=chosen if role == 'worker' else None)
                     success = not reason and result['outcome'] not in ('fail', 'blocked')
                     recipient_status = record['execution_status'] if reason else 'completed' if success else result['outcome']
                     if settled and reason in ('paused', 'cancelled', 'timeout'):
@@ -936,7 +1045,7 @@ def main(argv=None):
         if action == 'run':
             item.add_argument('role', choices=ROLES)
             item.add_argument('--request-id', required=True)
-            item.add_argument('--tier', choices=('luna', 'sol'))
+            item.add_argument('--tier', choices=TIERS)
             item.add_argument('--resume-session', action='store_true')
         if action == 'recover':
             item.add_argument('--abandon', action='store_true', help='terminal uncertainty; does NOT certify the process stopped')
@@ -949,7 +1058,7 @@ def main(argv=None):
             result = models_show()
             print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
             return 0
-        require(args.action == 'status' or os.environ.get('HARNESS_ROLE') not in ROLES, 'role guard prohibits nested mutation/dispatch')
+        require(args.action == 'status' or os.environ.get('HARNESS_ROLE') not in LEGACY_ROLES, 'role guard prohibits nested mutation/dispatch')
         task = Task(args.task, initialize=args.action == 'create')
         if args.action == 'create':
             result = create(task, args.original, args.contract)
