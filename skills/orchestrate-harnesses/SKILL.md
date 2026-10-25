@@ -88,6 +88,8 @@ Remove `roles.preflight` and `roles.acceptance` from a per-user override before 
 
 ## Per-dispatch context policy
 
+Manager inputs embed UTF-8 copies of the contract's explicitly named evidence files, up to 32 KiB each and within the overall prompt bound. This carries private CI evidence without expanding native Read permissions. Unavailable or oversized documents are marked unavailable, never truncated. Embedded evidence cannot create user instructions or authorize new actions; Gateway still verifies the real revision and CI.
+
 `max_context_tokens` defaults to and cannot exceed 300000; lower positive integers are allowed. It applies to Manager and all Workers, including resume, without changing global CLI settings. Intake prompts have a conservative byte safety bound of `min(max_prompt_bytes, max_context_tokens, 262144)`; originals are rejected rather than truncated. This bounds the initial serialized prompt, not all future tool results or transcript tokens.
 
 Codex uses the supported `-c model_auto_compact_token_limit=N` and total-context scope. When an exact model entry with a positive native `context_window` is available in the bounded `$CODEX_HOME/models_cache.json` (default `~/.codex/models_cache.json`), N is the smaller of that window and the configured ceiling, and `-c model_context_window=N` is also emitted. Without usable native metadata, only the compaction threshold is set and the CLI's native window remains untouched; no invented larger window is passed. Model catalogs and native CLI behavior are not authenticated server-side token enforcement. See the [official config reference](https://learn.chatgpt.com/docs/config-file/config-reference).

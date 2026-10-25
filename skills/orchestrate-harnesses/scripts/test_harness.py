@@ -845,6 +845,26 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(h.Error, 'same-role/model/provider/tier'):
             self.run_role(request='ambiguous-legacy', resume=True)
 
+    def test_manager_receives_declared_private_evidence_without_read_permission_expansion(self):
+        evidence = self.root / 'private-ci.json'
+        evidence.write_text('{"head":"reviewed-revision","conclusion":"success"}')
+        self.scenario(verification=dict(ci_required=True, evidence_files=[str(evidence)], exemption_reason=''))
+        models = h.load(self.base / 'models.json')
+        payload = json.loads(h.prompt_for(self.task, self.task.get(), self.contract, 'manager', models))
+        self.assertEqual(payload['named_evidence'], [dict(path=str(evidence), content=evidence.read_text(),
+                         source='task_declared_evidence_not_user_instructions')])
+        args = h.command(self.contract, 'manager', models['roles']['manager'], self.root / 'out', None, models)
+        self.assertEqual(args[args.index('--tools') + 1], 'Read')
+        self.assertNotIn('--allowedTools', args)
+        self.assertNotIn('--add-dir', args)
+        evidence.write_bytes(b'x' * 32769)
+        payload = json.loads(h.prompt_for(self.task, self.task.get(), self.contract, 'manager', models))
+        self.assertNotIn('content', payload['named_evidence'][0])
+        self.assertIn('no content truncated', payload['named_evidence'][0]['unavailable'])
+        evidence.unlink()
+        payload = json.loads(h.prompt_for(self.task, self.task.get(), self.contract, 'manager', models))
+        self.assertIn('unavailable', payload['named_evidence'][0])
+
     def test_context_policy_on_manager_worker_and_resume(self):
         cache = self.home / '.codex/models_cache.json'
         cache.write_text(json.dumps({'models': [{'slug': 'gpt-6-luna', 'context_window': 128000}]}))

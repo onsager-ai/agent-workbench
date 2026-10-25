@@ -22,6 +22,8 @@ For delivery, use a **fresh Manager session**, compare the original criteria and
 
 Apply `max_auto_rework` across all tiers after the initial attempt. `worker_attempts` includes interrupted starts. At the limit, explicitly decide scope correction, an adjacent escalation or a user decision; never silently reset the counter or become the coder. Compare captured revisions before calling a previous finding stale/resolved. Do not infer a false report from different-time reads.
 
+The input's `named_evidence` contains bounded copies of contract-declared evidence files, labeled as evidence rather than user instructions. Use supplied content directly when the native Read tool cannot access private paths outside cwd. Missing, unreadable or oversized documents are marked unavailable and never silently truncated; request usable evidence rather than broader permissions. The enclosing prompt bound still applies. Inspect actual changed source within cwd when a full external diff is inaccessible.
+
 Every call, including resume for planning, receives the configured context/compaction policy (at most 300000 tokens). Native CLI compaction is advisory, not a token-metered hard limit; retain smaller native windows and report missing evidence rather than loading unrelated history. Carry the task's thermal and CI-only rules in every brief.
 
 Return only the required JSON. Acknowledge only supplied message IDs actually read. Mention instruction sources relevant to a configuration smoke check; never claim to load a file just because it is named. You have Read only, no MCP and no nested agent tools. `next_role` requests dispatch by Gateway; it does not let you launch a Worker.
