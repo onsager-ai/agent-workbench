@@ -681,6 +681,20 @@ def dispatch_env(role, config, models, env=None):
         # Do not override the model's native window. The documented auto-compact
         # window is capped by it. Below the CLI's 100k minimum use an earlier pct.
         limit, _ = context_limit(models, config)
+        for name in ('CLAUDE_CODE_MAX_CONTEXT_TOKENS', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW'):
+            value = env.get(name, '')
+            match = re.fullmatch(r'([0-9]+)([kKmM]?)', value)
+            try:
+                number = int(match[1]) * {'': 1, 'k': 1000, 'm': 1000000}[match[2].lower()] if match else 0
+            except ValueError:
+                number = 0
+            if 0 < number <= limit:
+                limit = number
+                # Keep an existing smaller native correction, never create a
+                # larger one. Normalize suffixes for older native CLIs.
+                env[name] = str(number)
+            elif name == 'CLAUDE_CODE_MAX_CONTEXT_TOKENS':
+                env.pop(name, None)
         env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = str(max(100000, limit))
         pct = max(1, min(100, limit * 100 // max(100000, limit)))
         try:
@@ -692,7 +706,6 @@ def dispatch_env(role, config, models, env=None):
         env['DISABLE_AUTO_COMPACT'] = '0'
         env['DISABLE_COMPACT'] = '0'
         env['CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT'] = '0'
-        env.pop('CLAUDE_CODE_MAX_CONTEXT_TOKENS', None)
     return env
 
 

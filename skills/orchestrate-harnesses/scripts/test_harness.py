@@ -873,6 +873,11 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], '100000')
         self.assertEqual(env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'], '50')
         self.assertNotIn('CLAUDE_CODE_MAX_CONTEXT_TOKENS', env)
+        env = h.dispatch_env('manager', models['roles']['manager'], models,
+                             {'CLAUDE_CODE_MAX_CONTEXT_TOKENS': '32k', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW': '20000'})
+        self.assertEqual(env['CLAUDE_CODE_MAX_CONTEXT_TOKENS'], '32000')
+        self.assertEqual(env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], '100000')
+        self.assertEqual(env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'], '20')
         cache.unlink()
         args = h.command(self.contract, 'worker', models['roles']['luna'], self.root / 'out', None, models)
         self.assertFalse(any(x.startswith('model_context_window=') for x in args))
