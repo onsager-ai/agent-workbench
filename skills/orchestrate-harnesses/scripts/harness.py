@@ -822,7 +822,8 @@ def run(task, role, request_id, tier=None, resume=False):
             if resume:
                 require(session and session['model'] == config['model']
                         and session.get('cli', 'codex' if role == 'worker' else 'claude') == config['cli']
-                        and (role != 'worker' or session.get('tier', chosen if chosen in ('luna', 'sol') else None) == chosen),
+                        and (role != 'worker' or session.get('tier', {'gpt-6-luna': 'luna',
+                                                                    'gpt-6.1-sol': 'sol'}.get(session['model'])) == chosen),
                         'resume requires owned same-role/model/provider/tier session')
             launch_args = command(contract, role, config, task.path / (request_id + '.result'),
                                   session['id'] if session else None, models)

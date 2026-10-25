@@ -817,6 +817,34 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.task.get()['worker_runs'], 0)
         self.assertIsNone(self.task.get()['active'])
 
+    def test_claude_editable_full_access_uses_named_tools_without_probe(self):
+        self.scenario(complexity='normal', read_only=False,
+                      worker_permissions=dict(self.contract['worker_permissions'], sandbox_mode='danger-full-access'))
+        self.plan_tier('haiku', 'CLAUDE_COST_JUSTIFIED: one $0.40/1200s provider-specific edit')
+        record = self.run_role()
+        self.assertEqual(record['execution_status'], 'completed', record)
+        args = self.calls()[-1]['args']
+        self.assertEqual(args[args.index('--tools') + 1], 'Read,Glob,Grep,Edit,Write,Bash')
+        self.assertEqual(args[args.index('--allowedTools') + 1], 'Read,Glob,Grep,Edit,Write,Bash')
+        self.assertNotIn('bypassPermissions', args)
+        self.assertEqual(self.probe_calls(), [])
+
+    def test_legacy_resume_requires_unambiguous_tier(self):
+        self.run_role()
+        state = self.task.get()
+        state['sessions']['worker'].pop('tier')
+        state['sessions']['worker'].pop('cli')
+        self.task.save(state)
+        self.assertEqual(self.run_role(request='legacy-resume', resume=True)['execution_status'], 'completed')
+        state = self.task.get()
+        state['sessions']['worker'] = dict(id='legacy-custom', model='custom-model')
+        self.task.save(state)
+        path = self.xdg / 'agent-workbench/models.json'
+        path.parent.mkdir()
+        path.write_text(json.dumps({'roles': {'luna': {'model': 'custom-model'}}}))
+        with self.assertRaisesRegex(h.Error, 'same-role/model/provider/tier'):
+            self.run_role(request='ambiguous-legacy', resume=True)
+
     def test_context_policy_on_manager_worker_and_resume(self):
         cache = self.home / '.codex/models_cache.json'
         cache.write_text(json.dumps({'models': [{'slug': 'gpt-6-luna', 'context_window': 128000}]}))
@@ -825,6 +853,12 @@ class HarnessTests(unittest.TestCase):
         for call in self.calls():
             self.assertIn('model_context_window=128000', call['args'])
             self.assertIn('model_auto_compact_token_limit=128000', call['args'])
+        cache.write_text(json.dumps({'models': [{'slug': 'gpt-6.1-sol', 'context_window': 500000}]}))
+        models = h.load(self.base / 'models.json')
+        args = h.command(self.contract, 'worker', models['roles']['sol'], self.root / 'out', None, models)
+        self.assertIn('model_context_window=300000', args)
+        self.assertIn('model_auto_compact_token_limit=300000', args)
+        cache.write_text(json.dumps({'models': [{'slug': 'gpt-6-luna', 'context_window': 128000}]}))
         self.run_role('manager', 'context')
         self.run_role('manager', 'context-resume', resume=True)
         for call in self.calls()[-2:]:
