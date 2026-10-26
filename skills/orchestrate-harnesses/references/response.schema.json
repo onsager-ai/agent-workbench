@@ -6,8 +6,8 @@
     "outcome": {"type": "string", "enum": ["plan", "complete", "pass", "fail", "blocked", "accepted"]},
     "summary": {"type": "string"},
     "findings": {"type": "array", "items": {"type": "string"}},
-    "next_role": {"type": "string", "enum": ["worker", "manager", "preflight", "acceptance", "none"]},
-    "worker_tier": {"type": "string", "enum": ["luna", "sol"]},
+    "next_role": {"type": "string", "enum": ["worker", "manager", "none"]},
+    "worker_tier": {"type": "string", "enum": ["luna", "haiku", "terra", "sonnet", "sol", "opus"]},
     "decision": {"type": "string"},
     "evidence": {"type": "array", "items": {"type": "string"}}
   },
