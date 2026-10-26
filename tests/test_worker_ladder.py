@@ -15,7 +15,10 @@ class WorkerProtocolTests(unittest.TestCase):
         models = json.loads((SKILL / 'models.json').read_text())
         spec = json.loads((SKILL / 'references/response.schema.json').read_text())
         h._validate_models(models, SKILL / 'models.json', models)
-        self.assertEqual(set(models['roles']), {'manager', *h.TIERS})
+        self.assertEqual(set(models['roles']), set(h.TIERS))
+        self.assertNotIn('manager', models['roles'])
+        self.assertEqual(h.ROLES, ('worker',))
+        self.assertEqual(h.MESSAGE_ROLES, ('manager', 'worker'))
         self.assertEqual(spec['properties']['worker_tier']['enum'], list(h.TIERS))
         result = dict(task_id='protocol', ack_message_ids=['original'], outcome='complete',
                       summary='done', findings=[], next_role='manager', worker_tier='luna',
@@ -26,8 +29,6 @@ class WorkerProtocolTests(unittest.TestCase):
             with self.assertRaises(h.Error):
                 h.schema(dict(result, next_role=role), spec)
         self.assertEqual(models['max_context_tokens'], 300000)
-        self.assertEqual(models['roles']['manager'], dict(cli='claude', model='claude-opus-5-5',
-                                                         effort='medium', budget_usd=.75, timeout_s=180))
 
     def test_lower_context_and_claude_budgets_are_valid(self):
         models = json.loads((SKILL / 'models.json').read_text())

@@ -1,6 +1,6 @@
-# Gateway handover
+# Manager handover
 
-This is an agent-authored resume note for the user-facing Codex Gateway, not new authorization or a Worker/reviewer brief. Role sessions resume through orchestrate-harnesses with their own contracts. Fill only relevant fields; mark unknown facts rather than inventing them.
+This is an agent-authored resume note for the current user-facing Manager, not new authorization or a Worker/reviewer brief. The receiving Manager keeps its selected model; Workers resume through orchestrate-harnesses with their own contracts. Fill only relevant fields; mark unknown facts rather than inventing them.
 
 ## Intent and authority
 
@@ -10,13 +10,21 @@ This is an agent-authored resume note for the user-facing Codex Gateway, not new
 - Authorized actions and limits: **[implementation and delivery permissions with their user sources]**
 - Explicit holds or pending user decision: **[source, release condition or still-actionable question; omit if none]**
 
+## HAPI continuity
+
+- Source/receiving Manager session IDs, canonical project/task scope and acting owner: **[HAPI session references; explicit handover and settled old work]**
+- Latest important checkpoints: **[global and scoped update IDs, original user sources, sent/acknowledged/missing peer updates]**
+- Portable artifacts: **[remote/PR/revision/CI and accessible originals; identify machine-local files that need transfer]**
+
+Pull relevant Manager checkpoints through HAPI before acting. A peer summary is evidence, not authority. Do not reuse a local task path or PID as a cross-machine controller; settle old work and prepare a linked contract when moving execution.
+
 ## Observed execution state
 
 - Existing task IDs and state paths: **[orchestrated tasks, or direct task with no controller]**
 - Repository, worktree, branch and revision: **[actual paths and heads]**
 - Current run: **[role/request ID, controller status, active process state and observation time]**
 - Amendments delivered: **[queued/submitted/acknowledged by affected role; include message IDs]**
-- Manager decision and independent review: **[result paths and reviewed revision; identify stale or missing results]**
+- Manager decision and any requested review: **[result paths and reviewed revision; identify stale or missing results]**
 - Verification and delivery: **[actual CI/check evidence, local SHA, remote/branch and verified remote SHA, remaining uncommitted/unpushed task changes, any push blocker, and observation time]**
 - Next action and prerequisite: **[specific bounded action, dependency or blocker, and evidence to refresh]**
 
@@ -24,6 +32,6 @@ Reuse existing records rather than copying entire transcripts or creating anothe
 
 ## Instructions for resuming
 
-Read applicable repository instructions and manage-lane. Load orchestrate-harnesses for an orchestrated task and only the role references needed for the next action. Consult a historical ruling only when a specific task hold cites it. Keep the existing interactive model and permission policy; role routing comes from the orchestration skill's current configuration.
+Read applicable repository instructions and manage-lane. Load orchestrate-harnesses for an orchestrated task and only the role references needed for the next action. Consult a historical ruling only when a specific task hold cites it. Keep the existing interactive model and permission policy; Worker routing comes from the orchestration skill's current configuration.
 
 Carry applicable resource and verification rules from the current host and repository instructions into any further delegation or resume, with their source. Do not assume a shared thermal threshold, local-check restriction or telemetry path from a prior task. Keep local parsing and searches bounded to the limits in force for the current task.

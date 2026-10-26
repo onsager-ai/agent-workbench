@@ -122,28 +122,13 @@ if mode == 'wait':
     while not pathlib.Path(os.environ['FAKE_RELEASE']).exists():
         time.sleep(.05)
 r = dict(task_id=p['task_id'], ack_message_ids=p['message_ids'],
-         outcome={'worker':'complete','manager':'plan'}[role],
-         summary='fake result', findings=[], next_role='worker' if role == 'manager' else 'manager',
+         outcome='complete',
+         summary='fake result', findings=[], next_role='none',
          worker_tier='luna', decision='bounded fake plan', evidence=[])
 if mode == 'badack':
     r['ack_message_ids'] = []
 if mode == 'selfaccept':
     r['outcome'] = 'accepted'
-if mode == 'accept' and role == 'manager':
-    r['outcome'] = 'accepted'
-    r['evidence'] = p['original_contract']['verification']['evidence_files']
-if mode in ('sol', 'sol-denied'):
-    r['worker_tier'] = 'sol'
-    r['decision'] = ('SOL_USAGE_UNKNOWN_BOUNDED_EXCEPTION: missing usage; subtle invariants'
-                     if mode == 'sol' else 'No exception: this is unbounded; do not dispatch')
-    r['decision'] += '\nLADDER_SKIP_JUSTIFIED: bounded fixture isolates Sol brake validation'
-if mode == 'escalate':
-    r['decision'] = 'explicit Manager escalation after rework limit'
-if mode == 'verdictfail':
-    r['outcome'] = 'fail'
-if os.environ.get('FAKE_TIER'):
-    r['worker_tier'] = os.environ['FAKE_TIER']
-    r['decision'] = os.environ.get('FAKE_DECISION', '')
 if '-o' in sys.argv:
     print(json.dumps({'type':'thread.started','thread_id':'owned-worker-thread'}))
     result = pathlib.Path(sys.argv[sys.argv.index('-o') + 1])
@@ -154,10 +139,6 @@ if '-o' in sys.argv:
 else:
     out = dict(type='result', subtype='success', is_error=False, session_id='owned-' + role,
                structured_output=r, model='fake-actual-model', total_cost_usd=.01)
-    if mode == 'budget':
-        out['subtype'] = 'error_max_budget_usd'
-    if mode == 'denied':
-        out['permission_denials'] = [{'tool_name':'Read'}]
     print(json.dumps(out))
 '''
 
@@ -227,7 +208,48 @@ class HarnessTests(unittest.TestCase):
 
     def run_role(self, role='worker', request='r1', mode='', **kwargs):
         with patch.dict(os.environ, {'FAKE_MODE': mode}):
+            if role == 'manager':
+                state = self.task.get()
+                result = dict(task_id=self.task.id, ack_message_ids=h.ids(state), outcome='plan',
+                              summary='fake Manager result', findings=[], next_role='worker',
+                              worker_tier=os.environ.get('FAKE_TIER', 'luna'),
+                              decision=os.environ.get('FAKE_DECISION', 'bounded fake plan'), evidence=[])
+                if mode in ('accept', 'missing-evidence'):
+                    result['outcome'] = 'accepted'
+                    result['evidence'] = self.contract['verification']['evidence_files'] if mode == 'accept' else []
+                elif mode == 'blocked':
+                    result['outcome'] = 'blocked'
+                elif mode in ('budget', 'denied'):
+                    result = {'task_id': self.task.id}
+                elif mode == 'badack':
+                    result['ack_message_ids'] = []
+                elif mode == 'sol':
+                    result.update(worker_tier='sol', decision='SOL_USAGE_UNKNOWN_BOUNDED_EXCEPTION: missing usage; subtle invariants')
+                elif mode == 'sol-denied':
+                    result.update(worker_tier='sol', decision='No exception: this is unbounded; do not dispatch')
+                if mode in ('sol', 'sol-denied'):
+                    result['decision'] += '\nLADDER_SKIP_JUSTIFIED: bounded fixture isolates Sol brake validation'
+                if mode == 'escalate':
+                    result['decision'] = 'explicit Manager escalation after rework limit'
+                if mode == 'verdictfail':
+                    result['outcome'] = 'fail'
+                if os.environ.get('FAKE_TIER'):
+                    result['worker_tier'] = os.environ['FAKE_TIER']
+                    result['decision'] = os.environ.get('FAKE_DECISION', '')
+                path = self.root / (request + '.manager-result.json')
+                path.write_text(json.dumps(result))
+                return h.submit(self.task, role, request, path)
             return h.run(self.task, role, request, **kwargs)
+
+    def manager_result_file(self, request, **changes):
+        state = self.task.get()
+        result = dict(task_id=self.task.id, ack_message_ids=h.ids(state), outcome='plan',
+                      summary='interactive Manager plan', findings=[], next_role='worker',
+                      worker_tier='luna', decision='bounded routing decision', evidence=[])
+        result.update(changes)
+        path = self.root / (request + '.json')
+        path.write_text(json.dumps(result))
+        return path
 
     def cli(self, *args, env=None):
         return subprocess.run([sys.executable, str(self.script), *args], env=env or os.environ.copy(),
@@ -283,6 +305,70 @@ class HarnessTests(unittest.TestCase):
             h.add_message(self.task, 'm1', msg, 'correlation')
         self.assertEqual((self.task.path / 'message-m1.bin').read_bytes(), b'keep\r\nbytes')
 
+    def test_manager_submit_cli_records_and_binds_request_to_result_content(self):
+        state = self.task.get()
+        result = dict(task_id=self.task.id, ack_message_ids=h.ids(state), outcome='plan',
+                      summary='current interactive plan', findings=[], next_role='worker',
+                      worker_tier='luna', decision='bounded routing decision', evidence=[])
+        result_file = self.root / 'manager-result.json'
+        result_file.write_text(json.dumps(result))
+        env = dict(os.environ, HARNESS_ROLE='manager')
+        args = ('submit', self.task.id, 'manager', '--request-id', 'interactive-1', '--file', str(result_file))
+        first = self.cli(*args, env=env)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        record = json.loads(first.stdout)
+        self.assertEqual(record['role'], 'manager')
+        self.assertEqual(record['result'], result)
+        self.assertEqual(record['sequence'], 1)
+        self.assertEqual(self.cli(*args, env=env).returncode, 0)
+        message = self.task.get()['messages'][0]
+        self.assertEqual(message['acknowledgements']['manager']['request_id'], 'interactive-1')
+        self.assertEqual(message['submissions']['manager']['execution_status'], 'completed')
+        result['summary'] = 'divergent interactive plan'
+        result_file.write_text(json.dumps(result))
+        divergent = self.cli(*args, env=env)
+        self.assertEqual(divergent.returncode, 1)
+        self.assertIn('divergent request ID', divergent.stderr)
+        self.assertEqual(self.cli('submit', self.task.id, 'manager', '--request-id', 'relative-file',
+                                  '--file', result_file.name, env=env).returncode, 1)
+
+    def test_manager_submission_rejects_paused_and_cancelled_tasks(self):
+        result_file = self.manager_result_file('lifecycle')
+        h.control(self.task, 'pause')
+        with self.assertRaisesRegex(h.Error, 'task cannot accept'):
+            h.submit(self.task, 'manager', 'paused-manager', result_file)
+        self.assertEqual(self.task.get()['status'], 'paused')
+        self.assertNotIn('paused-manager', self.task.get()['requests'])
+        h.control(self.task, 'resume')
+        h.control(self.task, 'cancel')
+        with self.assertRaisesRegex(h.Error, 'task cannot accept'):
+            h.submit(self.task, 'manager', 'cancelled-manager', result_file)
+        self.assertEqual(self.task.get()['status'], 'cancelled')
+        self.assertNotIn('cancelled-manager', self.task.get()['requests'])
+
+    def test_manager_submission_rejects_active_task_and_tampered_intake(self):
+        result_file = self.manager_result_file('active')
+        with self.controller(request='active-worker'):
+            with self.assertRaisesRegex(h.Error, 'task cannot accept'):
+                h.submit(self.task, 'manager', 'active-manager', result_file)
+            self.assertNotIn('active-manager', self.task.get()['requests'])
+        self.scenario()
+        result_file = self.manager_result_file('tampered')
+        original = self.task.path / 'original.bin'
+        h.atomic(original, original.read_bytes() + b'changed')
+        with self.assertRaisesRegex(h.Error, 'immutable input integrity mismatch'):
+            h.submit(self.task, 'manager', 'tampered-manager', result_file)
+        self.assertNotIn('tampered-manager', self.task.get()['requests'])
+
+    def test_blocked_manager_submission_sets_blocked_lifecycle_without_ack(self):
+        record = self.run_role('manager', 'blocked-result', 'blocked')
+        self.assertEqual(record['execution_status'], 'completed')
+        self.assertEqual(record['result']['outcome'], 'blocked')
+        state = self.task.get()
+        self.assertEqual(state['status'], 'blocked')
+        self.assertFalse(state['messages'][0]['acknowledgements'])
+        self.assertEqual(state['messages'][0]['submissions']['manager']['execution_status'], 'blocked')
+
     def test_run_idempotency_acks_and_no_fake_parent(self):
         record = self.run_role()
         self.assertEqual(record['execution_status'], 'completed')
@@ -307,7 +393,7 @@ class HarnessTests(unittest.TestCase):
             record = self.run_role(role, 'bad' + str(index), mode)
             self.assertEqual(record['execution_status'], 'failed')
             self.assertFalse(self.task.get()['messages'][0]['acknowledgements'])
-        self.assertEqual(len(self.calls()), 5)
+        self.assertEqual(len(self.calls()), 3)
 
     def test_manager_routing_scope_and_owned_resume_arguments(self):
         self.scenario(complexity='complex')
@@ -327,12 +413,9 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(args[args.index('-m') + 1], 'gpt-6.1-sol')
         with self.assertRaises(h.Error):
             self.run_role('acceptance', 'review-resume', resume=True)
-        claude_args = self.calls()[0]['args']
-        self.assertEqual(claude_args[claude_args.index('--tools') + 1], 'Read')
-        self.assertNotIn('--bare', claude_args)
         self.assertIn('--no-daemon', args[:args.index('exec')])
-        self.assertEqual(claude_args[claude_args.index('--mcp-config') + 1], '{"mcpServers":{}}')
-        self.assertIn('--strict-mcp-config', claude_args)
+        with self.assertRaisesRegex(h.Error, 'only Worker dispatch'):
+            h.run(self.task, 'manager', 'old-headless-manager')
 
     def test_rework_counter_requires_explicit_escalation(self):
         for i in range(3):
@@ -345,18 +428,25 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaises(h.Error):
             self.run_role(request='fifth')
 
-    def test_delivery_requires_fresh_manager_and_current_messages(self):
+    def test_delivery_uses_interactive_manager_submission_and_current_messages(self):
         self.run_role()
         self.run_role('manager', 'plan')
-        denied = self.run_role('manager', 'resumed-verdict', 'accept', resume=True)
-        self.assertEqual(denied['execution_status'], 'failed')
-        self.assertEqual(self.run_role('manager', 'deliver', 'accept')['execution_status'], 'completed')
+        verdict = self.run_role('manager', 'deliver', 'accept')
+        self.assertEqual(verdict['execution_status'], 'completed')
+        self.assertNotIn('resume_session', verdict['input'])
         self.assertEqual(self.task.get()['status'], 'accepted')
         msg = self.root / 'new'
         msg.write_text('new requirement')
         h.add_message(self.task, 'new', msg, None)
         self.assertEqual(self.task.get()['status'], 'ready')
         self.assertEqual(self.run_role('manager', 'stale', 'accept')['execution_status'], 'failed')
+        self.assertEqual(self.task.get()['status'], 'blocked')
+
+    def test_read_only_manager_can_accept_without_worker_dispatch(self):
+        record = self.run_role('manager', 'read-only-accepted', 'accept')
+        self.assertEqual(record['execution_status'], 'completed')
+        self.assertEqual(self.task.get()['status'], 'accepted')
+        self.assertEqual(self.task.get()['worker_runs'], 0)
 
     def test_failed_worker_blocks_manager_delivery(self):
         self.run_role()
@@ -376,12 +466,17 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaises(h.Error):
             h.contract_check(dict(self.contract, allowed_paths=['external/file']))
 
-    def test_role_guard_allows_only_status(self):
-        for role in h.LEGACY_ROLES:
+    def test_role_guard_allows_manager_operations_and_only_read_status_for_workers(self):
+        for role in h.MUTATION_GUARD_ROLES:
             env = dict(os.environ, HARNESS_ROLE=role)
             self.assertEqual(self.cli('status', 'task', env=env).returncode, 0)
+            self.assertEqual(self.cli('models', 'show', env=env).returncode, 0)
             self.assertEqual(self.cli('cancel', 'task', env=env).returncode, 1)
-        self.assertEqual(self.task.get()['status'], 'ready')
+            self.assertEqual(self.cli('submit', 'task', 'manager', '--request-id', 'guarded', '--file',
+                                      str(self.root / 'missing.json'), env=env).returncode, 1)
+        manager = dict(os.environ, HARNESS_ROLE='manager')
+        self.assertEqual(self.cli('cancel', 'task', env=manager).returncode, 0)
+        self.assertEqual(self.task.get()['status'], 'cancelled')
 
     def test_pause_blocks_launch_and_resume_does_not_dispatch(self):
         h.control(self.task, 'pause')
@@ -600,14 +695,17 @@ class HarnessTests(unittest.TestCase):
     def test_valid_failed_verdict_is_not_acknowledged(self):
         record = self.run_role('manager', 'negative', 'verdictfail')
         self.assertEqual(record['result']['outcome'], 'fail')
+        self.assertEqual(self.task.get()['status'], 'blocked')
         self.assertFalse(self.task.get()['messages'][0]['acknowledgements'])
         self.assertEqual(self.task.get()['messages'][0]['submissions']['manager']['execution_status'], 'fail')
         self.assertEqual(self.run_role('manager', 'reinterpret', 'accept')['execution_status'], 'failed')
+        self.assertEqual(self.task.get()['status'], 'blocked')
         self.run_role()
         self.assertEqual(self.run_role('manager', 'new-verdict', 'accept')['execution_status'], 'completed')
+        self.assertEqual(self.task.get()['status'], 'accepted')
 
     def test_aggregate_ack_requires_all_declared_recipients(self):
-        for role in h.ROLES:
+        for role in h.MESSAGE_ROLES:
             self.run_role(role, 'ack-' + role)
         message = self.task.get()['messages'][0]
         self.assertEqual(message['delivery_status'], 'acknowledged')
@@ -802,9 +900,8 @@ class HarnessTests(unittest.TestCase):
                 self.assertNotIn('--bare', args)
                 self.assertIn('mcp__*,Agent,Task', args)
                 self.assertEqual(args[args.index('--mcp-config') + 1], '{"mcpServers":{}}')
-        manager = h.command(self.contract, 'manager', models['roles']['manager'], self.root / 'out', None, models)
-        self.assertEqual(manager[manager.index('--tools') + 1], 'Read')
-        self.assertNotIn('bypassPermissions', manager)
+        with self.assertRaisesRegex(h.Error, 'only Worker CLI dispatch'):
+            h.command(self.contract, 'manager', config, self.root / 'out', None, models)
 
     def test_unmappable_claude_workspace_blocks_before_launch(self):
         self.scenario(complexity='normal', read_only=False,
@@ -845,25 +942,17 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(h.Error, 'same-role/model/provider/tier'):
             self.run_role(request='ambiguous-legacy', resume=True)
 
-    def test_manager_receives_declared_private_evidence_without_read_permission_expansion(self):
+    def test_manager_submission_uses_declared_ci_reference_without_headless_prompt(self):
         evidence = self.root / 'private-ci.json'
         evidence.write_text('{"head":"reviewed-revision","conclusion":"success"}')
         self.scenario(verification=dict(ci_required=True, evidence_files=[str(evidence)], exemption_reason=''))
-        models = h.load(self.base / 'models.json')
-        payload = json.loads(h.prompt_for(self.task, self.task.get(), self.contract, 'manager', models))
-        self.assertEqual(payload['named_evidence'], [dict(path=str(evidence), content=evidence.read_text(),
-                         source='task_declared_evidence_not_user_instructions')])
-        args = h.command(self.contract, 'manager', models['roles']['manager'], self.root / 'out', None, models)
-        self.assertEqual(args[args.index('--tools') + 1], 'Read')
-        self.assertNotIn('--allowedTools', args)
-        self.assertNotIn('--add-dir', args)
-        evidence.write_bytes(b'x' * 32769)
-        payload = json.loads(h.prompt_for(self.task, self.task.get(), self.contract, 'manager', models))
-        self.assertNotIn('content', payload['named_evidence'][0])
-        self.assertIn('no content truncated', payload['named_evidence'][0]['unavailable'])
-        evidence.unlink()
-        payload = json.loads(h.prompt_for(self.task, self.task.get(), self.contract, 'manager', models))
-        self.assertIn('unavailable', payload['named_evidence'][0])
+        self.run_role()
+        failed = self.run_role('manager', 'missing-reference', 'missing-evidence')
+        self.assertEqual(failed['execution_status'], 'failed')
+        record = self.run_role('manager', 'with-reference', 'accept')
+        self.assertEqual(record['execution_status'], 'completed')
+        self.assertEqual(record['result']['evidence'], [str(evidence)])
+        self.assertEqual(len(self.calls()), 1)
 
     def test_context_override_above_default_reaches_both_providers_and_resumes(self):
         path = self.xdg / 'agent-workbench/models.json'
@@ -878,12 +967,7 @@ class HarnessTests(unittest.TestCase):
             args = self.calls()[-1]['args']
             self.assertIn('model_context_window=600000', args)
             self.assertIn('model_auto_compact_token_limit=600000', args)
-        for request, resume in (('manager-configured-context', False), ('manager-resume-configured-context', True)):
-            record = self.run_role('manager', request, resume=resume)
-            self.assertEqual(record['execution_status'], 'completed', record)
-            self.assertEqual(self.calls()[-1]['env']['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], '600000')
-
-    def test_context_policy_on_manager_worker_and_resume(self):
+    def test_context_policy_on_worker_and_resume(self):
         cache = self.home / '.codex/models_cache.json'
         cache.write_text(json.dumps({'models': [{'slug': 'gpt-6-luna', 'context_window': 128000}]}))
         self.run_role()
@@ -896,12 +980,6 @@ class HarnessTests(unittest.TestCase):
         args = h.command(self.contract, 'worker', models['roles']['sol'], self.root / 'out', None, models)
         self.assertIn('model_context_window=300000', args)
         self.assertIn('model_auto_compact_token_limit=300000', args)
-        cache.write_text(json.dumps({'models': [{'slug': 'gpt-6-luna', 'context_window': 128000}]}))
-        self.run_role('manager', 'context')
-        self.run_role('manager', 'context-resume', resume=True)
-        for call in self.calls()[-2:]:
-            self.assertEqual(call['env']['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], '300000')
-            self.assertEqual(call['env']['DISABLE_AUTO_COMPACT'], '0')
         models = h.load(self.base / 'models.json')
         models['max_context_tokens'] = 50000
         args = h.command(self.contract, 'worker', models['roles']['luna'], self.root / 'out', None, models)
@@ -911,7 +989,7 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], '100000')
         self.assertEqual(env['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'], '50')
         self.assertNotIn('CLAUDE_CODE_MAX_CONTEXT_TOKENS', env)
-        env = h.dispatch_env('manager', models['roles']['manager'], models,
+        env = h.dispatch_env('worker', models['roles']['haiku'], models,
                              {'CLAUDE_CODE_MAX_CONTEXT_TOKENS': '32k', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW': '20000'})
         self.assertEqual(env['CLAUDE_CODE_MAX_CONTEXT_TOKENS'], '32000')
         self.assertEqual(env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], '100000')
@@ -934,7 +1012,13 @@ class HarnessTests(unittest.TestCase):
         contract = (self.task.path / 'contract.json').read_bytes()
         self.assertEqual(self.cli('status', self.task.id).returncode, 0)
         self.assertEqual(h.control(self.task, 'recover')['latest']['acceptance'], state['latest']['acceptance'])
+        old_manager = dict(id='owned-old-manager-session', model='claude-opus-5-5', cli='claude')
+        state['sessions']['manager'] = old_manager
+        self.task.save(state)
         self.assertEqual(self.run_role('manager', 'legacy-manager')['execution_status'], 'completed')
+        self.assertEqual(self.task.get()['sessions']['manager'], old_manager)
+        with self.assertRaisesRegex(h.Error, 'only Worker dispatch'):
+            h.run(self.task, 'manager', 'legacy-dispatch', resume=True)
         for role in ('preflight', 'acceptance'):
             with self.assertRaisesRegex(h.Error, 'removed or unknown role'):
                 self.run_role(role, 'removed-' + role)

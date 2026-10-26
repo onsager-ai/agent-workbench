@@ -47,14 +47,14 @@ class ModelsConfigTests(unittest.TestCase):
         self.assertEqual(source['defaults_path'], str(self.base / 'models.json'))
 
     def test_partial_merge_changes_only_named_fields(self):
-        self.write_config({'roles': {'manager': {'model': 'local-manager', 'timeout_s': 45,
-                                                 'budget_usd': 1.25}}, 'max_prompt_bytes': 2048})
+        self.write_config({'roles': {'sonnet': {'model': 'local-model', 'timeout_s': 45,
+                                                'budget_usd': 1.25}}, 'max_prompt_bytes': 2048})
         effective, source = self.load({'XDG_CONFIG_HOME': str(self.xdg)})
         defaults = json.loads((self.base / 'models.json').read_text())
         expected = json.loads(json.dumps(defaults))
-        expected['roles']['manager']['model'] = 'local-manager'
-        expected['roles']['manager']['timeout_s'] = 45
-        expected['roles']['manager']['budget_usd'] = 1.25
+        expected['roles']['sonnet']['model'] = 'local-model'
+        expected['roles']['sonnet']['timeout_s'] = 45
+        expected['roles']['sonnet']['budget_usd'] = 1.25
         expected['max_prompt_bytes'] = 2048
         self.assertEqual(effective, expected)
         self.assertEqual(source['user_config_path'], str(self.config_path()))
@@ -90,19 +90,20 @@ class ModelsConfigTests(unittest.TestCase):
         cases = [
             ('malformed JSON', b'{', '<root>'),
             ('wrong root', b'[]', '<root>'),
-            ('boolean is not a number', b'{"roles":{"manager":{"timeout_s":true}}}', 'roles.manager.timeout_s'),
-            ('NaN constant', b'{"roles":{"manager":{"budget_usd":NaN}}}', 'roles.manager.budget_usd'),
-            ('infinite number', b'{"roles":{"manager":{"timeout_s":1e999}}}', 'roles.manager.timeout_s'),
-            ('zero timeout', b'{"roles":{"manager":{"timeout_s":0}}}', 'roles.manager.timeout_s'),
-            ('negative timeout', b'{"roles":{"manager":{"timeout_s":-1}}}', 'roles.manager.timeout_s'),
-            ('zero budget', b'{"roles":{"manager":{"budget_usd":0}}}', 'roles.manager.budget_usd'),
-            ('negative budget', b'{"roles":{"manager":{"budget_usd":-1}}}', 'roles.manager.budget_usd'),
+            ('boolean is not a number', b'{"roles":{"sonnet":{"timeout_s":true}}}', 'roles.sonnet.timeout_s'),
+            ('NaN constant', b'{"roles":{"sonnet":{"budget_usd":NaN}}}', 'roles.sonnet.budget_usd'),
+            ('infinite number', b'{"roles":{"sonnet":{"timeout_s":1e999}}}', 'roles.sonnet.timeout_s'),
+            ('zero timeout', b'{"roles":{"sonnet":{"timeout_s":0}}}', 'roles.sonnet.timeout_s'),
+            ('negative timeout', b'{"roles":{"sonnet":{"timeout_s":-1}}}', 'roles.sonnet.timeout_s'),
+            ('zero budget', b'{"roles":{"sonnet":{"budget_usd":0}}}', 'roles.sonnet.budget_usd'),
+            ('negative budget', b'{"roles":{"sonnet":{"budget_usd":-1}}}', 'roles.sonnet.budget_usd'),
             ('unknown top-level key', b'{"extra":1}', 'extra'),
             ('unknown role', b'{"roles":{"reviewer":{}}}', 'roles.reviewer'),
             ('removed preflight role', b'{"roles":{"preflight":{}}}', 'roles.preflight'),
             ('removed acceptance role', b'{"roles":{"acceptance":{}}}', 'roles.acceptance'),
-            ('unknown field', b'{"roles":{"manager":{"unknown":1}}}', 'roles.manager.unknown'),
-            ('CLI routing is fixed', b'{"roles":{"manager":{"cli":"other"}}}', 'roles.manager.cli'),
+            ('removed manager role', b'{"roles":{"manager":{}}}', 'roles.manager'),
+            ('unknown field', b'{"roles":{"sonnet":{"unknown":1}}}', 'roles.sonnet.unknown'),
+            ('CLI routing is fixed', b'{"roles":{"sonnet":{"cli":"other"}}}', 'roles.sonnet.cli'),
             ('unsupported version', b'{"version":2}', 'version'),
             ('non-finite top-level value', b'{"sol_weekly_brake_percent":Infinity}', 'sol_weekly_brake_percent'),
             ('negative rework limit', b'{"max_auto_rework":-1}', 'max_auto_rework'),
@@ -130,8 +131,8 @@ class ModelsConfigTests(unittest.TestCase):
     def test_huge_integer_fields_fail_with_clear_path_and_field_errors(self):
         digits = b'9' * 400
         cases = [
-            (b'{"roles":{"manager":{"budget_usd":' + digits + b'}}}', 'roles.manager.budget_usd'),
-            (b'{"roles":{"manager":{"timeout_s":' + digits + b'}}}', 'roles.manager.timeout_s'),
+            (b'{"roles":{"sonnet":{"budget_usd":' + digits + b'}}}', 'roles.sonnet.budget_usd'),
+            (b'{"roles":{"sonnet":{"timeout_s":' + digits + b'}}}', 'roles.sonnet.timeout_s'),
         ]
         for content, field in cases:
             with self.subTest(field=field):
@@ -144,7 +145,7 @@ class ModelsConfigTests(unittest.TestCase):
                 self.assertIn(field, str(caught.exception))
 
     def test_cli_show_reports_sources_without_creating_task_state(self):
-        self.write_config({'roles': {'manager': {'timeout_s': 55}}})
+        self.write_config({'roles': {'sonnet': {'timeout_s': 55}}})
         state = self.root / 'state'
         stdout, stderr = io.StringIO(), io.StringIO()
         with patch.object(h, 'BASE', self.base), patch.dict(os.environ, {
@@ -158,11 +159,11 @@ class ModelsConfigTests(unittest.TestCase):
         self.assertEqual(output['user_config_path'], str(self.config_path()))
         self.assertTrue(output['user_config_exists'])
         self.assertTrue(output['user_config_used'])
-        self.assertEqual(output['effective']['roles']['manager']['timeout_s'], 55)
+        self.assertEqual(output['effective']['roles']['sonnet']['timeout_s'], 55)
         self.assertFalse(state.exists())
 
     def test_cli_show_fails_clearly_for_invalid_config(self):
-        path = self.write_config({'roles': {'manager': {'timeout_s': True}}})
+        path = self.write_config({'roles': {'sonnet': {'timeout_s': True}}})
         state = self.root / 'state'
         stdout, stderr = io.StringIO(), io.StringIO()
         with patch.object(h, 'BASE', self.base), patch.dict(os.environ, {
@@ -172,14 +173,14 @@ class ModelsConfigTests(unittest.TestCase):
             status = h.main(['models', 'show'])
         self.assertEqual(status, 1)
         self.assertIn(str(path), stderr.getvalue())
-        self.assertIn('roles.manager.timeout_s', stderr.getvalue())
+        self.assertIn('roles.sonnet.timeout_s', stderr.getvalue())
         self.assertFalse(state.exists())
 
     def test_cli_show_rejects_huge_integer_without_traceback(self):
         digits = '9' * 400
         path = self.config_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('{"roles":{"manager":{"budget_usd":' + digits + '}}}')
+        path.write_text('{"roles":{"sonnet":{"budget_usd":' + digits + '}}}')
         state = self.root / 'state'
         stdout, stderr = io.StringIO(), io.StringIO()
         with patch.object(h, 'BASE', self.base), patch.dict(os.environ, {
@@ -189,7 +190,7 @@ class ModelsConfigTests(unittest.TestCase):
             status = h.main(['models', 'show'])
         self.assertEqual(status, 1)
         self.assertIn(str(path), stderr.getvalue())
-        self.assertIn('roles.manager.budget_usd', stderr.getvalue())
+        self.assertIn('roles.sonnet.budget_usd', stderr.getvalue())
         self.assertNotIn('Traceback', stderr.getvalue())
         self.assertFalse(state.exists())
 
