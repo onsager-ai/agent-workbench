@@ -139,6 +139,10 @@ if '-o' in sys.argv:
 else:
     out = dict(type='result', subtype='success', is_error=False, session_id='owned-' + role,
                structured_output=r, model='fake-actual-model', total_cost_usd=.01)
+    if mode == 'budget':
+        out['subtype'] = 'error_max_budget_usd'
+    if mode == 'denied':
+        out['permission_denials'] = [{'tool_name':'Read'}]
     print(json.dumps(out))
 '''
 
@@ -394,6 +398,16 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(record['execution_status'], 'failed')
             self.assertFalse(self.task.get()['messages'][0]['acknowledgements'])
         self.assertEqual(len(self.calls()), 3)
+
+    def test_claude_worker_budget_and_permission_denials_never_ack(self):
+        for mode in ('budget', 'denied'):
+            with self.subTest(mode=mode):
+                self.scenario(complexity='normal')
+                self.plan_tier('haiku', 'CLAUDE_COST_JUSTIFIED: bounded CLI failure fixture')
+                record = self.run_role(request='failed-worker', mode=mode)
+                self.assertEqual(record['execution_status'], 'failed')
+                self.assertNotIn('worker', self.task.get()['messages'][0]['acknowledgements'])
+                self.assertEqual(self.task.get()['worker_runs'], 1)
 
     def test_manager_routing_scope_and_owned_resume_arguments(self):
         self.scenario(complexity='complex')
@@ -967,6 +981,13 @@ class HarnessTests(unittest.TestCase):
             args = self.calls()[-1]['args']
             self.assertIn('model_context_window=600000', args)
             self.assertIn('model_auto_compact_token_limit=600000', args)
+        self.scenario(complexity='normal')
+        self.plan_tier('haiku', 'CLAUDE_COST_JUSTIFIED: bounded provider context fixture')
+        for request, resume in (('claude-context', False), ('claude-resume-context', True)):
+            record = self.run_role(request=request, resume=resume)
+            self.assertEqual(record['execution_status'], 'completed', record)
+            self.assertEqual(self.calls()[-1]['env']['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], '600000')
+
     def test_context_policy_on_worker_and_resume(self):
         cache = self.home / '.codex/models_cache.json'
         cache.write_text(json.dumps({'models': [{'slug': 'gpt-6-luna', 'context_window': 128000}]}))
@@ -982,7 +1003,7 @@ class HarnessTests(unittest.TestCase):
         self.assertIn('model_auto_compact_token_limit=300000', args)
         models = h.load(self.base / 'models.json')
         models['max_context_tokens'] = 50000
-        args = h.command(self.contract, 'worker', models['roles']['luna'], self.root / 'out', None, models)
+        args = h.command(self.contract, 'worker', models['roles']['sol'], self.root / 'out', None, models)
         self.assertIn('model_context_window=50000', args)
         env = h.dispatch_env('worker', models['roles']['haiku'], models,
                              {'CLAUDE_CODE_MAX_CONTEXT_TOKENS': '1000000', 'DISABLE_COMPACT': '1'})
