@@ -865,6 +865,24 @@ class HarnessTests(unittest.TestCase):
         payload = json.loads(h.prompt_for(self.task, self.task.get(), self.contract, 'manager', models))
         self.assertIn('unavailable', payload['named_evidence'][0])
 
+    def test_context_override_above_default_reaches_both_providers_and_resumes(self):
+        path = self.xdg / 'agent-workbench/models.json'
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps({'max_context_tokens': 600000}))
+        cache = self.home / '.codex/models_cache.json'
+        cache.write_text(json.dumps({'models': [{'slug': 'gpt-6-luna', 'context_window': 2000000}]}))
+        for request, resume in (('configured-context', False), ('resume-configured-context', True)):
+            record = self.run_role(request=request, resume=resume)
+            self.assertEqual(record['execution_status'], 'completed', record)
+            self.assertEqual(record['max_context_tokens'], 600000)
+            args = self.calls()[-1]['args']
+            self.assertIn('model_context_window=600000', args)
+            self.assertIn('model_auto_compact_token_limit=600000', args)
+        for request, resume in (('manager-configured-context', False), ('manager-resume-configured-context', True)):
+            record = self.run_role('manager', request, resume=resume)
+            self.assertEqual(record['execution_status'], 'completed', record)
+            self.assertEqual(self.calls()[-1]['env']['CLAUDE_CODE_AUTO_COMPACT_WINDOW'], '600000')
+
     def test_context_policy_on_manager_worker_and_resume(self):
         cache = self.home / '.codex/models_cache.json'
         cache.write_text(json.dumps({'models': [{'slug': 'gpt-6-luna', 'context_window': 128000}]}))

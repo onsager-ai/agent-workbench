@@ -61,6 +61,13 @@ class ModelsConfigTests(unittest.TestCase):
         self.assertTrue(source['user_config_exists'])
         self.assertTrue(source['user_config_used'])
 
+    def test_context_override_can_increase_or_decrease_the_default(self):
+        for limit in (100000, 600000, 1000000):
+            with self.subTest(limit=limit):
+                self.write_config({'max_context_tokens': limit})
+                effective, _ = self.load({'XDG_CONFIG_HOME': str(self.xdg)})
+                self.assertEqual(effective['max_context_tokens'], limit)
+
     def test_fractional_values_and_zero_rework_preserve_controller_semantics(self):
         self.write_config({'roles': {'luna': {'timeout_s': 0.2}},
                            'sol_weekly_brake_percent': 55.5, 'max_auto_rework': 0})
@@ -104,7 +111,7 @@ class ModelsConfigTests(unittest.TestCase):
             ('negative prompt limit', b'{"max_prompt_bytes":-1}', 'max_prompt_bytes'),
             ('above log ceiling', b'{"max_log_bytes":8388609}', 'max_log_bytes'),
             ('above prompt ceiling', b'{"max_prompt_bytes":262145}', 'max_prompt_bytes'),
-            ('above context ceiling', b'{"max_context_tokens":300001}', 'max_context_tokens'),
+            ('negative context', b'{"max_context_tokens":-1}', 'max_context_tokens'),
             ('zero context', b'{"max_context_tokens":0}', 'max_context_tokens'),
             ('fractional context', b'{"max_context_tokens":1.5}', 'max_context_tokens'),
             ('boolean context', b'{"max_context_tokens":true}', 'max_context_tokens'),

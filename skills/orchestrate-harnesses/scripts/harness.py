@@ -31,7 +31,6 @@ TERMINAL = ('cancelled', 'abandoned')
 HARD_MAX_LOG_BYTES = 8 * 1024 * 1024
 HARD_MAX_PROMPT_BYTES = 262144
 MAX_FINITE_FLOAT_INT = int(sys.float_info.max)
-HARD_MAX_CONTEXT_TOKENS = 300000
 HARD_MAX_BUDGET_USD = 10
 FIXED_CLIS = {'manager': 'claude', **{tier: 'codex' if index % 2 == 0 else 'claude'
                                     for index, tier in enumerate(TIERS)}}
@@ -161,9 +160,11 @@ def _validate_models(models, path, defaults):
     finite_positive(models.get('sol_weekly_brake_percent'), 'sol_weekly_brake_percent')
     if models['sol_weekly_brake_percent'] > 100:
         _config_error(path, 'sol_weekly_brake_percent', 'must not exceed 100')
+    exact_type(models.get('max_context_tokens'), int, 'max_context_tokens')
+    if models['max_context_tokens'] <= 0:
+        _config_error(path, 'max_context_tokens', 'must be a positive integer')
     for name, ceiling in (('max_log_bytes', HARD_MAX_LOG_BYTES),
-                          ('max_prompt_bytes', HARD_MAX_PROMPT_BYTES),
-                          ('max_context_tokens', HARD_MAX_CONTEXT_TOKENS)):
+                          ('max_prompt_bytes', HARD_MAX_PROMPT_BYTES)):
         exact_type(models.get(name), int, name)
         if not 0 < models[name] <= ceiling:
             _config_error(path, name, f'must be positive and no greater than hard ceiling {ceiling}')
@@ -666,7 +667,7 @@ def prompt_for(task, state, contract, role, models):
 
 def context_limit(models, config):
     """Use exact installed model metadata when available; never invent a native window."""
-    ceiling = min(models['max_context_tokens'], HARD_MAX_CONTEXT_TOKENS)
+    ceiling = models['max_context_tokens']
     if config['cli'] == 'codex':
         catalog = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')) / 'models_cache.json'
         try:
