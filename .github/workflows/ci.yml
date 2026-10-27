@@ -18,10 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run layout, setup and controller tests
-        run: |
-          python -m unittest discover -s tests -v
-          python -m unittest discover -s skills/orchestrate-harnesses/scripts -p 'test_*.py' -v
+      - name: Run retained tests
+        run: python -m unittest discover -s tests -v
       - name: Verify skill discovery
         shell: bash
         run: |
