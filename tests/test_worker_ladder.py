@@ -29,6 +29,9 @@ class WorkerProtocolTests(unittest.TestCase):
             with self.assertRaises(h.Error):
                 h.schema(dict(result, next_role=role), spec)
         self.assertEqual(models['max_context_tokens'], 300000)
+        self.assertEqual(models['roles']['terra']['model'], 'gpt-6.1-terra')
+        for tier in ('haiku', 'sonnet', 'opus'):
+            self.assertIsNone(models['roles'][tier]['budget_usd'])
 
     def test_lower_context_and_claude_budgets_are_valid(self):
         models = json.loads((SKILL / 'models.json').read_text())
@@ -38,10 +41,9 @@ class WorkerProtocolTests(unittest.TestCase):
             lowered['roles'][tier]['budget_usd'] = .10
         h._validate_models(lowered, 'fixture', models)
         for tier in ('haiku', 'sonnet', 'opus'):
-            invalid = json.loads(json.dumps(models))
-            invalid['roles'][tier]['budget_usd'] = h.HARD_MAX_BUDGET_USD + 1
-            with self.assertRaisesRegex(h.Error, 'roles.' + tier + '.budget_usd'):
-                h._validate_models(invalid, 'fixture', models)
+            configured = json.loads(json.dumps(models))
+            configured['roles'][tier]['budget_usd'] = 42
+            h._validate_models(configured, 'fixture', models)
 
 
 if __name__ == '__main__':

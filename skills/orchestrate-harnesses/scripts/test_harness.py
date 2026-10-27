@@ -864,12 +864,27 @@ class HarnessTests(unittest.TestCase):
                 self.assertEqual(args[args.index(flag) + 1], models['roles'][tier]['model'])
                 if record['requested_cli'] == 'claude':
                     self.assertEqual(len(self.probe_calls()), probes)
-                    self.assertEqual(args[args.index('--max-budget-usd') + 1], str(models['roles'][tier]['budget_usd']))
+                    self.assertNotIn('--max-budget-usd', args)
                     self.assertEqual(self.calls()[-1]['env']['CLAUDE_CODE_DISABLE_AUTO_MEMORY'], '1')
                 else:
                     self.assertGreater(len(self.probe_calls()), probes)
                 self.assertEqual(self.run_role(request='resume', resume=True)['execution_status'], 'completed')
                 self.assertIn('--resume' if record['requested_cli'] == 'claude' else 'resume', self.calls()[-1]['args'])
+
+    def test_claude_budget_is_optional_and_only_configured_amount_reaches_cli(self):
+        path = self.xdg / 'agent-workbench/models.json'
+        path.parent.mkdir()
+        for budget in (None, 42.5, None):
+            with self.subTest(budget=budget):
+                path.write_text(json.dumps({'roles': {'haiku': {'budget_usd': budget}}}))
+                models, _ = h.load_effective_models()
+                args = h.command(self.contract, 'worker', models['roles']['haiku'],
+                                 self.root / 'out', 'owned-worker', models)
+                if budget is None:
+                    self.assertNotIn('--max-budget-usd', args)
+                else:
+                    self.assertEqual(args[args.index('--max-budget-usd') + 1], str(budget))
+                self.assertEqual(args[args.index('--resume') + 1], 'owned-worker')
 
     def test_resume_rejects_model_provider_and_tier_changes(self):
         self.run_role()

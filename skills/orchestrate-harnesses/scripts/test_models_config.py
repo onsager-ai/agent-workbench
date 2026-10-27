@@ -116,7 +116,7 @@ class ModelsConfigTests(unittest.TestCase):
             ('zero context', b'{"max_context_tokens":0}', 'max_context_tokens'),
             ('fractional context', b'{"max_context_tokens":1.5}', 'max_context_tokens'),
             ('boolean context', b'{"max_context_tokens":true}', 'max_context_tokens'),
-            ('above budget ceiling', b'{"roles":{"opus":{"budget_usd":10.01}}}', 'roles.opus.budget_usd'),
+            ('boolean budget', b'{"roles":{"opus":{"budget_usd":true}}}', 'roles.opus.budget_usd'),
         ]
         for label, content, field in cases:
             with self.subTest(label=label):

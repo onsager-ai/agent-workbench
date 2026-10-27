@@ -33,7 +33,6 @@ TERMINAL = ('cancelled', 'abandoned')
 HARD_MAX_LOG_BYTES = 8 * 1024 * 1024
 HARD_MAX_PROMPT_BYTES = 262144
 MAX_FINITE_FLOAT_INT = int(sys.float_info.max)
-HARD_MAX_BUDGET_USD = 10
 FIXED_CLIS = {tier: 'codex' if index % 2 == 0 else 'claude'
               for index, tier in enumerate(TIERS)}
 
@@ -150,9 +149,8 @@ def _validate_models(models, path, defaults):
                 if not value.strip():
                     _config_error(path, item, 'must be a nonempty string')
             elif name in ('timeout_s', 'budget_usd'):
-                finite_positive(value, item)
-                if name == 'budget_usd' and value > HARD_MAX_BUDGET_USD:
-                    _config_error(path, item, f'must not exceed hard ceiling {HARD_MAX_BUDGET_USD} USD')
+                if name != 'budget_usd' or value is not None:
+                    finite_positive(value, item)
             else:
                 _config_error(path, item, 'unsupported role field')
 
@@ -212,7 +210,7 @@ def load_effective_models(base=None, env=None, home=None):
                         if type(value) is not str or not value.strip():
                             _config_error(config_path, field, 'expected a nonempty string')
                     elif name in ('timeout_s', 'budget_usd'):
-                        if not _finite_number(value) or value <= 0:
+                        if not (name == 'budget_usd' and value is None) and (not _finite_number(value) or value <= 0):
                             _config_error(config_path, field, 'expected a finite positive number')
                 effective['roles'][role].update(role_override)
         for name in ('max_auto_rework', 'sol_weekly_brake_percent', 'max_log_bytes', 'max_prompt_bytes', 'max_context_tokens'):
@@ -745,7 +743,9 @@ def command(contract, role, config, result_file, session, models=None):
     args = ['claude', '-p', '--model', config['model'], '--effort', config['effort'], *claude_tools(contract),
             '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disallowedTools', 'mcp__*,Agent,Task',
             '--settings', '{"autoMemoryEnabled":false,"autoCompactEnabled":true}',
-            '--output-format', 'json', '--json-schema', read(response, 32768).decode(), '--max-budget-usd', str(config['budget_usd'])]
+            '--output-format', 'json', '--json-schema', read(response, 32768).decode()]
+    if config['budget_usd'] is not None:
+        args += ['--max-budget-usd', str(config['budget_usd'])]
     return args + (['--resume', session] if session else [])
 
 

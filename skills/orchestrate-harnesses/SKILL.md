@@ -40,21 +40,21 @@ For example, adjust one Worker's timeout:
 {"roles": {"luna": {"timeout_s": 900}}}
 ~~~
 
-Role keys are `luna`, `haiku`, `terra`, `sonnet`, `sol`, `opus`. Supported per-role fields are `model`, `effort`, `timeout_s` and, where present, `budget_usd`. `cli` routing is fixed. Existing top-level knobs are `max_auto_rework`, `sol_weekly_brake_percent`, `max_log_bytes`, `max_prompt_bytes`, `max_context_tokens`; `version` may be omitted or `1`. Byte limits cannot exceed the controller caps (256 KiB prompt, 8 MiB logs), dispatch timeouts are capped at 3600 seconds, and Claude budgets must be positive and at most $10. `max_auto_rework` is nonnegative, including zero. `max_context_tokens` is a positive integer with no additional fixed controller ceiling.
+Role keys are `luna`, `haiku`, `terra`, `sonnet`, `sol`, `opus`. Supported per-role fields are `model`, `effort`, `timeout_s` and, where present, `budget_usd`. `cli` routing is fixed. Existing top-level knobs are `max_auto_rework`, `sol_weekly_brake_percent`, `max_log_bytes`, `max_prompt_bytes`, `max_context_tokens`; `version` may be omitted or `1`. Byte limits cannot exceed the controller caps (256 KiB prompt, 8 MiB logs), dispatch timeouts are capped at 3600 seconds, and an explicitly configured Claude budget must be a finite positive number. `budget_usd: null` (the distributed default) omits the CLI amount limit; positive values are passed unchanged without a controller-imposed monetary ceiling. `max_auto_rework` is nonnegative, including zero. `max_context_tokens` is a positive integer with no additional fixed controller ceiling.
 
 Changes apply to the next Worker dispatch. A running Worker retains its model; changed model/provider/tier requires fresh reconstruction rather than session resume. To restore defaults, remove the per-user override. This configuration does not select the interactive Manager's model, budget or permissions. Its context target also belongs in native session configuration; the Worker adapter cannot retrofit an already running Manager.
 
 ## Worker ladder and migration
 
-| Level | Default Codex tier/model/effort | Alternative Claude tier/model/effort | Claude budget / timeout |
+| Level | Default Codex tier/model/effort | Alternative Claude tier/model/effort | Default timeout |
 | --- | --- | --- | --- |
-| L1 | luna / gpt-6-luna / max | haiku / claude-haiku-5-5 / medium | $0.40 / 1200s |
-| L2 | terra / gpt-5.6-terra / medium | sonnet / claude-sonnet-5-5 / medium | $1.50 / 1200s |
-| L3 | sol / gpt-6.1-sol / high | opus / claude-opus-5-5 / medium | $4.00 / 1200s |
+| L1 | luna / gpt-6-luna / max | haiku / claude-haiku-5-5 / medium | 1200s |
+| L2 | terra / gpt-6.1-terra / medium | sonnet / claude-sonnet-5-5 / medium | 1200s |
+| L3 | sol / gpt-6.1-sol / high | opus / claude-opus-5-5 / medium | 1200s |
 
 Start with Luna and prefer Codex. Terra's catalog ID is configurable through `roles.terra.model`; availability remains account-specific. Codex timeouts also default to 1200s. Compare the selected level with the last counted Worker attempt (L1 before the first). Upward skips need a separate `LADDER_SKIP_JUSTIFIED:` line and reason in the Manager decision.
 
-Claude is an expensive alternative. Its decision must start with `CLAUDE_COST_JUSTIFIED:` and a reason explaining why Codex is insufficient and what the configured bounded call will resolve. Same-level provider changes need that justification too. No automatic escalation, fallback or retry.
+Claude is an expensive alternative. Its decision must start with `CLAUDE_COST_JUSTIFIED:` and a reason explaining why Codex is insufficient, what the attempt resolves and its configured timeout; mention a monetary cap only when configured. Do not invent a budget in the brief or skill. A null budget removes workbench's amount limit, not native billing or quota limits. Same-level provider changes need that justification too. No automatic escalation, fallback or retry.
 
 Apply `sol_weekly_brake_percent` to Sol. Fresh usage at or above the brake blocks it. Unknown/stale usage requires `decision` to start with `SOL_USAGE_UNKNOWN_BOUNDED_EXCEPTION:` and a bounded reason; never read credentials to obtain usage. Add a skip marker on a separate line if needed.
 
