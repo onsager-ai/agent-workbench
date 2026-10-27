@@ -1,50 +1,60 @@
-"""CI regression checks for the distributed Worker/Manager protocol."""
+"""Configuration contract for native Worker model selection."""
 import json
+import math
 from pathlib import Path
-import sys
 import unittest
 
+
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / 'skills/orchestrate-harnesses'
-sys.path.insert(0, str(SKILL / 'scripts'))
-import harness as h
+MODELS_PATH = ROOT / "skills/orchestrate-harnesses/models.json"
+EXPECTED_WORKERS = {
+    "luna": ("codex", "gpt-6-luna", "max"),
+    "haiku": ("claude", "claude-haiku-5-5", "medium"),
+    "terra": ("codex", "gpt-6.1-terra", "medium"),
+    "sonnet": ("claude", "claude-sonnet-5-5", "medium"),
+    "sol": ("codex", "gpt-6.1-sol", "high"),
+    "opus": ("claude", "claude-opus-5-5", "medium"),
+}
 
 
-class WorkerProtocolTests(unittest.TestCase):
-    def test_distributed_config_and_output_schema_share_all_tiers(self):
-        models = json.loads((SKILL / 'models.json').read_text())
-        spec = json.loads((SKILL / 'references/response.schema.json').read_text())
-        h._validate_models(models, SKILL / 'models.json', models)
-        self.assertEqual(set(models['roles']), set(h.TIERS))
-        self.assertNotIn('manager', models['roles'])
-        self.assertEqual(h.ROLES, ('worker',))
-        self.assertEqual(h.MESSAGE_ROLES, ('manager', 'worker'))
-        self.assertEqual(spec['properties']['worker_tier']['enum'], list(h.TIERS))
-        result = dict(task_id='protocol', ack_message_ids=['original'], outcome='complete',
-                      summary='done', findings=[], next_role='manager', worker_tier='luna',
-                      decision='bounded', evidence=[])
-        for tier in h.TIERS:
-            h.schema(dict(result, worker_tier=tier), spec)
-        for role in ('preflight', 'acceptance'):
-            with self.assertRaises(h.Error):
-                h.schema(dict(result, next_role=role), spec)
-        self.assertEqual(models['max_context_tokens'], 300000)
-        self.assertEqual(models['roles']['terra']['model'], 'gpt-6.1-terra')
-        for tier in ('haiku', 'sonnet', 'opus'):
-            self.assertIsNone(models['roles'][tier]['budget_usd'])
+class WorkerConfigurationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.models = json.loads(MODELS_PATH.read_text(encoding="utf-8"))
 
-    def test_lower_context_and_claude_budgets_are_valid(self):
-        models = json.loads((SKILL / 'models.json').read_text())
-        lowered = json.loads(json.dumps(models))
-        lowered['max_context_tokens'] = 100000
-        for tier in ('haiku', 'sonnet', 'opus'):
-            lowered['roles'][tier]['budget_usd'] = .10
-        h._validate_models(lowered, 'fixture', models)
-        for tier in ('haiku', 'sonnet', 'opus'):
-            configured = json.loads(json.dumps(models))
-            configured['roles'][tier]['budget_usd'] = 42
-            h._validate_models(configured, 'fixture', models)
+    def test_worker_tiers_keep_the_distributed_models_and_efforts(self) -> None:
+        roles = self.models["roles"]
+        self.assertEqual(set(roles), set(EXPECTED_WORKERS))
+        self.assertNotIn("manager", roles)
+        self.assertNotIn("reviewer", roles)
+
+        for tier, expected in EXPECTED_WORKERS.items():
+            with self.subTest(tier=tier):
+                role = roles[tier]
+                cli = expected[0]
+                self.assertEqual((role["cli"], role["model"], role["effort"]), expected)
+                fields = {"cli", "model", "effort", "timeout_s"}
+                if cli == "claude":
+                    fields.add("budget_usd")
+                    self.assertIsNone(role["budget_usd"])
+                self.assertEqual(set(role), fields)
+                self.assertIs(type(role["timeout_s"]), int)
+                self.assertGreater(role["timeout_s"], 0)
+
+    def test_shared_policy_fields_are_valid_configuration(self) -> None:
+        self.assertEqual(
+            set(self.models),
+            {"version", "roles", "max_auto_rework", "sol_weekly_brake_percent", "max_context_tokens"},
+        )
+        self.assertEqual(self.models["version"], 1)
+        self.assertIs(type(self.models["max_auto_rework"]), int)
+        self.assertGreaterEqual(self.models["max_auto_rework"], 0)
+        brake = self.models["sol_weekly_brake_percent"]
+        self.assertTrue(type(brake) in (int, float) and math.isfinite(brake))
+        self.assertGreater(brake, 0)
+        self.assertLessEqual(brake, 100)
+        self.assertIs(type(self.models["max_context_tokens"]), int)
+        self.assertGreater(self.models["max_context_tokens"], 0)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

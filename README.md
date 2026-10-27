@@ -4,30 +4,31 @@ Six portable skills for Codex and Claude Code:
 
 - disk-cleanup — inspect and reclaim safe, regenerable disk usage.
 - manage-lane — maintain task intent, authorization and handovers.
-- orchestrate-harnesses — coordinate engineering work across agent roles with explicit contracts and lifecycle controls.
+- orchestrate-harnesses — coordinate native Workers and HAPI Managers with scoped briefs and native lifecycle controls.
 - prompt-for-decisions — present a real unresolved user choice with evidence and trade-offs.
 - review-storybook — review interactive Storybook previews against a specific revision.
 - workbench-setup — explicitly apply shared global instructions while preserving personal text.
 
-## Requirements
+## Requirements and workflow
 
-The skills CLI requires Node.js 22.20 or newer.
+The skills CLI requires Node.js 22.20 or newer. The optional global-instruction installer requires Python 3.11+ on Linux or macOS. Engineering work uses the installed/authenticated native harness and HAPI tools; distributing skills does not install those tools or provide credentials.
 
-The bundled orchestration controller is Linux-only and requires Python 3.11+ and the native agent CLIs already installed and authenticated in the user's environment. Installing skills with npx does not install those tools or provide credentials.
+The current interactive session is the **Manager**, using its selected native model. It talks with the user, delegates substantial work, manages amendments and verifies delivery. Prefer the harness's **built-in subagents as Workers** for same-harness implementation, investigation and review. The Manager owns delegation; Workers do not create nested agents. HAPI coordinates Managers across harnesses, sessions and machines through sourced checkpoints and explicit ownership handover. See [native Worker workflow](skills/orchestrate-harnesses/SKILL.md#native-worker-workflow) and [HAPI synchronization](skills/orchestrate-harnesses/references/hapi-sync.md).
 
-Orchestration keeps its distributed model settings as defaults and supports partial per-user overrides at `$XDG_CONFIG_HOME/agent-workbench/models.json` (or `~/.config/agent-workbench/models.json` when XDG is unset, empty or relative). Skill updates leave that user file alone. See [local model configuration](skills/orchestrate-harnesses/SKILL.md#local-model-configuration) for supported fields, precedence, and the read-only effective-config command.
+Workers use a Codex-first ladder: **Luna max / Haiku medium → Terra medium / Sonnet medium → Sol high / Opus medium**. Terra defaults to `gpt-6.1-terra`. Escalation needs evidence; Claude alternatives need a cost justification. Model IDs, efforts, timeouts, optional monetary caps, rework policy and context targets live in [models.json](skills/orchestrate-harnesses/models.json), with partial per-user overrides described in [local model configuration](skills/orchestrate-harnesses/SKILL.md#local-model-configuration). No fixed amount ceiling is imposed; `budget_usd: null` adds no monetary cap.
 
-The current interactive HAPI session is the **Manager**, using its selected native model. It communicates with the user, plans and dispatches Workers, and verifies delivery against actual revision/diff, CI and authorized remote evidence. There is no Gateway or separate headless Manager call. Plans and verdicts are recorded with `submit TASK manager`; only Workers dispatch.
+Managers apply these settings through actual native tool capabilities. A configured target does not establish native model/effort, timeout, monetary budget, context or permission enforcement. Report unsupported/unverified settings, preserve the user's native permissions, and hold dependent work when a missing control is required. Do not substitute prompt limits for native configuration or claim compaction is a hard request-token cap. The same applies to already-running Manager sessions.
 
-Managers synchronize important global decisions and scoped task information through HAPI peer discovery, inspection and messages. They pull checkpoints on startup/resume, notify relevant active Managers and hand over task ownership explicitly across machines. This uses the existing hub/namespace and session history, with bounded discovery and acknowledgement reporting; it is a workflow, not a background guaranteed broadcast service. See [HAPI synchronization](skills/orchestrate-harnesses/references/hapi-sync.md).
+Workbench has no custom orchestration runtime, task database or process supervisor. The standalone Python controller, permission probe, old-role/session compatibility code and JSON dispatch/response contracts have been removed. Existing private historical records are left alone. Native runs use their tool IDs, briefs and existing task/PR evidence; they do not create another Python-managed task record.
 
-Workers use a Codex-first ladder: **Luna max / Haiku medium → Terra medium / Sonnet medium → Sol high / Opus medium**. Escalation is adjacent unless explicitly justified. Claude alternatives require a cost justification and a bounded timeout. Monetary caps are optional configuration (`budget_usd: null` by default); workbench adds no fixed amount ceiling or implicit CLI budget. Terra defaults to the installed catalog ID `gpt-6.1-terra`. Per-user overrides naming `manager` or removed reviewer roles must be migrated; historical task originals/results remain readable. See the [ladder and migration rules](skills/orchestrate-harnesses/SKILL.md#worker-ladder-and-migration).
+The remaining Python files have narrow purposes:
 
-All dispatched Worker calls, including resumes, receive the context/compaction limit from `max_context_tokens` in the effective model configuration, overridable upward or downward without a fixed controller ceiling, preserving smaller native windows. Native CLI compaction is advisory rather than hard request-token enforcement; unknown Codex native windows are left untouched and Claude uses its supported auto-compact window. See [context policy and limitations](skills/orchestrate-harnesses/SKILL.md#per-dispatch-context-policy). Manager context targets must also use native session configuration from the effective policy. Workbench does not automatically retrofit an already running HAPI Manager; unknown or unapplied settings are reported as a coverage gap, without prompt-based limits or changing its selected model.
+| Files | Purpose |
+| --- | --- |
+| `skills/workbench-setup/scripts/workbench.py` | Optional install/update/status/uninstall of shared global instructions, launcher and private backups |
+| `tests/test_*.py` | CI checks for package layout, model defaults and installer behavior; no orchestration service |
 
-OS sandboxing is optional. Codex Workers use the user's explicitly evidenced permission policy: `danger-full-access` runs without an additional Codex OS sandbox, while `workspace-write` and `read-only` request isolation. Worktrees keep task changes separate; they do not enforce a security boundary. The editable task example shows an explicit full-access choice; replace its policy and evidence with the current user's actual choice.
-
-Worker dispatch requires an explicit v2 contract recording policy source/evidence, sandbox mode and approval policy. Read-only tasks are capped at read-only. A bounded no-inference startup probe validates resolved CLI policy and execution before each Codex Worker run; failures block without widening permissions or consuming inference attempts. Claude Workers use explicit policy-derived tool allowlists, no MCP/nested agents and no automatic memory. Workspace-write Claude dispatch is blocked because an allowlist cannot establish OS confinement; Manager can choose Codex under the existing policy. Full-access Claude calls pre-allow named tools without bypass mode. The Codex startup probe does not cover Claude. Historical v1 status and interactive Manager submissions remain available, but v1 Worker dispatch requires a new v2 task. See [Worker permission policy](skills/orchestrate-harnesses/references/worker-permissions.md).
+Setup preserves personal text outside its managed block. Reconcile old private Gateway/controller rules and obsolete model overrides explicitly; workbench does not silently rewrite them.
 
 ## Install globally
 
@@ -95,7 +96,7 @@ The --copy option installs independent copies in the project. This is useful whe
 
 ## Set up a new machine
 
-Install Node.js 22.20 or newer, then run the global install command above. To keep skills current later, run the global update command. For optional global instructions, install Python 3.11+ and run the explicit setup step. For orchestration, also install the native CLIs you intend to use, then authenticate those CLIs through their own supported setup. This repository does not manage credentials or agent authentication.
+Install Node.js 22.20 or newer, then run the global install command above. To keep skills current later, run the global update command. For optional global instructions, install Python 3.11+ and run the explicit setup step. For engineering work, enable the native harness subagent tools and HAPI capabilities you intend to use and authenticate through their supported setup. This repository does not manage credentials or agent authentication.
 
 ## License
 

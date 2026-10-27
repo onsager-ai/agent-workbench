@@ -10,7 +10,5 @@
   },
   "max_auto_rework": 2,
   "sol_weekly_brake_percent": 60,
-  "max_log_bytes": 8388608,
-  "max_prompt_bytes": 98304,
   "max_context_tokens": 300000
 }

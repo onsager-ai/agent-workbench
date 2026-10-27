@@ -9,7 +9,7 @@ Use this skill when the user's answer is necessary to choose the next action and
 
 ## Ownership
 
-The current Manager asks the user and resolves engineering choices within the contract, including the brief, Worker tier and rework. Worker and reviewer findings return to that Manager; they do not each open a user decision round. If a choice exceeds the contract or needs a user trade-off, present the bounded recommendation and supporting evidence directly to the user.
+The current Manager asks the user and resolves engineering choices within the authorized scope, including the brief, Worker tier and rework. Worker and reviewer findings return to that Manager; they do not each open a user decision round. If a choice exceeds the authorized scope or needs a user trade-off, present the bounded recommendation and supporting evidence directly to the user.
 
 This skill owns the question's presentation, not task intake, model routing, review policy or queue management. Use manage-lane for task continuity. This skill is self-contained; no Claude command or historical instruction chain needs loading to ask a question.
 
@@ -25,4 +25,4 @@ Use the available native question UI for task choices when its current tool cont
 
 Make the question self-contained: identify the task and exact unresolved action, the relevant evidence and prior decision, the recommended option and its cost. Put the recommendation first, mark it as recommended, and include only feasible alternatives with real trade-offs. State whether the answer is required before dependent work can proceed or is an optional preference with a safe default.
 
-While an answer is required, continue only independent authorized work. A preselected option, silence or elapsed time is not approval. Record the actual answer with its user source. For orchestrated work, deliver a changed requirement through the amendment protocol and refresh affected planning/review; scope outside an immutable contract needs a successor task. Publish settled important decisions to the affected Managers through the HAPI synchronization protocol. Report a pending decision as pending rather than assuming it reached every role.
+While an answer is required, continue only independent authorized work. A preselected option, silence or elapsed time is not approval. Record the actual answer with its user source. For delegated work, deliver changed requirements through supported native messaging, confirm material acknowledgements and refresh the affected brief/review; scope expansion needs actual authority and an updated linked brief. Publish settled important decisions to the affected Managers through the HAPI synchronization protocol. Report a pending decision as pending rather than assuming it reached every role.
