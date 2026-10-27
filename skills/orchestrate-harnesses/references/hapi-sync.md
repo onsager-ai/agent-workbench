@@ -26,9 +26,9 @@ Use `scope=global` for workbench/user-wide rules and `scope=<canonical-repositor
 
 After publishing, send the compact update to all **known active registered Managers** for global scope, or active registered Managers in the affected project/task scope. Refresh activity before sending, exclude self, and use actual resolved session IDs. Do not notify ordinary sessions, Workers or reviewers. Do not deliberately resume inactive/archived Managers for routine sync; they pull checkpoints when resumed. An explicit user-authorized handover may resume its named target.
 
-Always send peer-session messages with **steering** delivery, never queued delivery. This applies to updates, acknowledgements, nudges and handovers, including messages sent after an authorized resume. Select steering explicitly when the interface exposes a delivery mode; otherwise verify that its implementation always steers before sending.
+Send peer-session updates, acknowledgements, nudges and handovers as ordinary HAPI messages using `ping_peer` or `hapi ping-peer`, including messages sent after an authorized resume. Do not require or select steering, and do not leave messages unsent because steering is unavailable.
 
-The receiver acknowledges the update ID after reading it, incorporates the current decision and retains its original provenance. An acknowledgement is not a user amendment and must not be inserted into the task's original-user-message channel. Duplicate updates are ignored; do not echo or rebroadcast received updates or acknowledgements. Send a corrected update only when the underlying information changes. Record steering submissions, acknowledgements and missing delivery separately; a successful steering send is not proof the Manager read it. Do not loop on missing acknowledgements.
+The receiver acknowledges the update ID after reading it, incorporates the current decision and retains its original provenance. An acknowledgement is not a user amendment and must not be inserted into the task's original-user-message channel. Duplicate updates are ignored; do not echo or rebroadcast received updates or acknowledgements. Send a corrected update only when the underlying information changes. Record message submissions, acknowledgements and missing delivery separately; a successful send is not proof the Manager read it. Do not loop on missing acknowledgements.
 
 ## Task ownership and handover
 
@@ -38,14 +38,15 @@ A portable handover includes original user sources, current authorization/holds,
 
 ## Native capabilities and limits
 
-Prefer MCP `list_peers` and `inspect_peer` for discovery and reads. Use `ping_peer` for sending only when its exposed schema or verified implementation supports steering. Tool namespaces differ by harness; discover the actual schema rather than hardcoding a tool prefix. Read-only shell equivalents for an already configured HAPI CLI are:
+Prefer MCP `list_peers` and `inspect_peer` for discovery and reads, and `ping_peer` for ordinary messages. Tool namespaces differ by harness; discover the actual schema rather than hardcoding a tool prefix. Shell equivalents for an already configured HAPI CLI are:
 
 ~~~sh
 hapi ping-peer --list
 hapi inspect-peer SESSION_ID --limit 50
+hapi ping-peer SESSION_ID "MESSAGE"
 ~~~
 
-Before using a CLI send command, inspect its installed help/schema and verify steering support. Do not assume that a plain `ping_peer` call or `hapi ping-peer` command steers, or invent a steering flag or argument. If no available interface provides verified steering, leave the message unsent, report the capability gap and continue independent authorized work. Do not fall back to queued delivery or bypass the peer surface with raw JWT/HTTP calls.
+Use the ordinary message parameters without selecting a delivery mode or adding a steering flag. Do not gate sending on steering support or bypass the peer surface with raw JWT/HTTP calls.
 
 `inspect_peer` is read-only and does not resume the target. `ping_peer` can resume an inactive target, including a race after checking activity; checking first is a workflow precaution, not an enforced no-wake guarantee. Report an unexpected resume. Do not invent a no-resume flag or use raw JWT/HTTP replacements.
 
