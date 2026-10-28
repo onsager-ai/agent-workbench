@@ -53,14 +53,14 @@ Use a service drop-in, preserving existing overrides:
 EnvironmentFile=%h/.config/hapi-fly/runner.env
 ```
 
-For a requested Magpie setup, configure the user-level Codex config with the following provider settings, preserving the chosen model and unrelated configuration:
+For a requested Magpie setup, configure the user-level Codex config with the following provider settings, preserving the chosen model and unrelated configuration. Replace the example URL with the user's endpoint from private local configuration; keep real deployment hostnames out of this public skill:
 
 ```toml
 model_provider = "magpie"
 
 [model_providers.magpie]
 name = "Magpie Gateway"
-base_url = "https://magpie.onsager.ai/v1"
+base_url = "https://gateway.example.com/v1"
 env_key = "MAGPIE_API_KEY"
 wire_api = "responses"
 requires_openai_auth = false
