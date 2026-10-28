@@ -1,8 +1,9 @@
 # Agent Workbench Skills
 
-Six portable skills for Codex and Claude Code:
+Seven portable skills for Codex and Claude Code:
 
 - disk-cleanup — inspect and reclaim safe, regenerable disk usage.
+- hapi-runner-setup — manage a HAPI systemd user service and private provider credentials when explicitly requested.
 - manage-lane — maintain task intent, authorization and handovers.
 - orchestrate-harnesses — coordinate native Workers and HAPI Managers with scoped briefs and native lifecycle controls.
 - prompt-for-decisions — present a real unresolved user choice with evidence and trade-offs.
