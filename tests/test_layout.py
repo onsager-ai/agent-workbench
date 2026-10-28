@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_SKILLS = {
     "disk-cleanup",
+    "hapi-runner-setup",
     "manage-lane",
     "orchestrate-harnesses",
     "prompt-for-decisions",
