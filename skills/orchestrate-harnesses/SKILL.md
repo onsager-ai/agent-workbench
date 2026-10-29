@@ -5,7 +5,7 @@ description: Manage engineering work with native harness subagents as Workers, c
 
 # Manage engineering work
 
-The current user-facing session is the Manager. Keep its selected model and native permissions. It talks with the user, plans work, dispatches Workers, handles amendments and verifies delivery. Handle small answers and routine edits directly; delegate substantial implementation and useful independent investigation/review. A Worker or reviewer contract takes precedence and prohibits nested delegation.
+The current user-facing session is the Manager. Keep its selected model and native permissions. It talks with the user, plans work, dispatches Workers, handles amendments and verifies delivery. Handle small answers and routine edits directly. Delegate substantial implementation, multi-file investigation and independent review to native Workers by default, running independent pieces in parallel; do not keep substantial work inline because the available native tier differs from a configured preference. A Worker or reviewer contract takes precedence and prohibits nested delegation.
 
 Prefer the harness's built-in subagent tools for Workers in the same harness. Use HAPI for coordination between Managers and for an explicitly owned cross-harness/session/machine handover. Workbench supplies policy and configuration; the native harness and HAPI supply execution and session lifecycle. Do not introduce a parallel controller, task database, process supervisor or CLI wrapper.
 
@@ -51,15 +51,15 @@ Old `roles.manager`, `roles.preflight`, `roles.acceptance` and controller-only l
 
 ## Worker ladder
 
-| Level | Codex first | Claude alternative |
+| Level | Codex harness | Claude harness |
 | --- | --- | --- |
 | L1 | luna / gpt-6-luna / max | haiku / claude-haiku-5-5 / medium |
 | L2 | terra / gpt-6.1-terra / medium | sonnet / claude-sonnet-5-5 / medium |
 | L3 | sol / gpt-6.1-sol / high | opus / claude-opus-5-5 / medium |
 
-Use effective configuration if it overrides a model or effort. Prefer Luna initially; escalate with actual complexity, defects or failed-attempt evidence. Move upward one level at a time unless the Manager records a concrete skip reason. An unavailable native model requires an explicit routing decision, not automatic stronger-model substitution.
+Workers start on the Manager's own harness: a Codex Manager uses the Codex column and a Claude Manager the Claude column, both through native subagents. Use effective configuration if it overrides a model or effort. Start at L1; escalate with actual complexity, defects or failed-attempt evidence. Move upward one level at a time unless the Manager records a concrete skip reason. An unavailable native model requires an explicit routing decision, not automatic stronger-model substitution.
 
-Before selecting a Claude model, record why the Codex option is insufficient, what this attempt resolves and its configured timeout; mention a monetary cap only when configured. Compare effective provider prices rather than assuming cost from the harness name: DeepSeek Flash through Claude Code is not a Claude model. Do not select Claude merely because an inexpensive attempt failed once. No automatic provider fallback, tier change or retry.
+A same-harness native Worker needs no justification beyond its brief. A cross-harness Worker is an explicit Manager choice for a concrete capability or cost reason, routed through an owned HAPI session or handover; record the reason, what the attempt resolves and its configured timeout, and mention a monetary cap only when configured. Compare effective provider prices rather than assuming cost from the harness name: DeepSeek Flash through Claude Code is not a Claude model. No automatic provider fallback, tier change or retry.
 
 Honor the configured Sol weekly brake. Fresh usage at or above it blocks Sol. Unknown/stale usage needs an explicit bounded Manager exception; never read credentials to obtain usage. Apply `max_auto_rework` across tiers after the initial attempt. At the limit, explicitly reconsider the brief, scope, tier or a real user decision using actual evidence; never silently reset the count or run endless cheap retries. These are Manager decisions applied through native tools, not checks enforced by a Python controller.
 

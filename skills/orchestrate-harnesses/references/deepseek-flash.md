@@ -1,6 +1,6 @@
 # DeepSeek Flash worker pilot
 
-Use the effective `roles.flash` configuration for an optional bounded Worker attempt: CI failure diagnosis from supplied logs, repository exploration with file/line evidence, a small implementation task, or a second pass over a diff. The Manager retains planning, acceptance and delivery responsibility. Keep the default Codex-first ladder until real task results justify a change.
+Use the effective `roles.flash` configuration for an optional bounded Worker attempt: CI failure diagnosis from supplied logs, repository exploration with file/line evidence, a small implementation task, or a second pass over a diff. The Manager retains planning, acceptance and delivery responsibility. Keep the default native ladder until real task results justify a change.
 
 ## Route through the available native harness
 
