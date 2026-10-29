@@ -31,7 +31,7 @@ The remaining Python files have narrow purposes:
 | `skills/workbench-setup/scripts/workbench.py` | Optional install/update/status/uninstall of shared global instructions, launcher and private backups |
 | `tests/test_*.py` | CI checks for package layout, model defaults and installer behavior; no orchestration service |
 
-Setup preserves personal text outside its managed block. Reconcile old private Gateway/controller rules and obsolete model overrides explicitly; workbench does not silently rewrite them.
+Setup applies the configured compaction target to owned Claude and Codex config keys when their config directories exist, preserving Magpie routing. Compaction is advisory, not a hard request-token cap; restart running sessions to pick up changes. Setup preserves personal text outside its managed block. Reconcile old private Gateway/controller rules and obsolete model overrides explicitly; workbench does not silently rewrite them.
 
 ## Install globally
 
