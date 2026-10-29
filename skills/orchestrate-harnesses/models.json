@@ -3,6 +3,7 @@
   "roles": {
     "luna": {"cli": "codex", "model": "gpt-6-luna", "effort": "max", "timeout_s": 1200},
     "haiku": {"cli": "claude", "model": "claude-haiku-5-5", "effort": "medium", "budget_usd": null, "timeout_s": 1200},
+    "flash": {"cli": "claude", "model": "openrouter/deepseek/deepseek-v4.1-flash-1017", "effort": "high", "budget_usd": null, "timeout_s": 1200},
     "terra": {"cli": "codex", "model": "gpt-6.1-terra", "effort": "medium", "timeout_s": 1200},
     "sonnet": {"cli": "claude", "model": "claude-sonnet-5-5", "effort": "medium", "budget_usd": null, "timeout_s": 1200},
     "sol": {"cli": "codex", "model": "gpt-6.1-sol", "effort": "high", "timeout_s": 1200},
