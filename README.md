@@ -20,6 +20,8 @@ Workers use a Codex-first ladder: **Luna max / Haiku medium → Terra medium / S
 
 Managers apply these settings through actual native tool capabilities. A configured target does not establish native model/effort, timeout, monetary budget, context or permission enforcement. Report unsupported/unverified settings, preserve the user's native permissions, and hold dependent work when a missing control is required. Do not substitute prompt limits for native configuration or claim compaction is a hard request-token cap. The same applies to already-running Manager sessions.
 
+An optional **DeepSeek Flash** Worker pilot covers CI log triage, repository exploration, small edits and independent diff review. Its `flash` role uses Claude Code as a gateway-compatible client; actual native model selection must be supported. Configure the client-visible model ID for your provider and compare accepted results, correction time and actual cost before changing defaults. See [Flash routing and pilot guidance](skills/orchestrate-harnesses/references/deepseek-flash.md). Workbench does not automatically launch an agent when CI fails; log triage is a task assigned by a Manager.
+
 Workbench has no custom orchestration runtime, task database or process supervisor. The standalone Python controller, permission probe, old-role/session compatibility code and JSON dispatch/response contracts have been removed. Existing private historical records are left alone. Native runs use their tool IDs, briefs and existing task/PR evidence; they do not create another Python-managed task record.
 
 The remaining Python files have narrow purposes:

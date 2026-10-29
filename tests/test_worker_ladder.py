@@ -10,6 +10,7 @@ MODELS_PATH = ROOT / "skills/orchestrate-harnesses/models.json"
 EXPECTED_WORKERS = {
     "luna": ("codex", "gpt-6-luna", "max"),
     "haiku": ("claude", "claude-haiku-5-5", "medium"),
+    "flash": ("claude", "openrouter/deepseek/deepseek-v4.1-flash-1017", "high"),
     "terra": ("codex", "gpt-6.1-terra", "medium"),
     "sonnet": ("claude", "claude-sonnet-5-5", "medium"),
     "sol": ("codex", "gpt-6.1-sol", "high"),
