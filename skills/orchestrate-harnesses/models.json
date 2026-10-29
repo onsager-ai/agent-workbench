@@ -11,5 +11,7 @@
   },
   "max_auto_rework": 2,
   "sol_weekly_brake_percent": 60,
-  "max_context_tokens": 300000
+  "max_context_tokens": 300000,
+  "claude_context_window": 1000000,
+  "codex_context_window": null
 }

@@ -47,7 +47,7 @@ class WorkerConfigurationTests(unittest.TestCase):
     def test_shared_policy_fields_are_valid_configuration(self) -> None:
         self.assertEqual(
             set(self.models),
-            {"version", "roles", "max_auto_rework", "sol_weekly_brake_percent", "max_context_tokens"},
+            {"version", "roles", "max_auto_rework", "sol_weekly_brake_percent", "max_context_tokens", "claude_context_window", "codex_context_window"},
         )
         self.assertEqual(self.models["version"], 1)
         self.assertIs(type(self.models["max_auto_rework"]), int)

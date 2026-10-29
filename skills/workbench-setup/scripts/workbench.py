@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 VERSION = "1"
 SOURCE = "onsager-ai/agent-workbench"
@@ -215,6 +216,8 @@ class Setup:
         self.target = "../.agents/AGENTS.md"
         self.agents = self.home / ".claude/agents"
         orchestration = self.home / ".agents/skills/orchestrate-harnesses"
+        self.claude_settings = self.home / ".claude/settings.json"
+        self.codex_settings = self.home / ".codex/config.toml"
         self.models = orchestration / "models.json"
         self.worker = orchestration / "references/worker.md"
         xdg = os.environ.get("XDG_CONFIG_HOME", "")
@@ -303,6 +306,122 @@ class Setup:
         self.warn_catalog(targets)
         return agents
 
+    def context_values(self):
+        if not present(self.models):
+            return None
+        config = self.read_json(self.models)
+        if present(self.override):
+            config.update({k: v for k, v in self.read_json(self.override).items() if k != "roles"})
+        for key in ("max_context_tokens", "claude_context_window", "codex_context_window"):
+            value = config.get(key)
+            if not (key == "codex_context_window" and value is None) and (type(value) is not int or value <= 0):
+                raise Conflict(f"invalid model configuration: {key} must be a positive integer" +
+                               (" or null" if key == "codex_context_window" else ""))
+        target = config["max_context_tokens"]
+        values = {"claude": {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": str(max(1, min(100, 100 * target // config["claude_context_window"])))},
+                  "codex": {"model_auto_compact_token_limit": target}}
+        if config["codex_context_window"] is not None:
+            values["codex"]["model_context_window"] = config["codex_context_window"]
+        return values
+
+    def native_config(self, kind):
+        path = getattr(self, kind + "_settings")
+        inspect(path.parent, self.home, directory=True)
+        if not present(path.parent):
+            return None, None
+        inspect(path, self.home)
+        data = read(path)
+        try:
+            if kind == "claude":
+                parsed = json.loads(data) if present(path) else {}
+                if not isinstance(parsed, dict) or not isinstance(parsed.get("env", {}), dict):
+                    raise ValueError("settings and env must be objects")
+                return data, parsed.get("env", {})
+            parsed = tomllib.loads(data.decode("utf-8"))
+            return data, parsed
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise Conflict(f"invalid {kind} configuration: {path}") from exc
+
+    def native_edit(self, kind, data, changes):
+        if not changes:
+            return data
+        if kind == "claude":
+            parsed = json.loads(data) if data else {}
+            env = parsed.setdefault("env", {})
+            for key, value in changes.items():
+                if value is None:
+                    env.pop(key, None)
+                else:
+                    env[key] = value
+            return (json.dumps(parsed, indent=2, ensure_ascii=False) + "\n").encode()
+        text = data.decode("utf-8")
+        lines = text.splitlines(keepends=True)
+        first_table = next((i for i, line in enumerate(lines) if re.match(r"^\s*\[", line)), len(lines))
+        for key, value in changes.items():
+            pattern = re.compile(r'^([ \t]*(?:' + re.escape(key) + r'|"' + re.escape(key) + r'"|\'' + re.escape(key) + r'\')[ \t]*=[ \t]*)([^#\r\n]*?)([ \t]*(?:#[^\r\n]*)?)(\r?\n)?$')
+            matches = [(i, pattern.match(line)) for i, line in enumerate(lines[:first_table])]
+            matches = [(i, match) for i, match in matches if match]
+            if matches:
+                i, match = matches[0]
+                if value is None:
+                    comment = match.group(3).lstrip()
+                    lines[i] = comment + (match.group(4) or "") if comment else ""
+                else:
+                    lines[i] = match.group(1) + str(value) + match.group(3) + (match.group(4) or "")
+            elif value is not None:
+                prefix = "" if first_table == 0 or lines[first_table - 1].endswith("\n") else "\n"
+                lines.insert(first_table, prefix + key + " = " + str(value) + "\n")
+                first_table += 1
+            else:
+                raise Conflict(f"cannot safely edit {kind} key: {key}")
+        result = "".join(lines).encode("utf-8")
+        try:
+            tomllib.loads(result.decode("utf-8"))
+        except ValueError as exc:
+            raise Conflict("invalid Codex configuration after edit") from exc
+        return result
+
+    def native_plans(self, state, desired, *, uninstall=False, status=False):
+        owned = state.get("native", {}) if state else {}
+        plans, record, report = {}, {}, {}
+        for kind in ("claude", "codex"):
+            data, current = self.native_config(kind)
+            if data is None:
+                report[kind] = "skipped: config directory missing"
+                if kind in owned:
+                    record[kind] = owned[kind]
+                continue
+            old = owned.get(kind, {})
+            if status and kind not in owned:
+                report[kind] = "skipped: not applied; run install if config directory is available"
+                continue
+            wanted = {} if uninstall or desired is None else desired[kind]
+            changes, entries = {}, {}
+            report[kind] = {}
+            for key in sorted(set(old) | set(wanted)):
+                exists = key in current
+                value = current.get(key)
+                conflict = exists and (type(value) is not type(old.get(key, wanted.get(key))) or value != old.get(key, wanted.get(key)))
+                report[kind][key] = "conflict" if conflict else ("applied" if exists else "missing")
+                if status:
+                    continue
+                if conflict:
+                    if uninstall:
+                        continue
+                    raise Conflict(f"foreign or edited {kind} setting: {key}")
+                if key in wanted:
+                    entries[key] = wanted[key]
+                    if not exists or value != wanted[key] or type(value) is not type(wanted[key]):
+                        changes[key] = wanted[key]
+                elif exists and key in old:
+                    changes[key] = None
+            if entries:
+                record[kind] = entries
+            if changes:
+                path = getattr(self, kind + "_settings")
+                plans[path] = ("file", self.native_edit(kind, data, changes), 0o600)
+        return plans, record, report
+
     def check_agents(self, state, desired=()):
         owned = state.get("agents", {}) if state else {}
         for name in sorted({*owned, *desired}):
@@ -337,6 +456,13 @@ class Setup:
                         or not isinstance(imported.get("line"), str)):
                     raise ValueError("invalid Claude import ownership metadata")
                 base64.b64decode(imported["line"], validate=True)
+            native = state.get("native", {})
+            if not isinstance(native, dict) or any(kind not in ("claude", "codex") or not isinstance(entries, dict) for kind, entries in native.items()):
+                raise ValueError("invalid native ownership metadata")
+            allowed = {"claude": {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": str}, "codex": {"model_auto_compact_token_limit": int, "model_context_window": int}}
+            for kind, entries in native.items():
+                if any(key not in allowed[kind] or type(value) is not allowed[kind][key] for key, value in entries.items()):
+                    raise ValueError("invalid native ownership metadata")
             for name, entry in state.get("agents", {}).items():
                 if not ROLE.fullmatch(name) or not isinstance(entry["hash"], str):
                     raise ValueError("invalid agent ownership metadata")
@@ -364,7 +490,7 @@ class Setup:
         inspect(self.codex, self.home, link=True)
         inspect(self.root / "lock", self.home)
         inspect(self.root / "backups", self.home, directory=True)
-        for name in ("shared", "codex", "claude", "launcher"):
+        for name in ("shared", "codex", "claude", "launcher", "claude_settings", "codex_settings"):
             inspect(self.root / "backups" / (name + ".json"), self.home)
         override = self.home / ".codex/AGENTS.override.md"
         inspect(override, self.home, link=True)
@@ -479,11 +605,14 @@ class Setup:
                 suffix = ("\n" if claude and not claude.endswith(b"\n") else "") + IMPORT.decode() + "\n"
                 claude += suffix.encode()
                 imported = {"owned": True, "line": IMPORT + b"\n"}
+            native_plans, native_record, _ = self.native_plans(state, self.context_values())
             desired = self.desired_agents()
             self.check_agents(state, desired)
             for name in ("shared", "codex", "claude", "launcher"):
                 self.backup(name, getattr(self, name))
-            record = {"schema": 1, "version": VERSION, "template_hash": digest(template),
+            for path in native_plans:
+                self.backup("claude_settings" if path == self.claude_settings else "codex_settings", path)
+            record = {"native": native_record, "schema": 1, "version": VERSION, "template_hash": digest(template),
                       "block_hash": digest(block), "block_text": block.decode("utf-8"), "target": self.target,
                       "launcher_hash": digest(self.launcher_bytes()), "import_added": bool(added),
                       "import_suffix": suffix,
@@ -502,6 +631,7 @@ class Setup:
                       else ("absent", None, None)
                       for name in {*(state.get("agents", {}) if state else ()), *desired}}
             plans.update(agents)
+            plans.update(native_plans)
             with transaction(plans):
                 changed = atomic(self.shared, shared)
                 changed |= atomic_link(self.codex, self.target)
@@ -514,6 +644,8 @@ class Setup:
                             changed = True
                     else:
                         changed |= atomic(path, plan[1])
+                for path, plan in native_plans.items():
+                    changed |= atomic(path, plan[1])
                 changed |= atomic(self.state_path, state_bytes)
         print("installed" if changed else "no-op: already installed")
         print(f"claude agents: {', '.join(sorted(desired)) or 'none'}")
@@ -525,10 +657,11 @@ class Setup:
         if not state:
             raise Conflict("not installed")
         template = read(self.template)
+        _, _, native_status = self.native_plans(state, self.context_values(), status=True)
         print(json.dumps({"installed_version": state["version"], "available_version": VERSION,
                           "installed_template_hash": state["template_hash"],
                           "available_template_hash": digest(template),
-                          "private_bytes": len(private), "shared": str(self.shared),
+                          "native_settings": native_status, "private_bytes": len(private), "shared": str(self.shared),
                           "codex": str(self.codex), "claude": str(self.claude),
                           "launcher": str(self.launcher),
                           "agents": {name: str(self.agent_path(name)) for name in sorted(state.get("agents", {}))}},
@@ -553,12 +686,18 @@ class Setup:
                     claude = claude[:-len(suffix)]
                 else:
                     claude = remove_exact_line(claude, imported["line"])
+            native_plans, _, _ = self.native_plans(state, None, uninstall=True)
+            for path in native_plans:
+                self.backup("claude_settings" if path == self.claude_settings else "codex_settings", path)
             # Keep current personal bytes, never restore an old snapshot over them.
             agents = {self.agent_path(name): ("absent", None, None) for name in state.get("agents", {})}
             plans = {**agents, self.shared: ("file", private, 0o600), self.codex: ("file", private, 0o600),
                      self.claude: ("file", claude, 0o600), self.launcher: ("absent", None, None),
                      self.state_path: ("absent", None, None)}
+            plans.update(native_plans)
             with transaction(plans):
+                for path, plan in native_plans.items():
+                    atomic(path, plan[1])
                 atomic(self.shared, private)
                 atomic(self.codex, private)
                 atomic(self.claude, claude)

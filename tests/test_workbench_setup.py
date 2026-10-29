@@ -389,6 +389,8 @@ class SetupTests(unittest.TestCase):
 
     def install_orchestration(self, override=None):
         shutil.copytree(ORCHESTRATION, self.home / ".agents/skills/orchestrate-harnesses")
+        (self.home / ".claude").mkdir(exist_ok=True)
+        (self.home / ".codex").mkdir(exist_ok=True)
         if override is not None:
             self.write(self.home / ".config/agent-workbench/models.json", json.dumps(override).encode())
 
@@ -397,6 +399,8 @@ class SetupTests(unittest.TestCase):
 
     def test_agents_generated_for_claude_roles_by_default(self):
         self.install_orchestration()
+        (self.home / ".claude").mkdir(exist_ok=True)
+        (self.home / ".codex").mkdir(exist_ok=True)
         self.run_setup("install")
         self.assertEqual({p.stem for p in self.agent("x").parent.iterdir()}, {"haiku", "flash", "sonnet", "opus"})
         text = self.agent("haiku").read_text()
@@ -516,6 +520,67 @@ class SetupTests(unittest.TestCase):
         self.assertTrue(self.agent("sonnet").exists())
         self.run_setup("uninstall")
         self.assertFalse(self.agent("sonnet").exists())
+
+    def test_native_apply_rewrite_conflict_and_uninstall(self):
+        self.install_orchestration({"codex_context_window": 900000})
+        claude = self.home / ".claude/settings.json"
+        codex = self.home / ".codex/config.toml"
+        original = b'model = "magpie" # routing\nmodel_reasoning_effort = "high"\n\n[model_providers.magpie]\nname = "route"\n[projects."/tmp"]\ntrust_level = "trusted"\n'
+        self.write(claude, b'{"model":"magpie", "modelPicker":true, "env":{"OTHER":"x"}}')
+        self.write(codex, original)
+        self.run_setup("install")
+        settings = json.loads(claude.read_bytes())
+        self.assertEqual(settings["env"], {"OTHER": "x", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "30"})
+        self.assertEqual(settings["model"], "magpie")
+        expected = original.replace(b'[model_providers.magpie]', b'model_auto_compact_token_limit = 300000\nmodel_context_window = 900000\n[model_providers.magpie]')
+        self.assertEqual(codex.read_bytes(), expected)
+        before = self.snapshot()
+        self.assertIn("no-op", self.run_setup("install").stdout)
+        self.assertEqual(before, self.snapshot())
+        del settings["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"]
+        claude.write_text(json.dumps(settings))
+        codex.write_bytes(original)
+        status = json.loads(self.run_setup("status").stdout)["native_settings"]
+        self.assertEqual(status["claude"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "missing")
+        self.run_setup("install")
+        self.assertEqual(codex.read_bytes(), expected)
+        settings = json.loads(claude.read_bytes())
+        settings["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "42"
+        claude.write_text(json.dumps(settings))
+        self.assertEqual(json.loads(self.run_setup("status").stdout)["native_settings"]["claude"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "conflict")
+        self.assertIn("edited", self.run_setup("install", ok=False).stderr)
+        self.run_setup("uninstall")
+        self.assertEqual(json.loads(claude.read_bytes())["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "42")
+        self.assertEqual(codex.read_bytes(), original)
+
+    def test_native_preexisting_values_and_invalid_files(self):
+        for index, (kind, data, succeeds) in enumerate((
+            ("claude", b'{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"30"}}', True),
+            ("claude", b'{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"31"}}', False),
+            ("claude", b'{invalid', False),
+            ("codex", b'model_auto_compact_token_limit = 300000\n', True),
+            ("codex", b'model_auto_compact_token_limit = 1\n', False),
+            ("codex", b'[broken', False),
+        )):
+            with self.subTest(index=index):
+                self.configure_home(Path(self.temporary.name) / f"native-{index}")
+                self.install_orchestration()
+                path = self.home / (".claude/settings.json" if kind == "claude" else ".codex/config.toml")
+                self.write(path, data)
+                self.run_setup("install", ok=succeeds)
+                if succeeds:
+                    self.run_setup("uninstall")
+                    self.assertNotIn(b'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE' if kind == "claude" else b'model_auto_compact_token_limit', path.read_bytes())
+                else:
+                    self.assertEqual(path.read_bytes(), data)
+
+    def test_native_missing_directory_and_override_validation(self):
+        self.install_orchestration({"max_context_tokens": 500000, "claude_context_window": 1000000})
+        (self.home / ".codex").rmdir()
+        self.run_setup("install")
+        self.assertEqual(json.loads((self.home / ".claude/settings.json").read_bytes())["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "50")
+        state = json.loads((self.state / "state.json").read_bytes())
+        self.assertNotIn("codex", state["native"])
 
     def test_missing_resource_and_duplicate_import_status(self):
         self.run_setup("install")
