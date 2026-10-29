@@ -416,8 +416,8 @@ class SetupTests(unittest.TestCase):
         spec.loader.exec_module(module)
         output = io.StringIO()
         completed = subprocess.CompletedProcess([executable, "models", "claude"], 0, stdout, "")
-        with mock.patch.object(module.shutil, "which", return_value=executable), \\
-                mock.patch.object(module.subprocess, "run", return_value=completed) as run, \\
+        with mock.patch.object(module.shutil, "which", return_value=executable), \
+                mock.patch.object(module.subprocess, "run", return_value=completed) as run, \
                 contextlib.redirect_stderr(output):
             if error is not None:
                 run.side_effect = error
@@ -441,8 +441,8 @@ class SetupTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         output = io.StringIO()
-        with mock.patch.object(module.shutil, "which", return_value=None), \\
-                mock.patch.object(module.subprocess, "run") as run, \\
+        with mock.patch.object(module.shutil, "which", return_value=None), \
+                mock.patch.object(module.subprocess, "run") as run, \
                 contextlib.redirect_stderr(output):
             module.Setup(self.home).desired_agents()
         self.assertEqual(output.getvalue(), "")
