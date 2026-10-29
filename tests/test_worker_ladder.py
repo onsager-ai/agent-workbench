@@ -37,6 +37,9 @@ class WorkerConfigurationTests(unittest.TestCase):
                 if cli == "claude":
                     fields.add("budget_usd")
                     self.assertIsNone(role["budget_usd"])
+                else:
+                    fields.add("claude_model")
+                    self.assertIsNone(role["claude_model"])
                 self.assertEqual(set(role), fields)
                 self.assertIs(type(role["timeout_s"]), int)
                 self.assertGreater(role["timeout_s"], 0)

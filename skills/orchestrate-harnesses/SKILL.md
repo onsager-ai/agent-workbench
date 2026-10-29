@@ -5,7 +5,7 @@ description: Manage engineering work with native harness subagents as Workers, c
 
 # Manage engineering work
 
-The current user-facing session is the Manager. Keep its selected model and native permissions. It talks with the user, plans work, dispatches Workers, handles amendments and verifies delivery. Handle small answers and routine edits directly; delegate substantial implementation and useful independent investigation/review. A Worker or reviewer contract takes precedence and prohibits nested delegation.
+The current user-facing session is the Manager. Keep its selected model and native permissions. It talks with the user, plans work, dispatches Workers, handles amendments and verifies delivery. Handle small answers and routine edits directly. Delegate substantial implementation, multi-file investigation and independent review to native Workers by default, running independent pieces in parallel; do not keep substantial work inline because the available native tier differs from a configured preference. A Worker or reviewer contract takes precedence and prohibits nested delegation.
 
 Prefer the harness's built-in subagent tools for Workers in the same harness. Use HAPI for coordination between Managers and for an explicitly owned cross-harness/session/machine handover. Workbench supplies policy and configuration; the native harness and HAPI supply execution and session lifecycle. Do not introduce a parallel controller, task database, process supervisor or CLI wrapper.
 
@@ -43,7 +43,15 @@ For example, adjust one Worker's timeout:
 {"roles": {"luna": {"timeout_s": 900}}}
 ~~~
 
-The role keys are `luna`, `haiku`, `flash`, `terra`, `sonnet`, `sol`, `opus`. `flash` is an optional pilot outside the default ladder; read [DeepSeek Flash](references/deepseek-flash.md) before selecting it. Each identifies its target harness with `cli`, model, effort and timeout; Claude harness entries also have optional `budget_usd`. The harness identifies the client, not the model vendor. A positive finite monetary amount is a user-configured target, with no workbench amount ceiling. `null` adds no monetary cap. Do not invent an amount in a prompt or skill. Native billing/quota limits still apply. The interactive Manager keeps its selected model and permissions.
+The role keys are `luna`, `haiku`, `flash`, `terra`, `sonnet`, `sol`, `opus`. `flash` is an optional pilot outside the default ladder; read [DeepSeek Flash](references/deepseek-flash.md) before selecting it. Each identifies its target harness with `cli`, model, effort and timeout; Claude harness entries also have optional `budget_usd`, and Codex entries have an optional `claude_model`. The harness identifies the client, not the model vendor. A positive finite monetary amount is a user-configured target, with no workbench amount ceiling. `null` adds no monetary cap. Do not invent an amount in a prompt or skill. Native billing/quota limits still apply. The interactive Manager keeps its selected model and permissions.
+
+`claude_model` is the model ID Claude Code uses to reach that tier as a native subagent. It is omitted for Claude roles, whose `model` already serves, and `null` for Codex roles by default because the gateway prefix is installation-specific. Route a Codex tier through your gateway with an override such as the following, using the exact ID from your gateway's catalog:
+
+~~~json
+{"roles": {"luna": {"claude_model": "onsager/codex/gpt-6-luna"}}}
+~~~
+
+Run `agent-workbench install` after editing the override so [workbench-setup](../workbench-setup/SKILL.md) regenerates the Claude Code subagent definitions in `~/.claude/agents`. Setting a `claude_model` back to `null` removes that tier's generated agent on the next install.
 
 `max_auto_rework` is nonnegative, `sol_weekly_brake_percent` is a positive percentage, and `max_context_tokens` is a positive integer without an additional fixed ceiling. Read target values from the effective configuration and apply supported native controls. A configured target is not proof that a native subagent supports it: report unsupported or unverified model/effort, timeout, budget and context settings honestly. Native timeout/budget enforcement is used only where exposed; Manager tracking is not a hard runtime limit.
 
@@ -51,15 +59,15 @@ Old `roles.manager`, `roles.preflight`, `roles.acceptance` and controller-only l
 
 ## Worker ladder
 
-| Level | Codex first | Claude alternative |
+| Level | Codex harness | Claude harness |
 | --- | --- | --- |
 | L1 | luna / gpt-6-luna / max | haiku / claude-haiku-5-5 / medium |
 | L2 | terra / gpt-6.1-terra / medium | sonnet / claude-sonnet-5-5 / medium |
 | L3 | sol / gpt-6.1-sol / high | opus / claude-opus-5-5 / medium |
 
-Use effective configuration if it overrides a model or effort. Prefer Luna initially; escalate with actual complexity, defects or failed-attempt evidence. Move upward one level at a time unless the Manager records a concrete skip reason. An unavailable native model requires an explicit routing decision, not automatic stronger-model substitution.
+Dispatch Workers as native subagents by tier name (`subagent_type: <role>`) whenever the Manager's harness has a definition for that tier. A Codex Manager has the Codex column. In Claude Code, workbench-setup generates the definitions: Claude tiers always, and Codex tiers once the user routes them through a gateway with `claude_model`. Start Codex-first at L1 luna whenever luna is routable from the Manager's harness, otherwise at L1 of the available column. A configured route is not proof of a working tool loop: verify a tool call through the route before relying on it, and report a gap rather than substituting silently. Use effective configuration if it overrides a model or effort. Start at L1; escalate with actual complexity, defects or failed-attempt evidence. Move upward one level at a time unless the Manager records a concrete skip reason. An unavailable native model requires an explicit routing decision, not automatic stronger-model substitution.
 
-Before selecting a Claude model, record why the Codex option is insufficient, what this attempt resolves and its configured timeout; mention a monetary cap only when configured. Compare effective provider prices rather than assuming cost from the harness name: DeepSeek Flash through Claude Code is not a Claude model. Do not select Claude merely because an inexpensive attempt failed once. No automatic provider fallback, tier change or retry.
+A same-harness native Worker needs no justification beyond its brief. A cross-harness Worker is an explicit Manager choice for a concrete capability or cost reason, routed through an owned HAPI session or handover; record the reason, what the attempt resolves and its configured timeout, and mention a monetary cap only when configured. Compare effective provider prices rather than assuming cost from the harness name: DeepSeek Flash through Claude Code is not a Claude model. No automatic provider fallback, tier change or retry.
 
 Honor the configured Sol weekly brake. Fresh usage at or above it blocks Sol. Unknown/stale usage needs an explicit bounded Manager exception; never read credentials to obtain usage. Apply `max_auto_rework` across tiers after the initial attempt. At the limit, explicitly reconsider the brief, scope, tier or a real user decision using actual evidence; never silently reset the count or run endless cheap retries. These are Manager decisions applied through native tools, not checks enforced by a Python controller.
 

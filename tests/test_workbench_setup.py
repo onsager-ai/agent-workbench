@@ -15,6 +15,7 @@ from unittest import mock
 
 
 SKILL = Path(__file__).resolve().parents[1] / "skills/workbench-setup"
+ORCHESTRATION = Path(__file__).resolve().parents[1] / "skills/orchestrate-harnesses"
 BEGIN = b"<!-- BEGIN agent-workbench -->"
 END = b"<!-- END agent-workbench -->"
 IMPORT = b"@~/.agents/AGENTS.md"
@@ -383,6 +384,92 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.claude.read_bytes(), b"prior Claude")
         self.assertFalse(self.launcher.exists())
         self.assertFalse((self.state / "state.json").exists())
+
+    def install_orchestration(self, override=None):
+        shutil.copytree(ORCHESTRATION, self.home / ".agents/skills/orchestrate-harnesses")
+        if override is not None:
+            self.write(self.home / ".config/agent-workbench/models.json", json.dumps(override).encode())
+
+    def agent(self, name):
+        return self.home / ".claude/agents" / (name + ".md")
+
+    def test_agents_generated_for_claude_roles_by_default(self):
+        self.install_orchestration()
+        self.run_setup("install")
+        self.assertEqual({p.stem for p in self.agent("x").parent.iterdir()}, {"haiku", "flash", "sonnet", "opus"})
+        text = self.agent("haiku").read_text()
+        worker = (ORCHESTRATION / "references/worker.md").read_text()
+        self.assertTrue(text.startswith("---\nname: haiku\n"))
+        self.assertIn('model: "claude-haiku-5-5"\neffort: "medium"\n---\n', text)
+        self.assertIn("Managed by agent-workbench", text)
+        self.assertTrue(text.endswith(worker))
+        state = json.loads((self.state / "state.json").read_bytes())
+        self.assertEqual(set(state["agents"]), {"haiku", "flash", "sonnet", "opus"})
+        self.assertIn("haiku", json.loads(self.run_setup("status").stdout)["agents"])
+        self.assertIn("no-op", self.run_setup("install").stdout)
+
+    def test_no_agents_without_orchestration_skill(self):
+        result = self.run_setup("install")
+        self.assertIn("not installed", result.stdout)
+        self.assertFalse(self.agent("x").parent.exists())
+
+    def test_codex_role_routed_by_override_and_removed_by_null(self):
+        route = "onsager/codex/gpt-6-luna"
+        self.install_orchestration({"roles": {"luna": {"claude_model": route}}})
+        self.run_setup("install")
+        text = self.agent("luna").read_text()
+        self.assertIn(f'model: "{route}"\neffort: "max"\n', text)
+        self.assertIn("gpt-6-luna via configured gateway", text)
+        self.assertFalse(self.agent("terra").exists())
+        self.write(self.home / ".config/agent-workbench/models.json",
+                   json.dumps({"roles": {"luna": {"claude_model": None}}}).encode())
+        self.run_setup("install")
+        self.assertFalse(self.agent("luna").exists())
+        self.assertTrue(self.agent("opus").exists())
+        self.assertNotIn("luna", json.loads((self.state / "state.json").read_bytes())["agents"])
+
+    def test_foreign_agent_file_conflicts_and_is_preserved(self):
+        self.install_orchestration()
+        self.write(self.agent("haiku"), b"mine\n")
+        self.write(self.agent("custom"), b"custom\n")
+        self.assertIn("foreign Claude agent", self.run_setup("install", ok=False).stderr)
+        self.assertEqual(self.agent("haiku").read_bytes(), b"mine\n")
+        self.assertFalse(self.launcher.exists())
+        self.agent("haiku").unlink()
+        self.run_setup("install")
+        self.assertEqual(self.agent("custom").read_bytes(), b"custom\n")
+        self.run_setup("uninstall")
+        self.assertEqual(self.agent("custom").read_bytes(), b"custom\n")
+
+    def test_edited_owned_agent_conflicts(self):
+        self.install_orchestration()
+        self.run_setup("install")
+        edited = self.agent("opus").read_bytes() + b"personal\n"
+        self.agent("opus").write_bytes(edited)
+        for command in ("install", "status", "uninstall"):
+            self.assertIn("edited", self.run_setup(command, ok=False).stderr)
+        self.assertEqual(self.agent("opus").read_bytes(), edited)
+        self.assertTrue(self.launcher.exists())
+
+    def test_uninstall_removes_owned_agents(self):
+        self.install_orchestration()
+        self.run_setup("install")
+        self.write(self.agent("custom"), b"custom\n")
+        self.run_setup("uninstall")
+        self.assertEqual([p.name for p in self.agent("x").parent.iterdir()], ["custom.md"])
+
+    def test_state_without_agent_records_still_loads(self):
+        self.run_setup("install")
+        path = self.state / "state.json"
+        state = json.loads(path.read_bytes())
+        del state["agents"]
+        path.write_text(json.dumps(state))
+        self.run_setup("status")
+        self.install_orchestration()
+        self.run_setup("install")
+        self.assertTrue(self.agent("sonnet").exists())
+        self.run_setup("uninstall")
+        self.assertFalse(self.agent("sonnet").exists())
 
     def test_missing_resource_and_duplicate_import_status(self):
         self.run_setup("install")
