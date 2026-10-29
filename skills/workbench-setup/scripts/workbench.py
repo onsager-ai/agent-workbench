@@ -243,6 +243,33 @@ class Setup:
         except (ValueError, AttributeError) as exc:
             raise Conflict(f"invalid model configuration: {path}") from exc
 
+    def warn_catalog(self, targets):
+        magpie = shutil.which("magpie")
+        if not magpie or not targets:
+            return
+        try:
+            result = subprocess.run([magpie, "models", "claude"], capture_output=True,
+                                    text=True, timeout=20, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            print("magpie catalog unavailable; tier validation skipped", file=sys.stderr)
+            return
+        if result.returncode:
+            print("magpie catalog unavailable; tier validation skipped", file=sys.stderr)
+            return
+        catalog = {}
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and "/" in fields[-1] and re.fullmatch(r"[a-z/]+", fields[-1]):
+                catalog[fields[0]] = set(fields[-1].split("/"))
+        for name, (model, effort) in targets.items():
+            efforts = catalog.get(model)
+            if efforts is None:
+                print(f"warning: {name} tier model {model!r} is absent from magpie models claude",
+                      file=sys.stderr)
+            elif effort not in efforts:
+                print(f"warning: {name} tier effort {effort!r} is not listed for {model!r} "
+                      "by magpie models claude", file=sys.stderr)
+
     def desired_agents(self):
         """Render one Claude Code subagent per role routable from Claude Code."""
         inspect(self.models, self.home)
@@ -257,6 +284,7 @@ class Setup:
                 roles[name] = {**roles.get(name, {}), **fields}
         body = read(self.worker).decode("utf-8")
         agents = {}
+        targets = {}
         for name, role in roles.items():
             model = role.get("model") if role.get("cli") == "claude" else role.get("claude_model")
             if model is None:
@@ -271,6 +299,8 @@ class Setup:
                             f"model: {json.dumps(model)}\n" f"effort: {json.dumps(effort)}\n---\n"
                             "<!-- Managed by agent-workbench; ownership is recorded in state.json. -->\n\n"
                             + body).encode()
+            targets[name] = (model, effort)
+        self.warn_catalog(targets)
         return agents
 
     def check_agents(self, state, desired=()):
