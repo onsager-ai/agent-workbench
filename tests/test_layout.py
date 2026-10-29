@@ -64,6 +64,7 @@ class PublicLayoutTests(unittest.TestCase):
             "skills/orchestrate-harnesses/references/manager.md",
             "skills/orchestrate-harnesses/references/worker.md",
             "skills/orchestrate-harnesses/references/hapi-sync.md",
+            "skills/orchestrate-harnesses/references/magpie.md",
             "skills/workbench-setup/assets/AGENTS.md",
             "skills/workbench-setup/scripts/workbench.py",
         )

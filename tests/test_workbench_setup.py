@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -407,6 +409,50 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(set(state["agents"]), {"haiku", "flash", "sonnet", "opus"})
         self.assertIn("haiku", json.loads(self.run_setup("status").stdout)["agents"])
         self.assertIn("no-op", self.run_setup("install").stdout)
+
+    def inspect_catalog(self, stdout, *, executable="/usr/bin/magpie", error=None):
+        spec = importlib.util.spec_from_file_location("fixture_workbench_catalog", self.script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        output = io.StringIO()
+        completed = subprocess.CompletedProcess([executable, "models", "claude"], 0, stdout, "")
+        with mock.patch.object(module.shutil, "which", return_value=executable), \
+                mock.patch.object(module.subprocess, "run", return_value=completed) as run, \
+                contextlib.redirect_stderr(output):
+            if error is not None:
+                run.side_effect = error
+            agents = module.Setup(self.home).desired_agents()
+        return agents, output.getvalue(), run
+
+    def test_catalog_validation_warns_for_unknown_model_and_effort(self):
+        self.install_orchestration({"roles": {
+            "luna": {"claude_model": "unknown/model", "effort": "max"},
+            "terra": {"claude_model": "known/model", "effort": "xhigh"}}})
+        _, warnings, run = self.inspect_catalog(
+            "  known/model  Known Model  low/medium/high/max\n")
+        self.assertIn("luna tier model 'unknown/model' is absent", warnings)
+        self.assertIn("terra tier effort 'xhigh' is not listed", warnings)
+        run.assert_called_once_with(["/usr/bin/magpie", "models", "claude"],
+                                    capture_output=True, text=True, timeout=20, check=False)
+
+    def test_catalog_validation_skips_when_magpie_is_absent(self):
+        self.install_orchestration()
+        spec = importlib.util.spec_from_file_location("fixture_workbench_no_magpie", self.script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        output = io.StringIO()
+        with mock.patch.object(module.shutil, "which", return_value=None), \
+                mock.patch.object(module.subprocess, "run") as run, \
+                contextlib.redirect_stderr(output):
+            module.Setup(self.home).desired_agents()
+        self.assertEqual(output.getvalue(), "")
+        run.assert_not_called()
+
+    def test_catalog_validation_failure_is_non_fatal(self):
+        self.install_orchestration()
+        _, warnings, run = self.inspect_catalog("", error=OSError("not runnable"))
+        self.assertIn("magpie catalog unavailable; tier validation skipped", warnings)
+        self.assertEqual(len(run.call_args_list), 1)
 
     def test_no_agents_without_orchestration_skill(self):
         result = self.run_setup("install")
