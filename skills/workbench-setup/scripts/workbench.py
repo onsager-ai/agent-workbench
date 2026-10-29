@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import stat
@@ -24,6 +25,8 @@ BEGIN = b"<!-- BEGIN agent-workbench -->"
 END = b"<!-- END agent-workbench -->"
 IMPORT = b"@~/.agents/AGENTS.md"
 LIMIT = 10 * 1024 * 1024
+ROLE = re.compile(r"[a-z][a-z0-9-]*")
+LEVELS = {"luna": "L1", "haiku": "L1", "terra": "L2", "sonnet": "L2", "sol": "L3", "opus": "L3", "flash": "pilot"}
 
 
 class Conflict(Exception):
@@ -210,6 +213,13 @@ class Setup:
         self.script = self.home / ".agents/skills/workbench-setup/scripts/workbench.py"
         self.template = self.script.parent.parent / "assets/AGENTS.md"
         self.target = "../.agents/AGENTS.md"
+        self.agents = self.home / ".claude/agents"
+        orchestration = self.home / ".agents/skills/orchestrate-harnesses"
+        self.models = orchestration / "models.json"
+        self.worker = orchestration / "references/worker.md"
+        xdg = os.environ.get("XDG_CONFIG_HOME", "")
+        config = Path(xdg) if self.home == Path.home() and xdg and os.path.isabs(xdg) else self.home / ".config"
+        self.override = config / "agent-workbench/models.json"
 
     def launcher_bytes(self):
         return ("#!/usr/bin/env python3\n"
@@ -218,6 +228,62 @@ class Setup:
                 f"script = {str(self.script)!r}\n"
                 f"home = {str(self.home)!r}\n"
                 "os.execv(sys.executable, [sys.executable, script, '--home', home, *sys.argv[1:]])\n").encode()
+
+    def agent_path(self, name):
+        return self.agents / (name + ".md")
+
+    def read_json(self, path):
+        base = self.home if path.is_relative_to(self.home) else path.parent
+        inspect(path, base)
+        try:
+            data = json.loads(read(path))
+            if not isinstance(data.get("roles", {}), dict):
+                raise ValueError("roles must be an object")
+            return data
+        except (ValueError, AttributeError) as exc:
+            raise Conflict(f"invalid model configuration: {path}") from exc
+
+    def desired_agents(self):
+        """Render one Claude Code subagent per role routable from Claude Code."""
+        inspect(self.models, self.home)
+        inspect(self.worker, self.home)
+        if not present(self.models) or not present(self.worker):
+            return {}
+        roles = self.read_json(self.models).get("roles", {})
+        if present(self.override):
+            for name, fields in self.read_json(self.override).get("roles", {}).items():
+                if not isinstance(fields, dict):
+                    raise Conflict(f"invalid model override for role {name}: {self.override}")
+                roles[name] = {**roles.get(name, {}), **fields}
+        body = read(self.worker).decode("utf-8")
+        agents = {}
+        for name, role in roles.items():
+            model = role.get("model") if role.get("cli") == "claude" else role.get("claude_model")
+            if model is None:
+                continue
+            effort = role.get("effort")
+            if not ROLE.fullmatch(name) or not isinstance(model, str) or not isinstance(effort, str):
+                raise Conflict(f"invalid model configuration for role {name}")
+            label = f"{LEVELS[name] + ' ' if name in LEVELS else ''}Worker"
+            via = "" if role.get("cli") == "claude" else " via configured gateway"
+            description = f"Agent Workbench {label} ({role['model']}{via})"
+            agents[name] = ("---\n" f"name: {name}\n" f"description: {json.dumps(description)}\n"
+                            f"model: {json.dumps(model)}\n" f"effort: {json.dumps(effort)}\n---\n"
+                            "<!-- Managed by agent-workbench; ownership is recorded in state.json. -->\n\n"
+                            + body).encode()
+        return agents
+
+    def check_agents(self, state, desired=()):
+        owned = state.get("agents", {}) if state else {}
+        for name in sorted({*owned, *desired}):
+            path = self.agent_path(name)
+            inspect(path, self.home)
+            if not present(path):
+                continue
+            if name not in owned:
+                raise Conflict(f"foreign Claude agent file; left unchanged: {path}")
+            if digest(read(path)) != owned[name]["hash"]:
+                raise Conflict(f"owned Claude agent file was edited; left unchanged: {path}")
 
     def load(self):
         inspect(self.root, self.home, directory=True)
@@ -241,6 +307,9 @@ class Setup:
                         or not isinstance(imported.get("line"), str)):
                     raise ValueError("invalid Claude import ownership metadata")
                 base64.b64decode(imported["line"], validate=True)
+            for name, entry in state.get("agents", {}).items():
+                if not ROLE.fullmatch(name) or not isinstance(entry["hash"], str):
+                    raise ValueError("invalid agent ownership metadata")
             return state
         except (ValueError, KeyError, TypeError, AttributeError, binascii.Error) as exc:
             raise Conflict("invalid setup state; retain backups and repair state before retrying") from exc
@@ -312,6 +381,7 @@ class Setup:
                     raise Conflict("managed Claude import missing or modified; left unchanged")
             elif "claude_import" not in state and lines[0].strip() != IMPORT:
                 raise Conflict("managed Claude import missing or modified; left unchanged")
+        self.check_agents(state)
         if not uninstall:
             inspect(self.script, self.home)
             inspect(self.template, self.home)
@@ -379,6 +449,8 @@ class Setup:
                 suffix = ("\n" if claude and not claude.endswith(b"\n") else "") + IMPORT.decode() + "\n"
                 claude += suffix.encode()
                 imported = {"owned": True, "line": IMPORT + b"\n"}
+            desired = self.desired_agents()
+            self.check_agents(state, desired)
             for name in ("shared", "codex", "claude", "launcher"):
                 self.backup(name, getattr(self, name))
             record = {"schema": 1, "version": VERSION, "template_hash": digest(template),
@@ -387,20 +459,36 @@ class Setup:
                       "import_suffix": suffix,
                       "claude_import": self.encode_claude_import(imported["owned"], imported["line"]),
                       "owned": {"shared": "managed-block", "codex": "symlink",
-                                "claude": "import-line", "launcher": "file"}}
+                                "claude": "import-line", "launcher": "file"},
+                      "agents": {name: {"path": str(self.agent_path(name).relative_to(self.home)),
+                                        "hash": digest(data)} for name, data in desired.items()}}
             shared = read(self.shared).replace(old_block, block, 1) if old_block else block + private
             state_bytes = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
             plans = {self.shared: ("file", shared, 0o600), self.codex: ("link", self.target, None),
                      self.claude: ("file", claude, 0o600),
                      self.launcher: ("file", self.launcher_bytes(), 0o700),
                      self.state_path: ("file", state_bytes, 0o600)}
+            agents = {self.agent_path(name): ("file", desired[name], 0o600) if name in desired
+                      else ("absent", None, None)
+                      for name in {*(state.get("agents", {}) if state else ()), *desired}}
+            plans.update(agents)
             with transaction(plans):
                 changed = atomic(self.shared, shared)
                 changed |= atomic_link(self.codex, self.target)
                 changed |= atomic(self.claude, claude)
                 changed |= atomic(self.launcher, self.launcher_bytes(), 0o700)
+                for path, plan in agents.items():
+                    if plan[0] == "absent":
+                        if present(path):
+                            path.unlink()
+                            changed = True
+                    else:
+                        changed |= atomic(path, plan[1])
                 changed |= atomic(self.state_path, state_bytes)
         print("installed" if changed else "no-op: already installed")
+        print(f"claude agents: {', '.join(sorted(desired)) or 'none'}")
+        if not desired:
+            print("no Claude agents generated: orchestrate-harnesses is not installed")
 
     def status(self):
         state, block, private = self.preflight(status=True)
@@ -412,7 +500,10 @@ class Setup:
                           "available_template_hash": digest(template),
                           "private_bytes": len(private), "shared": str(self.shared),
                           "codex": str(self.codex), "claude": str(self.claude),
-                          "launcher": str(self.launcher)}, sort_keys=True))
+                          "launcher": str(self.launcher),
+                          "agents": {name: str(self.agent_path(name)) for name in sorted(state.get("agents", {}))}},
+                         sort_keys=True))
+        self.check_agents(state, self.desired_agents())
         if state["template_hash"] != digest(template) or state["version"] != VERSION:
             raise Conflict("an instruction update is available; run install to apply distributed assets")
 
@@ -433,13 +524,17 @@ class Setup:
                 else:
                     claude = remove_exact_line(claude, imported["line"])
             # Keep current personal bytes, never restore an old snapshot over them.
-            plans = {self.shared: ("file", private, 0o600), self.codex: ("file", private, 0o600),
+            agents = {self.agent_path(name): ("absent", None, None) for name in state.get("agents", {})}
+            plans = {**agents, self.shared: ("file", private, 0o600), self.codex: ("file", private, 0o600),
                      self.claude: ("file", claude, 0o600), self.launcher: ("absent", None, None),
                      self.state_path: ("absent", None, None)}
             with transaction(plans):
                 atomic(self.shared, private)
                 atomic(self.codex, private)
                 atomic(self.claude, claude)
+                for path in agents:
+                    if present(path):
+                        path.unlink()
                 self.launcher.unlink()
                 self.state_path.unlink()
                 sync_dir(self.root)
