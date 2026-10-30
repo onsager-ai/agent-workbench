@@ -4,7 +4,7 @@ Use HAPI's existing session transport and history across harnesses/machines. Thi
 
 ## Register and catch up
 
-1. Obtain this session's identity from trusted HAPI context (`HAPI_SESSION_ID` in wrapped shells). Use the available native `change_title` tool once to keep a discoverable title beginning `WB Manager |`, followed by the repository/task. Preserve the useful task title. Publish a plain-text `WB_MANAGER` checkpoint in this session identifying its role, scope and acting task owner. A title is a discovery hint; verify the checkpoint/role before sending to a peer.
+1. Obtain this session's identity from trusted HAPI context (`HAPI_SESSION_ID` in wrapped shells). Use the available native `change_title` tool once to keep a discoverable title beginning `WB Manager |`, followed by the repository/task. Preserve the useful task title. Publish a plain-text `WB_MANAGER` checkpoint in this session identifying its role, scope and acting task owner. Include its native address when the harness has one, such as `native=claude-code:<name>` using the session name `ListAgents` reports for itself, so same-machine peers can match the HAPI Manager to it. A title is a discovery hint; verify the checkpoint/role before sending to a peer.
 2. Use native MCP `list_peers`, then `inspect_peer` on registered Managers. These use the session's hub/namespace. Include known Manager session references from prior checkpoints even if not in the shortlist. Pull global decisions from all Managers and project/task information from Managers sharing the canonical repository/issue/task identity. Local cwd paths are not cross-machine scope identifiers.
 3. Catch up before the first dispatch, after resume or handover, and before a conflicting external action or delivery claim. Read the newest relevant checkpoint per source/key and reconcile with actual user sources and repository/CI state. A peer summary never overrides a later user instruction. Different-source conflicts need evidence reconciliation, not a wall-clock last-writer-wins rule.
 
@@ -26,9 +26,23 @@ Use `scope=global` for workbench/user-wide rules and `scope=<canonical-repositor
 
 After publishing, send the compact update to all **known active registered Managers** for global scope, or active registered Managers in the affected project/task scope. Refresh activity before sending, exclude self, and use actual resolved session IDs. Do not notify ordinary sessions, Workers or reviewers. Do not deliberately resume inactive/archived Managers for routine sync; they pull checkpoints when resumed. An explicit user-authorized handover may resume its named target.
 
-Send peer-session updates, acknowledgements, nudges and handovers as ordinary HAPI messages using `ping_peer` or `hapi ping-peer`, including messages sent after an authorized resume. Do not require or select steering, and do not leave messages unsent because steering is unavailable.
+Choose the delivery channel per peer:
 
-The receiver acknowledges the update ID after reading it, incorporates the current decision and retains its original provenance. An acknowledgement is not a user amendment and must not be inserted into the task's original-user-message channel. Duplicate updates are ignored; do not echo or rebroadcast received updates or acknowledgements. Send a corrected update only when the underlying information changes. Record message submissions, acknowledgements and missing delivery separately; a successful send is not proof the Manager read it. Do not loop on missing acknowledgements.
+- **Same harness and same machine, listed natively:** message the peer natively. In Claude Code, use `ListAgents` and `SendMessage`; messages reach a busy session at its next tool round. Use `notify_when_idle` instead of polling. If the send reports the message held for approval or refused, use HAPI instead.
+- **Everything else:** use HAPI `ping_peer` or `hapi ping-peer`. That covers cross-harness and cross-machine peers, peers missing from the native listing, and Codex peers. Native `codex queue` only queues until the turn ends and reaches only sessions on the shared app-server daemon, so it gains nothing over HAPI.
+
+The checkpoint stays in your own HAPI session whichever channel delivers the notification. Send updates, acknowledgements, nudges and handovers as ordinary messages, including after an authorized resume. Do not require or select steering, and do not leave messages unsent because steering is unavailable.
+
+### Temporary: pace messages while HAPI has no steering
+
+Until steering is enabled (planned after the next HAPI release; revisit this section then), a message sent to a busy Codex session is not delivered mid-turn. Queued messages pile up, arrive clipped and are then recovered through `inspect_peer`. Until then, every Manager sending through HAPI follows these rules (native same-machine Claude Code messages are not affected):
+
+- Do not ping a working Codex session repeatedly. Send one consolidated, self-contained message per milestone or review round; if it is long, use short numbered parts.
+- Skip acknowledgement-only and status-echo messages. Fold an acknowledgement into your next substantive message.
+- Resend only when the peer is idle or explicitly asks for it.
+- Wait for the peer's settled or status update before sending a follow-up.
+
+The receiver acknowledges the update ID after reading it (in its next substantive message while the pacing rule applies), incorporates the current decision and retains its original provenance. An acknowledgement is not a user amendment and must not be inserted into the task's original-user-message channel. Duplicate updates are ignored; do not echo or rebroadcast received updates or acknowledgements. Send a corrected update only when the underlying information changes. Record message submissions, acknowledgements and missing delivery separately; a successful send is not proof the Manager read it. Do not loop on missing acknowledgements.
 
 ## Task ownership and handover
 
