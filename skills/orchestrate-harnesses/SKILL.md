@@ -29,7 +29,7 @@ Pause/cancel applies to the owned task and its affected Workers. Use supported s
 
 Managers on the same reachable hub/namespace announce their role, discover peers, pull relevant checkpoints and publish important updates using the [synchronization protocol](references/hapi-sync.md). Global user decisions go to all known active registered Managers; project/task updates go to Managers sharing that scope. Inactive Managers catch up on resume. Do not message unrelated sessions or deliberately wake archived Managers for routine synchronization.
 
-Send peer-session updates, acknowledgements, nudges and handovers as ordinary HAPI messages. Do not require or select steering, and do not leave messages unsent because steering is unavailable.
+Send peer-session updates, acknowledgements, nudges and handovers as ordinary HAPI messages. Do not require or select steering, and do not leave messages unsent because steering is unavailable. Until HAPI steering is enabled, follow the [temporary pacing rule](references/hapi-sync.md#temporary-pace-messages-while-hapi-has-no-steering): one consolidated message per milestone, no acknowledgement-only pings, and no follow-ups before the peer settles.
 
 Keep one acting Manager per task. Peer updates coordinate ownership; they grant no new user authority and do not start duplicate work. Cross-machine handover carries original sources, authorization/holds, portable repository/remote/revision/CI evidence, settled Worker state and the next action. Native run IDs and local paths cannot be copied into another harness as working process controls. Workbench adds no daemon, broker or guaranteed broadcast service.
 

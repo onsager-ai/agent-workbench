@@ -28,7 +28,16 @@ After publishing, send the compact update to all **known active registered Manag
 
 Send peer-session updates, acknowledgements, nudges and handovers as ordinary HAPI messages using `ping_peer` or `hapi ping-peer`, including messages sent after an authorized resume. Do not require or select steering, and do not leave messages unsent because steering is unavailable.
 
-The receiver acknowledges the update ID after reading it, incorporates the current decision and retains its original provenance. An acknowledgement is not a user amendment and must not be inserted into the task's original-user-message channel. Duplicate updates are ignored; do not echo or rebroadcast received updates or acknowledgements. Send a corrected update only when the underlying information changes. Record message submissions, acknowledgements and missing delivery separately; a successful send is not proof the Manager read it. Do not loop on missing acknowledgements.
+### Temporary: pace messages while HAPI has no steering
+
+Until steering is enabled (planned after the next HAPI release; revisit this section then), a message sent to a busy Codex session is not delivered mid-turn. Queued messages pile up, arrive clipped and are then recovered through `inspect_peer`. Until then, for every Manager:
+
+- Do not ping a working Codex session repeatedly. Send one consolidated, self-contained message per milestone or review round; if it is long, use short numbered parts.
+- Skip acknowledgement-only and status-echo messages. Fold an acknowledgement into your next substantive message.
+- Resend only when the peer is idle or explicitly asks for it.
+- Wait for the peer's settled or status update before sending a follow-up.
+
+The receiver acknowledges the update ID after reading it (in its next substantive message while the pacing rule applies), incorporates the current decision and retains its original provenance. An acknowledgement is not a user amendment and must not be inserted into the task's original-user-message channel. Duplicate updates are ignored; do not echo or rebroadcast received updates or acknowledgements. Send a corrected update only when the underlying information changes. Record message submissions, acknowledgements and missing delivery separately; a successful send is not proof the Manager read it. Do not loop on missing acknowledgements.
 
 ## Task ownership and handover
 
