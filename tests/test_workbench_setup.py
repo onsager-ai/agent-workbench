@@ -439,6 +439,17 @@ class SetupTests(unittest.TestCase):
         run.assert_called_once_with(["/usr/bin/magpie", "models", "claude"],
                                     capture_output=True, text=True, timeout=20, check=False)
 
+    def test_catalog_validation_matches_routing_prefixed_entries(self):
+        self.install_orchestration()
+        _, warnings, _ = self.inspect_catalog(
+            "  Routing groups\n"
+            "  auto/claude-haiku-5-5       Claude Haiku 5.5 · Wokey  low/medium\n"
+            "  hub/wokey/claude-sonnet-5-5 Claude Sonnet 5.5 · Wokey  medium/high\n"
+            "  claude/claude-opus-5-5      Claude Opus 5.5  low/medium/high\n"
+            "  auto/openrouter/deepseek/deepseek-v4.1-flash-1017  DeepSeek Flash  medium/high\n")
+        self.assertNotIn("is absent", warnings)
+        self.assertNotIn("is not listed", warnings)
+
     def test_catalog_validation_skips_when_magpie_is_absent(self):
         self.install_orchestration()
         spec = importlib.util.spec_from_file_location("fixture_workbench_no_magpie", self.script)
