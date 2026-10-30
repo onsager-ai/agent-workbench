@@ -263,7 +263,10 @@ class Setup:
         for line in result.stdout.splitlines():
             fields = line.split()
             if len(fields) >= 2 and "/" in fields[-1] and re.fullmatch(r"[a-z/]+", fields[-1]):
-                catalog[fields[0]] = set(fields[-1].split("/"))
+                # Entries carry routing prefixes (auto/, hub/wokey/, claude/); index every suffix.
+                parts = fields[0].split("/")
+                for i in range(len(parts)):
+                    catalog.setdefault("/".join(parts[i:]), set()).update(fields[-1].split("/"))
         for name, (model, effort) in targets.items():
             efforts = catalog.get(model)
             if efforts is None:
