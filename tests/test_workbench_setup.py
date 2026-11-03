@@ -402,7 +402,7 @@ class SetupTests(unittest.TestCase):
         (self.home / ".claude").mkdir(exist_ok=True)
         (self.home / ".codex").mkdir(exist_ok=True)
         self.run_setup("install")
-        self.assertEqual({p.stem for p in self.agent("x").parent.iterdir()}, {"haiku", "flash", "sonnet", "opus"})
+        self.assertEqual({p.stem for p in self.agent("x").parent.iterdir()}, {"haiku", "sonnet", "opus"})
         text = self.agent("haiku").read_text()
         worker = (ORCHESTRATION / "references/worker.md").read_text()
         self.assertTrue(text.startswith("---\nname: haiku\n"))
@@ -410,7 +410,7 @@ class SetupTests(unittest.TestCase):
         self.assertIn("Managed by agent-workbench", text)
         self.assertTrue(text.endswith(worker))
         state = json.loads((self.state / "state.json").read_bytes())
-        self.assertEqual(set(state["agents"]), {"haiku", "flash", "sonnet", "opus"})
+        self.assertEqual(set(state["agents"]), {"haiku", "sonnet", "opus"})
         self.assertIn("haiku", json.loads(self.run_setup("status").stdout)["agents"])
         self.assertIn("no-op", self.run_setup("install").stdout)
 

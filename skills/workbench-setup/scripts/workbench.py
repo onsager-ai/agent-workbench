@@ -27,7 +27,7 @@ END = b"<!-- END agent-workbench -->"
 IMPORT = b"@~/.agents/AGENTS.md"
 LIMIT = 10 * 1024 * 1024
 ROLE = re.compile(r"[a-z][a-z0-9-]*")
-LEVELS = {"luna": "L1", "haiku": "L1", "terra": "L2", "sonnet": "L2", "sol": "L3", "opus": "L3", "flash": "pilot"}
+LEVELS = {"luna": "L1", "haiku": "L1", "terra": "L2", "sonnet": "L2", "sol": "L3", "opus": "L3", "flash": "L1"}
 
 
 class Conflict(Exception):
