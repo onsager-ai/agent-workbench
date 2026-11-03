@@ -29,20 +29,21 @@ After publishing, send the compact update to all **known active registered Manag
 Choose the delivery channel per peer:
 
 - **Same harness and same machine, listed natively:** message the peer natively. In Claude Code, use `ListAgents` and `SendMessage`; messages reach a busy session at its next tool round. Use `notify_when_idle` instead of polling. If the send reports the message held for approval or refused, use HAPI instead.
-- **Everything else:** use HAPI `ping_peer` or `hapi ping-peer`. That covers cross-harness and cross-machine peers, peers missing from the native listing, and Codex peers. Native `codex queue` only queues until the turn ends and reaches only sessions on the shared app-server daemon, so it gains nothing over HAPI.
+- **Everything else:** use HAPI `ping_peer` or `hapi ping-peer`. That covers cross-harness and cross-machine peers, peers missing from the native listing, and Codex peers. Native `codex queue` only queues until the turn ends and reaches only sessions on the shared app-server daemon, so HAPI steering supersedes it.
 
-The checkpoint stays in your own HAPI session whichever channel delivers the notification. Send updates, acknowledgements, nudges and handovers as ordinary messages, including after an authorized resume. Do not require or select steering, and do not leave messages unsent because steering is unavailable.
+The checkpoint stays in your own HAPI session whichever channel delivers the notification, including after an authorized resume.
 
-### Temporary: pace messages while HAPI has no steering
+### Choose the HAPI delivery mode
 
-Until steering is enabled (planned after the next HAPI release; revisit this section then), a message sent to a busy Codex session is not delivered mid-turn. Queued messages pile up, arrive clipped and are then recovered through `inspect_peer`. Until then, every Manager sending through HAPI follows these rules (native same-machine Claude Code messages are not affected):
+HAPI 0.34.0 and later can steer a message into a peer's active turn. Choose `deliveryMode` (`--delivery-mode` in the CLI) per message:
 
-- Do not ping a working Codex session repeatedly. Send one consolidated, self-contained message per milestone or review round; if it is long, use short numbered parts.
-- Skip acknowledgement-only and status-echo messages. Fold an acknowledgement into your next substantive message.
-- Resend only when the peer is idle or explicitly asks for it.
-- Wait for the peer's settled or status update before sending a follow-up.
+- **`auto` (default)** for routine updates, acknowledgements, nudges and handovers. It steers an active Codex turn, queues for other flavors and idle sessions, and resumes an inactive target.
+- **`steer`** for a time-sensitive finding the peer needs during its current turn: a correction that invalidates its assumptions, a blocker, a hold, or a result that changes its next action. State why it matters now and what the peer should adjust. It works for an active Claude, Codex, Pi or Cursor ACP turn. HAPI rejects it before sending when the target is idle or inactive; send it with `auto` or `queue` instead if it still matters. Sessions started before their runner moved to 0.34.0 run older code and may not support steering.
+- **`queue`** for a non-urgent update that should wait for the peer's current turn to end.
 
-The receiver acknowledges the update ID after reading it (in its next substantive message while the pacing rule applies), incorporates the current decision and retains its original provenance. An acknowledgement is not a user amendment and must not be inserted into the task's original-user-message channel. Duplicate updates are ignored; do not echo or rebroadcast received updates or acknowledgements. Send a corrected update only when the underlying information changes. Record message submissions, acknowledgements and missing delivery separately; a successful send is not proof the Manager read it. Do not loop on missing acknowledgements.
+Steering does not abort the peer's turn or guarantee an immediate reply. Send one consolidated, self-contained message per milestone or review round; if it is long, use short numbered parts, because peers read through clipped snippets. Skip acknowledgement-only and status-echo messages. If a send or steer is unconfirmed after submission, inspect the target before retrying; it may already be queued or consumed. Do not resend automatically.
+
+The receiver acknowledges the update ID after reading it, in its next substantive message, incorporates the current decision and retains its original provenance. An acknowledgement is not a user amendment and must not be inserted into the task's original-user-message channel. Duplicate updates are ignored; do not echo or rebroadcast received updates or acknowledgements. Send a corrected update only when the underlying information changes. Record message submissions, acknowledgements and missing delivery separately; a successful send is not proof the Manager read it. Do not loop on missing acknowledgements.
 
 ## Task ownership and handover
 
@@ -52,15 +53,15 @@ A portable handover includes original user sources, current authorization/holds,
 
 ## Native capabilities and limits
 
-Prefer MCP `list_peers` and `inspect_peer` for discovery and reads, and `ping_peer` for ordinary messages. Tool namespaces differ by harness; discover the actual schema rather than hardcoding a tool prefix. Shell equivalents for an already configured HAPI CLI are:
+Prefer MCP `list_peers` and `inspect_peer` for discovery and reads, and `ping_peer` for messages. Tool namespaces differ by harness; discover the actual schema rather than hardcoding a tool prefix. Shell equivalents for an already configured HAPI CLI are:
 
 ~~~sh
 hapi ping-peer --list
 hapi inspect-peer SESSION_ID --limit 50
-hapi ping-peer SESSION_ID "MESSAGE"
+hapi ping-peer SESSION_ID "MESSAGE" --delivery-mode auto|queue|steer
 ~~~
 
-Use the ordinary message parameters without selecting a delivery mode or adding a steering flag. Do not gate sending on steering support or bypass the peer surface with raw JWT/HTTP calls.
+Select the [delivery mode](#choose-the-hapi-delivery-mode) through the exposed parameter. Do not leave a message unsent because steering was rejected, or bypass the peer surface with raw JWT/HTTP calls.
 
 `inspect_peer` is read-only and does not resume the target. `ping_peer` can resume an inactive target, including a race after checking activity; checking first is a workflow precaution, not an enforced no-wake guarantee. Report an unexpected resume. Do not invent a no-resume flag or use raw JWT/HTTP replacements.
 
