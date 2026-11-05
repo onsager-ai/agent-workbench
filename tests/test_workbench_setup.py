@@ -446,7 +446,10 @@ class SetupTests(unittest.TestCase):
             "  auto/claude-haiku-5-5       Claude Haiku 5.5 · Wokey  low/medium\n"
             "  hub/wokey/claude-sonnet-5-5 Claude Sonnet 5.5 · Wokey  medium/high\n"
             "  claude/claude-opus-5-5      Claude Opus 5.5  low/medium/high\n"
-            "  auto/openrouter/deepseek/deepseek-v4.1-flash-1017  DeepSeek Flash  medium/high\n")
+            "  auto/openrouter/deepseek/deepseek-v4.1-flash-1017  DeepSeek Flash  medium/high\n"
+            "  onsager/codex/gpt-6-luna    GPT-6 Luna  high/max\n"
+            "  onsager/codex/gpt-6.1-terra GPT-6.1 Terra  medium/high\n"
+            "  onsager/codex/gpt-6.1-sol   GPT-6.1 Sol  medium/high\n")
         self.assertNotIn("is absent", warnings)
         self.assertNotIn("is not listed", warnings)
 
@@ -474,14 +477,18 @@ class SetupTests(unittest.TestCase):
         self.assertIn("not installed", result.stdout)
         self.assertFalse(self.agent("x").parent.exists())
 
-    def test_codex_role_routed_by_override_and_removed_by_null(self):
-        route = "onsager/codex/gpt-6-luna"
-        self.install_orchestration({"roles": {"luna": {"claude_model": route}}})
+    def test_codex_role_routed_by_default_override_and_removed_by_null(self):
+        self.install_orchestration()
         self.run_setup("install")
         text = self.agent("luna").read_text()
-        self.assertIn(f'model: "{route}"\neffort: "max"\n', text)
+        self.assertIn('model: "onsager/codex/gpt-6-luna"\neffort: "max"\n', text)
         self.assertIn("gpt-6-luna via configured gateway", text)
-        self.assertFalse(self.agent("terra").exists())
+        self.assertFalse(self.agent("flash").exists())
+        route = "other/gpt-6-luna"
+        self.write(self.home / ".config/agent-workbench/models.json",
+                   json.dumps({"roles": {"luna": {"claude_model": route}}}).encode())
+        self.run_setup("install")
+        self.assertIn(f'model: "{route}"\n', self.agent("luna").read_text())
         self.write(self.home / ".config/agent-workbench/models.json",
                    json.dumps({"roles": {"luna": {"claude_model": None}}}).encode())
         self.run_setup("install")
