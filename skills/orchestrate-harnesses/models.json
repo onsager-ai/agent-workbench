@@ -1,12 +1,12 @@
 {
   "version": 1,
   "roles": {
-    "luna": {"cli": "codex", "model": "gpt-6-luna", "effort": "max", "claude_model": null, "timeout_s": 7200},
+    "luna": {"cli": "codex", "model": "gpt-6-luna", "effort": "max", "claude_model": "onsager/codex/gpt-6-luna", "timeout_s": 7200},
     "haiku": {"cli": "claude", "model": "claude-haiku-5-5", "effort": "medium", "budget_usd": null, "timeout_s": 7200},
     "flash": {"cli": "codex", "model": "openrouter/deepseek/deepseek-v4.1-flash-1017", "effort": "high", "claude_model": null, "timeout_s": 7200},
-    "terra": {"cli": "codex", "model": "gpt-6.1-terra", "effort": "high", "claude_model": null, "timeout_s": 7200},
+    "terra": {"cli": "codex", "model": "gpt-6.1-terra", "effort": "high", "claude_model": "onsager/codex/gpt-6.1-terra", "timeout_s": 7200},
     "sonnet": {"cli": "claude", "model": "claude-sonnet-5-5", "effort": "medium", "budget_usd": null, "timeout_s": 7200},
-    "sol": {"cli": "codex", "model": "gpt-6.1-sol", "effort": "high", "claude_model": null, "timeout_s": 7200},
+    "sol": {"cli": "codex", "model": "gpt-6.1-sol", "effort": "high", "claude_model": "onsager/codex/gpt-6.1-sol", "timeout_s": 7200},
     "opus": {"cli": "claude", "model": "claude-opus-5-5", "effort": "medium", "budget_usd": null, "timeout_s": 7200}
   },
   "max_auto_rework": 2,

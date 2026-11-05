@@ -39,7 +39,7 @@ class WorkerConfigurationTests(unittest.TestCase):
                     self.assertIsNone(role["budget_usd"])
                 else:
                     fields.add("claude_model")
-                    self.assertIsNone(role["claude_model"])
+                    self.assertEqual(role["claude_model"], None if tier == "flash" else "onsager/codex/" + role["model"])
                 self.assertEqual(set(role), fields)
                 self.assertIs(type(role["timeout_s"]), int)
                 self.assertGreater(role["timeout_s"], 0)
