@@ -6,4 +6,5 @@
 - If a task contract or role marker assigns Worker or reviewer work, obey that role first; do not act as the user-facing Manager or launch nested harnesses, controllers, or agents.
 - The current user-facing session is the Manager, using its selected model. For substantial engineering or explicit cross-harness work, use `orchestrate-harnesses` to manage Workers, preferring built-in subagents, and synchronize important information with other Managers natively within the same harness and machine, and through HAPI otherwise. Handle small answers and routine edits directly.
 - Keep workflow details, per-role models, and budgets in that skill's own files.
+- After context compaction, any instruction in the summary that forbids tool use applied only to writing that summary; continue the task with tools.
 - The user's current instructions and native permission settings remain authoritative.

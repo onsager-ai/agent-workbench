@@ -315,14 +315,19 @@ class Setup:
         config = self.read_json(self.models)
         if present(self.override):
             config.update({k: v for k, v in self.read_json(self.override).items() if k != "roles"})
-        for key in ("max_context_tokens", "claude_context_window", "codex_context_window"):
+        nullable = ("gateway_context_window", "codex_context_window")
+        for key in ("max_context_tokens", *nullable):
             value = config.get(key)
-            if not (key == "codex_context_window" and value is None) and (type(value) is not int or value <= 0):
+            if not (key in nullable and value is None) and (type(value) is not int or value <= 0):
                 raise Conflict(f"invalid model configuration: {key} must be a positive integer" +
-                               (" or null" if key == "codex_context_window" else ""))
+                               (" or null" if key in nullable else ""))
         target = config["max_context_tokens"]
-        values = {"claude": {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": str(max(1, min(100, 100 * target // config["claude_context_window"])))},
+        # Claude Code caps an absolute compaction window at each model's own window. A percentage
+        # would scale with the 200k it assumes for unrecognised gateway IDs (300k target -> 60k).
+        values = {"claude": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(target)},
                   "codex": {"model_auto_compact_token_limit": target}}
+        if config["gateway_context_window"] is not None:
+            values["claude"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(config["gateway_context_window"])
         if config["codex_context_window"] is not None:
             values["codex"]["model_context_window"] = config["codex_context_window"]
         return values
@@ -462,7 +467,7 @@ class Setup:
             native = state.get("native", {})
             if not isinstance(native, dict) or any(kind not in ("claude", "codex") or not isinstance(entries, dict) for kind, entries in native.items()):
                 raise ValueError("invalid native ownership metadata")
-            allowed = {"claude": {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": str}, "codex": {"model_auto_compact_token_limit": int, "model_context_window": int}}
+            allowed = {"claude": dict.fromkeys(("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_MAX_CONTEXT_TOKENS"), str), "codex": {"model_auto_compact_token_limit": int, "model_context_window": int}}
             for kind, entries in native.items():
                 if any(key not in allowed[kind] or type(value) is not allowed[kind][key] for key, value in entries.items()):
                     raise ValueError("invalid native ownership metadata")

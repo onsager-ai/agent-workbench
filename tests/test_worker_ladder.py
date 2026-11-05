@@ -39,7 +39,7 @@ class WorkerConfigurationTests(unittest.TestCase):
                     self.assertIsNone(role["budget_usd"])
                 else:
                     fields.add("claude_model")
-                    self.assertIsNone(role["claude_model"])
+                    self.assertEqual(role["claude_model"], None if tier == "flash" else "onsager/codex/" + role["model"])
                 self.assertEqual(set(role), fields)
                 self.assertIs(type(role["timeout_s"]), int)
                 self.assertGreater(role["timeout_s"], 0)
@@ -47,7 +47,7 @@ class WorkerConfigurationTests(unittest.TestCase):
     def test_shared_policy_fields_are_valid_configuration(self) -> None:
         self.assertEqual(
             set(self.models),
-            {"version", "roles", "max_auto_rework", "sol_weekly_brake_percent", "max_context_tokens", "claude_context_window", "codex_context_window"},
+            {"version", "roles", "max_auto_rework", "sol_weekly_brake_percent", "max_context_tokens", "gateway_context_window", "codex_context_window"},
         )
         self.assertEqual(self.models["version"], 1)
         self.assertIs(type(self.models["max_auto_rework"]), int)
