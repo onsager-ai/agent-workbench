@@ -541,33 +541,47 @@ class SetupTests(unittest.TestCase):
         self.write(codex, original)
         self.run_setup("install")
         settings = json.loads(claude.read_bytes())
-        self.assertEqual(settings["env"], {"OTHER": "x", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "30"})
+        self.assertEqual(settings["env"], {"OTHER": "x", "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000", "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000"})
         self.assertEqual(settings["model"], "magpie")
         expected = original.replace(b'[model_providers.magpie]', b'model_auto_compact_token_limit = 300000\nmodel_context_window = 900000\n[model_providers.magpie]')
         self.assertEqual(codex.read_bytes(), expected)
         before = self.snapshot()
         self.assertIn("no-op", self.run_setup("install").stdout)
         self.assertEqual(before, self.snapshot())
-        del settings["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"]
+        del settings["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]
         claude.write_text(json.dumps(settings))
         codex.write_bytes(original)
         status = json.loads(self.run_setup("status").stdout)["native_settings"]
-        self.assertEqual(status["claude"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "missing")
+        self.assertEqual(status["claude"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "missing")
         self.run_setup("install")
         self.assertEqual(codex.read_bytes(), expected)
         settings = json.loads(claude.read_bytes())
-        settings["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "42"
+        settings["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = "420000"
         claude.write_text(json.dumps(settings))
-        self.assertEqual(json.loads(self.run_setup("status").stdout)["native_settings"]["claude"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "conflict")
+        self.assertEqual(json.loads(self.run_setup("status").stdout)["native_settings"]["claude"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "conflict")
         self.assertIn("edited", self.run_setup("install", ok=False).stderr)
         self.run_setup("uninstall")
-        self.assertEqual(json.loads(claude.read_bytes())["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "42")
+        self.assertEqual(json.loads(claude.read_bytes())["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "420000")
         self.assertEqual(codex.read_bytes(), original)
+
+    def test_native_migrates_owned_autocompact_percentage(self):
+        self.install_orchestration()
+        claude = self.home / ".claude/settings.json"
+        self.write(claude, b'{"env":{"OTHER":"x"}}')
+        self.run_setup("install")
+        state_path = self.state / "state.json"
+        state = json.loads(state_path.read_bytes())
+        state["native"]["claude"] = {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "30"}
+        state_path.write_text(json.dumps(state))
+        claude.write_text(json.dumps({"env": {"OTHER": "x", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "30"}}))
+        self.run_setup("install")
+        self.assertEqual(json.loads(claude.read_bytes())["env"], {"OTHER": "x", "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000", "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000"})
+        self.assertEqual(json.loads(state_path.read_bytes())["native"]["claude"], {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000", "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000"})
 
     def test_native_preexisting_values_and_invalid_files(self):
         for index, (kind, data, succeeds) in enumerate((
-            ("claude", b'{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"30"}}', True),
-            ("claude", b'{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"31"}}', False),
+            ("claude", b'{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"300000"}}', True),
+            ("claude", b'{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"310000"}}', False),
             ("claude", b'{invalid', False),
             ("codex", b'model_auto_compact_token_limit = 300000\n', True),
             ("codex", b'model_auto_compact_token_limit = 1\n', False),
@@ -581,15 +595,15 @@ class SetupTests(unittest.TestCase):
                 self.run_setup("install", ok=succeeds)
                 if succeeds:
                     self.run_setup("uninstall")
-                    self.assertNotIn(b'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE' if kind == "claude" else b'model_auto_compact_token_limit', path.read_bytes())
+                    self.assertNotIn(b'CLAUDE_CODE_AUTO_COMPACT_WINDOW' if kind == "claude" else b'model_auto_compact_token_limit', path.read_bytes())
                 else:
                     self.assertEqual(path.read_bytes(), data)
 
     def test_native_missing_directory_and_override_validation(self):
-        self.install_orchestration({"max_context_tokens": 500000, "claude_context_window": 1000000})
+        self.install_orchestration({"max_context_tokens": 500000, "gateway_context_window": None})
         (self.home / ".codex").rmdir()
         self.run_setup("install")
-        self.assertEqual(json.loads((self.home / ".claude/settings.json").read_bytes())["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"], "50")
+        self.assertEqual(json.loads((self.home / ".claude/settings.json").read_bytes())["env"], {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "500000"})
         state = json.loads((self.state / "state.json").read_bytes())
         self.assertNotIn("codex", state["native"])
 
