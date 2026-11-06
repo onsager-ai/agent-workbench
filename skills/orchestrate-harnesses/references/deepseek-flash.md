@@ -1,6 +1,6 @@
 # DeepSeek Flash Worker
 
-`flash` is the first L1 Worker: CI failure diagnosis from supplied logs, repository exploration with file/line evidence, a small implementation task, or a second pass over a diff. The Manager retains planning, acceptance and delivery responsibility. Give it work that fits in one context; send long or compaction-prone work to luna or haiku.
+`flash` is an opt-in Worker outside the ladder, used only when the user asks for it. Its per-token provider billing and large per-call context made it costlier than luna in practice. Suitable work: CI failure diagnosis from supplied logs, repository exploration with file/line evidence, a small implementation task, or a second pass over a diff. The Manager retains planning, acceptance and delivery responsibility. Give it work that fits in one context; send long or compaction-prone work to luna or haiku.
 
 ## Route through the Codex harness
 
