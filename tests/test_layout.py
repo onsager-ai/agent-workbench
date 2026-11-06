@@ -8,7 +8,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_SKILLS = {
     "disk-cleanup",
-    "hapi-runner-setup",
     "manage-lane",
     "orchestrate-harnesses",
     "prompt-for-decisions",
@@ -63,7 +62,7 @@ class PublicLayoutTests(unittest.TestCase):
             "skills/orchestrate-harnesses/models.json",
             "skills/orchestrate-harnesses/references/manager.md",
             "skills/orchestrate-harnesses/references/worker.md",
-            "skills/orchestrate-harnesses/references/hapi-sync.md",
+            "skills/orchestrate-harnesses/references/t3-sync.md",
             "skills/orchestrate-harnesses/references/magpie.md",
             "skills/workbench-setup/assets/AGENTS.md",
             "skills/workbench-setup/scripts/workbench.py",
