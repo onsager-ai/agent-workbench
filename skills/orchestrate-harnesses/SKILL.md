@@ -59,7 +59,7 @@ Old `roles.manager`, `roles.preflight`, `roles.acceptance` and controller-only l
 
 ## Worker ladder
 
-| Level | Codex harness | Claude harness |
+| Level | Codex harness (first) | Claude harness (second) |
 | --- | --- | --- |
 | L1 | flash / deepseek-v4.1-flash-1017 / high, then luna / gpt-6-luna / max | haiku / claude-haiku-5-5 / medium |
 | L2 | terra / gpt-6.1-terra / high | sonnet / claude-sonnet-5-5 / medium |
@@ -67,7 +67,7 @@ Old `roles.manager`, `roles.preflight`, `roles.acceptance` and controller-only l
 
 When Magpie is available, check quota before dispatch using [Magpie guidance](references/magpie.md); quota informs a recorded Manager choice and never triggers automatic tier substitution.
 
-Dispatch Workers as native subagents by tier name (`subagent_type: <role>`) whenever the Manager's harness has a definition for that tier. A Codex Manager has the Codex column natively. In Claude Code, workbench-setup generates definitions for the Claude tiers and for each Codex tier with a `claude_model`; a Claude Manager runs the remaining Codex tiers (flash by default) as Codex Workers. Start at L1 flash, then luna; fall back to haiku only with a recorded reason. A configured route is not proof of a working tool loop: verify a tool call through the route before relying on it, and report a gap rather than substituting silently. Use effective configuration if it overrides a model or effort. Start at L1; escalate with actual complexity, defects or failed-attempt evidence. Move upward one level at a time unless the Manager records a concrete skip reason. An unavailable native model requires an explicit routing decision, not automatic stronger-model substitution.
+Dispatch Workers as native subagents by tier name (`subagent_type: <role>`) whenever the Manager's harness has a definition for that tier. A Codex Manager has the Codex column natively. In Claude Code, workbench-setup generates definitions for the Claude tiers and for each Codex tier with a `claude_model`; a Claude Manager runs the remaining Codex tiers (flash by default) as Codex Workers. At each level, try the Codex tier first and the Claude tier second: L1 flash → luna → haiku, L2 terra → sonnet, L3 sol → opus. Move to the Claude tier within a level only with a recorded reason: the Codex route is unavailable or failing, its quota is exhausted, or a Codex attempt at that level failed. Escalating to the next level starts again at its Codex tier. A configured route is not proof of a working tool loop: verify a tool call through the route before relying on it, and report a gap rather than substituting silently. Use effective configuration if it overrides a model or effort. Start at L1; escalate with actual complexity, defects or failed-attempt evidence. Move upward one level at a time unless the Manager records a concrete skip reason. An unavailable native model requires an explicit routing decision, not automatic stronger-model substitution.
 
 A same-harness native Worker needs no justification beyond its brief. A cross-harness Worker is an explicit Manager choice for a concrete capability or cost reason, routed through an owned HAPI session or handover; record the reason, what the attempt resolves and its configured timeout, and mention a monetary cap only when configured. Compare effective provider prices rather than assuming cost from the harness name. No automatic provider fallback, tier change or retry.
 
