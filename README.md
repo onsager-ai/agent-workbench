@@ -1,20 +1,19 @@
 # Agent Workbench Skills
 
-Seven portable skills for Codex and Claude Code:
+Six portable skills for Codex and Claude Code:
 
 - disk-cleanup — inspect and reclaim safe, regenerable disk usage.
-- hapi-runner-setup — manage a HAPI systemd user service and private provider credentials when explicitly requested.
 - manage-lane — maintain task intent, authorization and handovers.
-- orchestrate-harnesses — coordinate native Workers and HAPI Managers with scoped briefs and native lifecycle controls.
+- orchestrate-harnesses — coordinate native Workers and T3 Code Managers with scoped briefs and native lifecycle controls.
 - prompt-for-decisions — present a real unresolved user choice with evidence and trade-offs.
 - review-storybook — review interactive Storybook previews against a specific revision.
 - workbench-setup — explicitly apply shared global instructions while preserving personal text.
 
 ## Requirements and workflow
 
-The skills CLI requires Node.js 22.20 or newer. The optional global-instruction installer requires Python 3.11+ on Linux or macOS. Engineering work uses the installed/authenticated native harness and HAPI tools; distributing skills does not install those tools or provide credentials.
+The skills CLI requires Node.js 22.20 or newer. The optional global-instruction installer requires Python 3.11+ on Linux or macOS. Engineering work uses the installed/authenticated native harness and T3 Code tools; distributing skills does not install those tools or provide credentials.
 
-The current interactive session is the **Manager**, using its selected native model. It talks with the user, delegates substantial work, manages amendments and verifies delivery. Prefer the harness's **built-in subagents as Workers** for same-harness implementation, investigation and review. The Manager owns delegation; Workers do not create nested agents. Managers in the same harness on the same machine message each other natively; HAPI coordinates them across harnesses and machines through sourced checkpoints and explicit ownership handover. See [native Worker workflow](skills/orchestrate-harnesses/SKILL.md#native-worker-workflow) and [HAPI synchronization](skills/orchestrate-harnesses/references/hapi-sync.md).
+The current interactive session is the **Manager**, using its selected native model. It talks with the user, delegates substantial work, manages amendments and verifies delivery. Prefer the harness's **built-in subagents as Workers** for same-harness implementation, investigation and review. The Manager owns delegation; Workers do not create nested agents. Managers in the same harness on the same machine message each other natively; T3 Code coordinates them across harnesses and machines through sourced checkpoints and explicit ownership handover. See [native Worker workflow](skills/orchestrate-harnesses/SKILL.md#native-worker-workflow) and [T3 synchronization](skills/orchestrate-harnesses/references/t3-sync.md).
 
 Workers use a Codex-first ladder: **Flash high, then Luna max / Haiku medium → Terra high / Sonnet medium → Sol high / Opus medium**. A Claude Manager runs the Codex-harness roles as sandboxed `codex exec` Workers rather than gateway-routed subagents. Each role's `timeout_s` (7200 s by default) is a ceiling; the Manager sizes each dispatch's timeout to the task. Escalation needs evidence; Claude alternatives need a cost justification. Model IDs, efforts, timeouts, optional monetary caps, rework policy and context targets live in [models.json](skills/orchestrate-harnesses/models.json), with partial per-user overrides described in [local model configuration](skills/orchestrate-harnesses/SKILL.md#local-model-configuration). No fixed amount ceiling is imposed; `budget_usd: null` adds no monetary cap. See [Magpie guidance](skills/orchestrate-harnesses/references/magpie.md) for quota-aware tier choices, catalog warnings and usage reporting.
 
@@ -102,7 +101,7 @@ The --copy option installs independent copies in the project. This is useful whe
 
 ## Set up a new machine
 
-Install Node.js 22.20 or newer, then run the global install command above. To keep skills current later, run the global update command. For optional global instructions, install Python 3.11+ and run the explicit setup step. For engineering work, enable the native harness subagent tools and HAPI capabilities you intend to use and authenticate through their supported setup. This repository does not manage credentials or agent authentication.
+Install Node.js 22.20 or newer, then run the global install command above. To keep skills current later, run the global update command. For optional global instructions, install Python 3.11+ and run the explicit setup step. For engineering work, enable the native harness subagent tools and T3 Code capabilities you intend to use and authenticate through their supported setup. This repository does not manage credentials or agent authentication.
 
 ## License
 

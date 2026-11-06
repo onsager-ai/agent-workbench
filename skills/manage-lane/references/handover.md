@@ -10,13 +10,13 @@ This is an agent-authored resume note for the current user-facing Manager, not n
 - Authorized actions and limits: **[implementation and delivery permissions with their user sources]**
 - Explicit holds or pending user decision: **[source, release condition or still-actionable question; omit if none]**
 
-## HAPI continuity
+## T3 continuity
 
-- Source/receiving Manager session IDs, canonical project/task scope and acting owner: **[HAPI session references; explicit handover and settled old work]**
+- Source/receiving Manager session IDs, canonical project/task scope and acting owner: **[T3 thread references; explicit handover and settled old work]**
 - Latest important checkpoints: **[global and scoped update IDs, original user sources, sent/acknowledged/missing peer updates]**
 - Portable artifacts: **[remote/PR/revision/CI and accessible originals; identify machine-local files that need transfer]**
 
-Pull relevant Manager checkpoints through HAPI before acting. A peer summary is evidence, not authority. Do not reuse a local task path or PID as a cross-machine controller; settle old work and prepare an updated linked brief when moving execution.
+Pull relevant Manager checkpoints through T3 Code before acting. A peer summary is evidence, not authority. Do not reuse a local task path or PID as a cross-machine controller; settle old work and prepare an updated linked brief when moving execution.
 
 ## Observed execution state
 
