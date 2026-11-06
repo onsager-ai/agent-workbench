@@ -16,16 +16,31 @@ If the session is not running in T3 Code or T3 tools are unavailable, report syn
 Publish changes that affect another Manager's decisions: user requirements and sources, settled choices, task ownership/handover, blockers, accepted results and verified branch/revision/CI evidence. Routine tool output, full transcripts and secrets do not belong in synchronization messages. Keep each checkpoint self-contained; put the marker and decision first and split unrelated keys into separate plain-text messages. Preserve the existing format:
 
 ~~~text
-WB_MANAGER role=manager scope=global key=worker-routing update=<source-session>:<sequence> supersedes=<prior-update-or-none>
+WB_MANAGER role=manager scope=global key=worker-routing update=<env8>/<thread8>:<n> supersedes=<prior-update-or-none> reply=none|ack|required
 Decision: <current rule and why it matters>. User source: <session/message reference>.
 Owner: <session/task>. Evidence: <portable repo/PR/revision links>. Next: <action or hold>.
 ~~~
 
-Use `scope=global` for workbench/user-wide rules and `scope=<canonical-repository-or-task>` for scoped work. Each source increments its own update sequence. Preserve the latest known global decisions as concise checkpoints when handing over, with original source/update IDs; relaying a checkpoint does not create a new decision or authority. Include original user text or an accessible source when authorization matters; a missing local file on another machine is not usable evidence.
+Use `scope=global` for workbench/user-wide rules and `scope=<canonical-repository-or-task>` for scoped work. The update ID is the first eight characters of the sender's T3 `environmentId` and `threadId`, then that thread's own sequence starting at 1, for example `update=40683a5c/adb8038a:3`; `supersedes` uses the same form. A Manager outside T3 uses its native session ID in place of `<env8>/<thread8>`. `reply=none` needs no answer, `ack` asks for an acknowledgement in the receiver's next substantive message, and `required` holds dependent work until the sender gets an answer. Use the same block for native and T3 delivery. Preserve the latest known global decisions as concise checkpoints when handing over, with original source/update IDs; relaying a checkpoint does not create a new decision or authority. Include original user text or an accessible source when authorization matters; a missing local file on another machine is not usable evidence.
 
 Post the checkpoint in your own thread and send the compact update to known active registered Managers for global scope, or active registered Managers in the affected project/task scope. Refresh activity before sending, exclude self, and use resolved thread identities. Do not notify unrelated sessions, Workers or reviewers, or deliberately wake inactive/archived Managers for routine sync; they catch up on resume. An explicit user-authorized handover may resume its named target.
 
-For a peer listed natively in the same harness and machine, use native messaging; in Claude Code use `ListAgents` and `SendMessage`. For other peers, including cross-harness, cross-machine and Codex peers, send the checkpoint using `t3_thread_send`. Discover tool schemas by name without hardcoding an MCP prefix. Send one consolidated, self-contained message per milestone or review round and no acknowledgement-only pings. A successful send does not prove the recipient read it; record submitted and confirmed updates separately and do not automatically resend an unconfirmed message. A receiver can acknowledge an update in its next substantive message, retain its provenance, and avoid rebroadcasting duplicates.
+For a peer listed natively in the same harness and machine, use native messaging; in Claude Code use `ListAgents` and `SendMessage`. For other peers, including cross-harness, cross-machine and Codex peers, send the checkpoint using `t3_thread_send`. Discover tool schemas by name without hardcoding an MCP prefix. Send one consolidated, self-contained message per milestone or review round and no acknowledgement-only pings. A successful send does not prove the recipient read it; record submitted and confirmed updates separately and do not automatically resend an unconfirmed message.
+
+### Choose the T3 delivery mode
+
+Relay is near-realtime by default. Choose `mode` on `t3_thread_send` per message:
+
+- **`auto` (default)** for decisions, corrections, blockers, holds, handovers and anything that may change the peer's next action. It steers a running turn, starts a turn on an idle thread and queues otherwise. An idle, unsettled, unarchived registered Manager counts as active, so starting its turn is expected.
+- **`steer`** when the message must land in the current turn and should fail rather than wait or start a new turn, such as a correction that invalidates work in progress. State what the peer should adjust now.
+- **`queue`** only for non-time-sensitive information that can wait until the peer's current turn ends, which may take a long time.
+- **`restart`** never for relay; it interrupts the peer's work. Use it only on the user's explicit instruction.
+
+Do not send to settled or archived Managers for routine sync; they catch up on resume. Steering does not abort the peer's turn or guarantee an immediate reply.
+
+### Acknowledge
+
+When `reply=ack` or `reply=required`, the receiver puts `WB_ACK update=<id>` as the first line of its next substantive message to the sender, using the same channel, and incorporates the decision with its provenance. Do not acknowledge `reply=none`, echo or rebroadcast received updates, or loop on missing acknowledgements.
 
 ## Task ownership and handover
 
