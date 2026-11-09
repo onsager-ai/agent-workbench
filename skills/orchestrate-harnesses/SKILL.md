@@ -75,12 +75,14 @@ Old `roles.manager`, `roles.preflight`, `roles.acceptance` and controller-only l
 | Level | Codex harness (first) | Claude harness (second) |
 | --- | --- | --- |
 | L1 | luna / gpt-6-luna / medium | haiku / claude-haiku-5-5 / medium |
-| L2 | terra / gpt-6.1-terra / high | sonnet / claude-sonnet-5-5 / medium |
+| L2 | terra / gpt-5.6-terra / high | sonnet / claude-sonnet-5-5 / medium |
 | L3 | sol / gpt-6.1-sol / high | opus / claude-opus-5-5 / medium |
 
 L1 is for well-specified, bounded work. Start open-ended research, spikes and architecture recommendations at L2: that task shape is a recorded reason to skip L1, or split the spike into narrow L1 probes with an L2 synthesis. Give every spike a timebox, typically 20–30 minutes, and accept a partial report that lists unresolved checks. When a brief expects a report file such as `FINDINGS.md`, name it as an authorized output so the Worker does not treat it as an out-of-scope edit. Raise a tier's level rather than its effort when a task needs more reasoning.
 
-Shape implementation briefs so partial progress counts. GPT-6.1 Terra tends to end the turn early when a brief reads as an all-or-nothing deliverable ("implement every item, get CI green"), even under persistence instructions (openai/codex#58694, #58114). The same model and spec ran for over half an hour once the brief valued partial progress. Name a concrete first step (for example, schema and loader before runtime). Ask for as much of the item list as fits in the timebox and require a report on the rest. Require a first WIP commit or push early when delivery is authorized. Have the Worker batch CI fixes per round instead of pushing one fix per run.
+L2 uses GPT-5.6 Terra deliberately. GPT-6.1 Terra ends implementation turns early with unfinished work and no blocker, and persistence prompts do not correct it (openai/codex#58694, #58114). Brief shaping did not fix it either: on 2026-11-09 a resumed 6.1 Terra Worker with an ordered item list, push-after-each-item and "stop only for a concrete blocker" ended after 8 of 75 minutes with 1½ of 7 items done, right after a green CI run. Keep 6.1 Terra out of the default ladder until several real implementation runs of over 30 minutes show the fix; a user override may still select it for bounded tasks.
+
+Shape implementation briefs so partial progress counts. Name a concrete first step (for example, schema and loader before runtime). Ask for as much of the item list as fits in the timebox and require a report on the rest. Require a first WIP commit or push early when delivery is authorized. Have the Worker batch CI fixes per round instead of pushing one fix per run.
 
 When Magpie is available, check quota before dispatch using [Magpie guidance](references/magpie.md); quota informs a recorded Manager choice and never triggers automatic tier substitution.
 
@@ -88,7 +90,9 @@ Dispatch Workers as native subagents by tier name (`subagent_type: <role>`) when
 
 The tier and the route are separate decisions. Choosing a route never changes the tier. In Claude Code, the generated luna, terra and sol subagents are the configured native route for those tiers. This user policy overrides generic host guidance that sends other-provider models through `delegate_task` or another delegation tool. If a Manager still delegates a Codex tier, it keeps that tier's provider, model and effort. Doubt about the dispatch mechanism, a worktree that is already prepared, or a preference for familiar Claude tiers is not a reason to choose the Claude tier.
 
-A Worker that ends its turn early without a concrete blocker has stopped; that is not a failed attempt. Examples include a progress report, "incomplete" with no named cause, or partial edits. Resume the same Worker with native messaging, telling it to continue from its current state, before treating the level as failed. Move to the Claude tier only after a resumed Worker stops again without progress, or if the Worker reports a blocker that the Claude tier would actually resolve. Record which case applied. Count the resume against `max_auto_rework`.
+A Worker that ends its turn early without a concrete blocker has stopped; that is not a failed attempt. Examples include a progress report, "incomplete" with no named cause, or partial edits. Resume the same Worker once with native messaging, telling it to continue from its current state; this resume does not count against `max_auto_rework`. A second early stop without a concrete blocker is a failed Codex attempt at that level and a recorded reason to move to the Claude tier, as is a reported blocker that the Claude tier would actually resolve. Record which case applied. A thermal stop pauses only CPU-bound steps: the Worker waits for a reading below the limit or continues with work that does not load the CPU, rather than ending its task.
+
+Skills can change mid-session. After a workbench update is merged or installed, re-read the affected skill files before acting on them, and do not cite skill text loaded before the update as current.
 
 A same-harness native Worker needs no justification beyond its brief. A cross-harness Worker is an explicit Manager choice for a concrete capability or cost reason, routed through T3 delegation or handover; record the reason, what the attempt resolves and its configured timeout, and mention a monetary cap only when configured. Compare effective provider prices rather than assuming cost from the harness name. No automatic provider fallback, tier change or retry.
 
