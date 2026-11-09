@@ -42,6 +42,10 @@ Do not send to settled or archived Managers for routine sync; they catch up on r
 
 When `reply=ack` or `reply=required`, the receiver puts `WB_ACK update=<id>` as the first line of its next substantive message to the sender, using the same channel, and incorporates the decision with its provenance. Do not acknowledge `reply=none`, echo or rebroadcast received updates, or loop on missing acknowledgements.
 
+## PR check notifications
+
+Treat `watch_pull_request` "no checks reported" notifications as actionable: follow the [PR CI trigger procedure](pr-ci-trigger.md), verify `pull_request` event provenance for the current head, and diagnose/re-trigger missing runs. Passing manually dispatched jobs on the commit are not evidence that the PR gate is satisfied. Use the native watch for waits, not `gh` polling loops or sleeps; report a missing bounded no-check timer rather than claiming one exists.
+
 ## Task ownership and handover
 
 Only one Manager dispatches work for a task at a time. A peer can advise or own independent work. Before takeover, get the acting Manager's explicit handover with settled Worker state. If ownership is unknown or conflicting, reconcile it before dispatch; a checkpoint is not a distributed lock.
