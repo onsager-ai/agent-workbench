@@ -11,7 +11,7 @@ EXPECTED_WORKERS = {
     "luna": ("codex", "gpt-6-luna", "max"),
     "haiku": ("claude", "claude-haiku-5-5", "medium"),
     "flash": ("codex", "openrouter/deepseek/deepseek-v4.1-flash-1017", "high"),
-    "terra": ("codex", "gpt-5.6-terra", "high"),
+    "terra": ("codex", "gpt-6.1-terra", "high"),
     "sonnet": ("claude", "claude-sonnet-5-5", "medium"),
     "sol": ("codex", "gpt-6.1-sol", "high"),
     "opus": ("claude", "claude-opus-5-5", "medium"),
