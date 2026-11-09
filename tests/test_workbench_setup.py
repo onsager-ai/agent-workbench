@@ -448,7 +448,7 @@ class SetupTests(unittest.TestCase):
             "  claude/claude-opus-5-5      Claude Opus 5.5  low/medium/high\n"
             "  auto/openrouter/deepseek/deepseek-v4.1-flash-1017  DeepSeek Flash  medium/high\n"
             "  onsager/codex/gpt-6-luna    GPT-6 Luna  medium/high/max\n"
-            "  onsager/codex/gpt-6.1-terra GPT-6.1 Terra  medium/high\n"
+            "  onsager/codex/gpt-5.6-terra GPT-5.6 Terra  medium/high\n"
             "  onsager/codex/gpt-6.1-sol   GPT-6.1 Sol  medium/high\n")
         self.assertNotIn("is absent", warnings)
         self.assertNotIn("is not listed", warnings)
