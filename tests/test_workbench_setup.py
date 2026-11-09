@@ -481,7 +481,7 @@ class SetupTests(unittest.TestCase):
         self.install_orchestration()
         self.run_setup("install")
         text = self.agent("luna").read_text()
-        self.assertIn('model: "onsager/codex/gpt-6-luna"\neffort: "max"\n', text)
+        self.assertIn('model: "onsager/codex/gpt-6-luna"\neffort: "medium"\n', text)
         self.assertIn("gpt-6-luna via configured gateway", text)
         self.assertFalse(self.agent("flash").exists())
         route = "other/gpt-6-luna"

@@ -63,9 +63,11 @@ Old `roles.manager`, `roles.preflight`, `roles.acceptance` and controller-only l
 
 | Level | Codex harness (first) | Claude harness (second) |
 | --- | --- | --- |
-| L1 | luna / gpt-6-luna / max | haiku / claude-haiku-5-5 / medium |
+| L1 | luna / gpt-6-luna / medium | haiku / claude-haiku-5-5 / medium |
 | L2 | terra / gpt-6.1-terra / high | sonnet / claude-sonnet-5-5 / medium |
 | L3 | sol / gpt-6.1-sol / high | opus / claude-opus-5-5 / medium |
+
+L1 is for well-specified, bounded work. Start open-ended research, spikes and architecture recommendations at L2: that task shape is a recorded reason to skip L1, or split the spike into narrow L1 probes with an L2 synthesis. Give every spike a timebox, typically 20–30 minutes, and accept a partial report that lists unresolved checks. When a brief expects a report file such as `FINDINGS.md`, name it as an authorized output so the Worker does not treat it as an out-of-scope edit. Raise a tier's level rather than its effort when a task needs more reasoning.
 
 Shape implementation briefs so partial progress counts. GPT-6.1 Terra tends to end the turn early when a brief reads as an all-or-nothing deliverable ("implement every item, get CI green"), even under persistence instructions (openai/codex#58694, #58114). The same model and spec ran for over half an hour once the brief valued partial progress. Name a concrete first step (for example, schema and loader before runtime). Ask for as much of the item list as fits in the timebox and require a report on the rest. Require a first WIP commit or push early when delivery is authorized. Have the Worker batch CI fixes per round instead of pushing one fix per run.
 

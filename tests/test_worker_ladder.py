@@ -8,7 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_PATH = ROOT / "skills/orchestrate-harnesses/models.json"
 EXPECTED_WORKERS = {
-    "luna": ("codex", "gpt-6-luna", "max"),
+    "luna": ("codex", "gpt-6-luna", "medium"),
     "haiku": ("claude", "claude-haiku-5-5", "medium"),
     "flash": ("codex", "openrouter/deepseek/deepseek-v4.1-flash-1017", "high"),
     "terra": ("codex", "gpt-6.1-terra", "high"),
