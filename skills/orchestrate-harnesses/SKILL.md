@@ -33,6 +33,17 @@ Use native messaging for a natively listed peer in the same harness and machine 
 
 Separate foreground from background sessions. A foreground session is one a person talks to; every T3 thread is foreground, because the user can open, read and message it. Workers are background sessions: native subagents, which T3 nests under their Manager rather than listing as threads. A thread started with `t3_thread_launch` or `create_threads` is therefore a Manager for its scope, never a Worker. Start one only when the user asks for a new session or thread, and only as many as they named; "start a session for X" means a Manager scoped to X. Brief it as a Manager: its scope, authority and holds, the parent Manager it reports to, and an instruction to load this skill and dispatch Workers as native subagents on the ladder. Never brief a launched thread as an implementer or Worker, or use one to run implementation outside the ladder. The user picks each Manager's model, and Managers do not prefer one. Both run in Claude Code at medium effort, for its tools and so only the model differs when the user compares them: Claude Opus 5.5, and GPT-6 Astra through the gateway (`onsager/codex/gpt-6-astra` by default). The gateway route does not carry Astra's reasoning between turns, so report early stops or lost context from an Astra Manager as evidence for the comparison. A launched Manager uses the provider, model and effort the user named; otherwise it inherits the launching Manager's. Never give a Manager `ultra` effort: it delegates automatically, outside the Worker ladder. Workers are native subagents. `delegate_task` is only for a cross-harness or other-machine Worker that keeps its tier's provider, model and effort; it does not replace same-provider native subagents.
 
+Name sessions so the sidebar shows kind, project and scope at a glance. Keep titles under about 50 characters, use the project's short name, and use ` · ` as the separator:
+
+| Kind | Format | Example |
+| --- | --- | --- |
+| Project Manager | `<Project> PM` | `Ostrom PM` |
+| Scoped Manager | `<Project> · <scope> (#issue)` | `Duhem · Lifecycle redesign (#543)` |
+| Workbench or meta session | `Workbench · <topic>` | `Workbench · Luna effort and spike tier` |
+| Worker | `<verb> <object> (#n) · <tier>` | `Rework #571 r3 · sol` |
+
+A Manager sets its own title with `t3_thread_update` on its first turn and renames itself when its scope changes. A launching Manager passes the title when it creates the thread. A Worker's title comes from the native dispatch description or name, so the Manager writes it in that format; leave out the issue number when there is none.
+
 Keep one acting Manager per task. Peer updates coordinate ownership; they grant no new user authority and do not start duplicate work. Cross-machine handover carries original sources, authorization/holds, portable repository/remote/revision/CI evidence, settled Worker state and the next action. Native run IDs and local paths cannot be copied into another harness as working process controls. Workbench adds no daemon, broker or guaranteed broadcast service.
 
 ## Local model configuration
