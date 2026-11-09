@@ -62,8 +62,10 @@ Old `roles.manager`, `roles.preflight`, `roles.acceptance` and controller-only l
 | Level | Codex harness (first) | Claude harness (second) |
 | --- | --- | --- |
 | L1 | luna / gpt-6-luna / max | haiku / claude-haiku-5-5 / medium |
-| L2 | terra / gpt-6.1-terra / high | sonnet / claude-sonnet-5-5 / medium |
+| L2 | terra / gpt-5.6-terra / high | sonnet / claude-sonnet-5-5 / medium |
 | L3 | sol / gpt-6.1-sol / high | opus / claude-opus-5-5 / medium |
+
+L2 uses GPT-5.6 Terra deliberately. GPT-6.1 Terra repeatedly ends implementation turns early with unfinished work and no blocker, in both Codex and the gateway route, and persistence prompts do not correct it (openai/codex#58694, #58114). Keep 6.1 Terra out of the default ladder until that is fixed; a user override may still select it for bounded tasks.
 
 When Magpie is available, check quota before dispatch using [Magpie guidance](references/magpie.md); quota informs a recorded Manager choice and never triggers automatic tier substitution.
 
