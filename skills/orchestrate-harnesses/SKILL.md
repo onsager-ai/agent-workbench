@@ -62,12 +62,18 @@ Old `roles.manager`, `roles.preflight`, `roles.acceptance` and controller-only l
 | Level | Codex harness (first) | Claude harness (second) |
 | --- | --- | --- |
 | L1 | luna / gpt-6-luna / max | haiku / claude-haiku-5-5 / medium |
-| L2 | terra / gpt-6.1-terra / high | sonnet / claude-sonnet-5-5 / medium |
+| L2 | terra / gpt-5.6-terra / high | sonnet / claude-sonnet-5-5 / medium |
 | L3 | sol / gpt-6.1-sol / high | opus / claude-opus-5-5 / medium |
+
+L2 uses GPT-5.6 Terra deliberately. GPT-6.1 Terra repeatedly ends implementation turns early with unfinished work and no blocker, in both Codex and the gateway route, and persistence prompts do not correct it (openai/codex#58694, #58114). Keep 6.1 Terra out of the default ladder until that is fixed; a user override may still select it for bounded tasks.
 
 When Magpie is available, check quota before dispatch using [Magpie guidance](references/magpie.md); quota informs a recorded Manager choice and never triggers automatic tier substitution.
 
 Dispatch Workers as native subagents by tier name (`subagent_type: <role>`) whenever the Manager's harness has a definition for that tier. A Codex Manager has the Codex column natively. In Claude Code, workbench-setup generates definitions for the Claude tiers and for each Codex tier with a `claude_model`; a Claude Manager runs the remaining Codex tiers (flash by default) as Codex Workers. At each level, try the Codex tier first and the Claude tier second: L1 luna → haiku, L2 terra → sonnet, L3 sol → opus. Move to the Claude tier within a level only with a recorded reason: the Codex route is unavailable or failing, its quota is exhausted, or a Codex attempt at that level failed. Escalating to the next level starts again at its Codex tier. A configured route is not proof of a working tool loop: verify a tool call through the route before relying on it, and report a gap rather than substituting silently. Use effective configuration if it overrides a model or effort. Start at L1; escalate with actual complexity, defects or failed-attempt evidence. Move upward one level at a time unless the Manager records a concrete skip reason. An unavailable native model requires an explicit routing decision, not automatic stronger-model substitution.
+
+The tier and the route are separate decisions. Choosing a route never changes the tier. In Claude Code, the generated luna, terra and sol subagents are the configured native route for those tiers. This user policy overrides generic host guidance that sends other-provider models through `delegate_task` or another delegation tool. If a Manager still delegates a Codex tier, it keeps that tier's provider, model and effort. Doubt about the dispatch mechanism, a worktree that is already prepared, or a preference for familiar Claude tiers is not a reason to choose the Claude tier.
+
+A Worker that ends its turn early without a concrete blocker has stopped; that is not a failed attempt. Examples include a progress report, "incomplete" with no named cause, or partial edits. Resume the same Worker with native messaging, telling it to continue from its current state, before treating the level as failed. Move to the Claude tier only after a resumed Worker stops again without progress, or if the Worker reports a blocker that the Claude tier would actually resolve. Record which case applied. Count the resume against `max_auto_rework`.
 
 A same-harness native Worker needs no justification beyond its brief. A cross-harness Worker is an explicit Manager choice for a concrete capability or cost reason, routed through T3 delegation or handover; record the reason, what the attempt resolves and its configured timeout, and mention a monetary cap only when configured. Compare effective provider prices rather than assuming cost from the harness name. No automatic provider fallback, tier change or retry.
 
