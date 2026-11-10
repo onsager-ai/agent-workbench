@@ -24,7 +24,7 @@ class ThermalGuardTests(unittest.TestCase):
 
     def sensor(self, value: str) -> Path:
         zone = self.sysfs / "class/thermal/thermal_zone0"
-        zone.mkdir(parents=True)
+        zone.mkdir(parents=True, exist_ok=True)
         (zone / "type").write_text("x86_pkg_temp\n")
         path = zone / "temp"
         path.write_text(value)
