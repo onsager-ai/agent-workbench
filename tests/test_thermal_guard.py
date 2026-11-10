@@ -30,7 +30,7 @@ class ThermalGuardTests(unittest.TestCase):
         path.write_text(value)
         return path
 
-    def run(self, *args: str, timeout: float = 8, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    def thermal(self, *args: str, timeout: float = 8, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         env = {**os.environ, "HOME": str(self.home), "THERMAL_SYSFS": str(self.sysfs)}
         if extra_env:
             env.update(extra_env)
@@ -38,34 +38,34 @@ class ThermalGuardTests(unittest.TestCase):
 
     def test_now_handles_cool_hot_unreadable_and_unsupported_sensors(self) -> None:
         self.sensor("52000\n")
-        cool = self.run("now")
+        cool = self.thermal("now")
         self.assertEqual(cool.returncode, 0, cool.stderr)
         self.assertIn("52C sensor=", cool.stdout)
 
         self.sensor("85000\n")
-        hot = self.run("now")
+        hot = self.thermal("now")
         self.assertEqual(hot.returncode, 75)
         self.assertIn("85C", hot.stdout)
 
         temp = self.sensor("52000\n")
         temp.unlink()
         temp.mkdir()
-        unreadable = self.run("now")
+        unreadable = self.thermal("now")
         self.assertEqual(unreadable.returncode, 75)
         self.assertIn("cannot be read", unreadable.stderr)
 
         shutil.rmtree(self.sysfs)
-        unsupported = self.run("now")
+        unsupported = self.thermal("now")
         self.assertEqual(unsupported.returncode, 69)
         self.assertIn("unsupported", unsupported.stderr)
 
     def test_gate_runs_when_cool_refuses_unsupported_and_stops_hot_group(self) -> None:
         sensor = self.sensor("52000\n")
-        cool = self.run("gate", "--", "sh", "-c", "exit 7")
+        cool = self.thermal("gate", "--", "sh", "-c", "exit 7")
         self.assertEqual(cool.returncode, 7, cool.stderr)
 
         shutil.rmtree(self.sysfs)
-        unsupported = self.run("gate", "--", "true")
+        unsupported = self.thermal("gate", "--", "true")
         self.assertEqual(unsupported.returncode, 69)
 
         sensor = self.sensor("52000\n")
@@ -79,7 +79,7 @@ class ThermalGuardTests(unittest.TestCase):
         self.assertIn("stopped at 90C", stderr)
 
     def test_install_is_a_noop_without_sensor(self) -> None:
-        result = self.run("install")
+        result = self.thermal("install")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("unsupported", result.stdout)
         self.assertFalse((self.home / ".local/bin/thermal").exists())
@@ -91,7 +91,7 @@ class ThermalGuardTests(unittest.TestCase):
         fake_systemctl = fake_bin / "systemctl"
         fake_systemctl.write_text("#!/bin/sh\nexit 1\n")
         fake_systemctl.chmod(0o700)
-        result = self.run("install", extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"})
+        result = self.thermal("install", extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("service not installed", result.stdout)
         launcher = self.home / ".local/bin/thermal"

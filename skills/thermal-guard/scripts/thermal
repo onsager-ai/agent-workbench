@@ -124,7 +124,7 @@ watch() {
         value=$(temp)
         [ -n "$value" ] || die "sensor exists but cannot be read: $SENSOR" 75
         [ -f "$log" ] && [ "$(wc -c < "$log")" -gt 5242880 ] && { mv -f "$log" "$log.1"; : > "$log"; }
-        load=$(uptime 2>/dev/null | sed 's/.*load averages\{0,1\}: *//; s/[ ,].*//')
+        load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
         top=$(ps -eo pcpu=,pid=,comm= --sort=-pcpu 2>/dev/null | sed -n '1,3p' | tr '\n' ';')
         printf '%s pkg=%sC load=%s top=[%s]\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$value" "${load:-unknown}" "$top" >> "$log"
         if [ "$value" -ge 90 ]; then hot=$((hot + 1)); else hot=0; fi
@@ -134,7 +134,7 @@ watch() {
 }
 
 script_path() {
-    cd "$(dirname "$0")" && pwd -P
+    dirname "$(readlink -f "$0")"
 }
 
 launcher_path=$HOME/.local/bin/thermal
