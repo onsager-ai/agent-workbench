@@ -59,6 +59,16 @@ class ThermalGuardTests(unittest.TestCase):
         self.assertEqual(unsupported.returncode, 69)
         self.assertIn("unsupported", unsupported.stderr)
 
+    def test_now_reads_amd_tctl_hwmon_sensor(self) -> None:
+        hwmon = self.sysfs / "class/hwmon/hwmon3"
+        hwmon.mkdir(parents=True)
+        (hwmon / "temp1_label").write_text("Tctl\n")
+        (hwmon / "temp1_input").write_text("61250\n")
+        result = self.thermal("now")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("61C sensor=", result.stdout)
+        self.assertIn("hwmon3/temp1_input", result.stdout)
+
     def test_gate_runs_when_cool_refuses_unsupported_and_stops_hot_group(self) -> None:
         sensor = self.sensor("52000\n")
         cool = self.thermal("gate", "--", "sh", "-c", "exit 7")
