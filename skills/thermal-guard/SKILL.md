@@ -3,7 +3,7 @@ name: thermal-guard
 description: Safely gate CPU-heavy local work by the machine's supported package-temperature sensor.
 ---
 
-On Linux machines with a supported x86 package-temperature sensor, check temperature before CPU-heavy local work and put heavy commands behind the guard:
+On Linux machines with a supported CPU temperature sensor (Intel `x86_pkg_temp`/coretemp `Package id 0`, or AMD k10temp `Tctl`), check temperature before CPU-heavy local work and put heavy commands behind the guard:
 
 ```sh
 thermal now

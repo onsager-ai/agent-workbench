@@ -18,15 +18,15 @@ sensor() {
     done
     for input in "$SYSFS"/class/hwmon/hwmon*/temp*_input; do
         [ -f "${input%_input}_label" ] || continue
-        [ "$(cat "${input%_input}_label" 2>/dev/null)" = "Package id 0" ] && {
-            echo "$input"
-            return
-        }
+        # Intel coretemp "Package id 0", or AMD k10temp "Tctl" (control temperature).
+        case "$(cat "${input%_input}_label" 2>/dev/null)" in
+            "Package id 0"|Tctl) echo "$input"; return ;;
+        esac
     done
 }
 
 unsupported() {
-    echo "thermal guard unsupported on this machine: no x86 package-temperature sensor found" >&2
+    echo "thermal guard unsupported on this machine: no Intel package or AMD Tctl sensor found" >&2
     exit "$EX_UNAVAILABLE"
 }
 
@@ -159,7 +159,7 @@ same_file() { [ -f "$1" ] && [ "$(cat "$1")" = "$(printf '%s' "$2")" ]; }
 
 install() {
     if ! SENSOR=$(sensor) || [ -z "$SENSOR" ]; then
-        echo "thermal guard unsupported on this machine: no x86 package-temperature sensor found"
+        echo "thermal guard unsupported on this machine: no Intel package or AMD Tctl sensor found"
         return 0
     fi
     target="$(script_path)/thermal"
@@ -202,7 +202,7 @@ uninstall() {
 
 status() {
     if ! SENSOR=$(sensor) || [ -z "$SENSOR" ]; then
-        echo "sensor=unsupported reason=no-x86-package-temperature-sensor"
+        echo "sensor=unsupported reason=no-package-temperature-sensor"
         return 0
     fi
     value=$(temp)
