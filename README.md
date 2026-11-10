@@ -1,12 +1,13 @@
 # Agent Workbench Skills
 
-Six portable skills for Codex and Claude Code:
+Seven portable skills for Codex and Claude Code:
 
 - disk-cleanup — inspect and reclaim safe, regenerable disk usage.
 - manage-lane — maintain task intent, authorization and handovers.
 - orchestrate-harnesses — coordinate native Workers and T3 Code Managers with scoped briefs and native lifecycle controls.
 - prompt-for-decisions — present a real unresolved user choice with evidence and trade-offs.
 - review-storybook — review interactive Storybook previews against a specific revision.
+- thermal-guard — safely gate CPU-heavy work by a supported package-temperature sensor.
 - workbench-setup — explicitly apply shared global instructions while preserving personal text.
 
 ## Requirements and workflow
@@ -52,7 +53,7 @@ These commands manage skills only. User-scope AGENTS.md and CLAUDE.md, credentia
 
 ## Apply shared global instructions
 
-The optional setup installer supports Linux and macOS with Python 3.11+. Distribution and native updates also require Node.js 22.20+ and npx. No separate npm package, compiled binary, background service, or shell configuration is installed.
+The optional setup installer supports Linux and macOS with Python 3.11+. Distribution and native updates also require Node.js 22.20+ and npx. When a supported Linux package-temperature sensor and user systemd are available, setup installs thermal-guard's launcher and background logger; otherwise the thermal rule does not apply. No separate npm package, compiled binary, or shell configuration is installed.
 
 After distributing the skills globally, apply their public instruction template:
 
