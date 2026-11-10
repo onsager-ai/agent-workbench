@@ -213,6 +213,7 @@ class Setup:
         self.state_path = self.root / "state.json"
         self.script = self.home / ".agents/skills/workbench-setup/scripts/workbench.py"
         self.template = self.script.parent.parent / "assets/AGENTS.md"
+        self.thermal = self.home / ".agents/skills/thermal-guard/scripts/thermal"
         self.target = "../.agents/AGENTS.md"
         self.agents = self.home / ".claude/agents"
         orchestration = self.home / ".agents/skills/orchestrate-harnesses"
@@ -234,6 +235,14 @@ class Setup:
 
     def agent_path(self, name):
         return self.agents / (name + ".md")
+
+    def thermal_command(self, command):
+        if not self.thermal.is_file():
+            return "not installed"
+        result = subprocess.run([str(self.thermal), command], env={**os.environ, "HOME": str(self.home)},
+                                capture_output=True, text=True, check=False)
+        output = (result.stdout + result.stderr).strip().replace("\n", "; ")
+        return output or f"exited {result.returncode}"
 
     def read_json(self, path):
         base = self.home if path.is_relative_to(self.home) else path.parent
@@ -656,6 +665,7 @@ class Setup:
                     changed |= atomic(path, plan[1])
                 changed |= atomic(self.state_path, state_bytes)
         print("installed" if changed else "no-op: already installed")
+        print(f"thermal: {self.thermal_command('install')}")
         print(f"claude agents: {', '.join(sorted(desired)) or 'none'}")
         if not desired:
             print("no Claude agents generated: orchestrate-harnesses is not installed")
@@ -671,7 +681,7 @@ class Setup:
                           "available_template_hash": digest(template),
                           "native_settings": native_status, "private_bytes": len(private), "shared": str(self.shared),
                           "codex": str(self.codex), "claude": str(self.claude),
-                          "launcher": str(self.launcher),
+                          "launcher": str(self.launcher), "thermal": self.thermal_command("status"),
                           "agents": {name: str(self.agent_path(name)) for name in sorted(state.get("agents", {}))}},
                          sort_keys=True))
         self.check_agents(state, self.desired_agents())
@@ -716,6 +726,7 @@ class Setup:
                 self.state_path.unlink()
                 sync_dir(self.root)
         print("uninstalled; current private instructions and private backups retained")
+        print(f"thermal: {self.thermal_command('uninstall')}")
 
     def update(self, command):
         self.preflight()

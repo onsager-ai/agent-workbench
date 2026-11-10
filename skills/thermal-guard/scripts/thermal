@@ -1,0 +1,234 @@
+#!/bin/sh
+# Portable Linux package-temperature guard for local CPU-heavy commands.
+set -u
+
+STATE=${XDG_STATE_HOME:-"$HOME/.local/state"}/thermal-guard
+SYSFS=${THERMAL_SYSFS:-/sys}
+EX_UNAVAILABLE=69
+
+die() { echo "thermal: $1" >&2; exit "${2:-1}"; }
+
+sensor() {
+    for zone in "$SYSFS"/class/thermal/thermal_zone*; do
+        [ -f "$zone/type" ] || continue
+        [ "$(cat "$zone/type" 2>/dev/null)" = x86_pkg_temp ] && {
+            echo "$zone/temp"
+            return
+        }
+    done
+    for input in "$SYSFS"/class/hwmon/hwmon*/temp*_input; do
+        [ -f "${input%_input}_label" ] || continue
+        [ "$(cat "${input%_input}_label" 2>/dev/null)" = "Package id 0" ] && {
+            echo "$input"
+            return
+        }
+    done
+}
+
+unsupported() {
+    echo "thermal guard unsupported on this machine: no x86 package-temperature sensor found" >&2
+    exit "$EX_UNAVAILABLE"
+}
+
+temp() {
+    [ -n "$SENSOR" ] || return
+    milli=$(cat "$SENSOR" 2>/dev/null) || return
+    case "$milli" in ''|*[!0-9]*) return ;; esac
+    echo $((milli / 1000))
+}
+
+require_sensor() {
+    SENSOR=$(sensor)
+    [ -n "$SENSOR" ] || unsupported
+}
+
+state_file() {
+    mkdir -p "$STATE" || die "cannot create state directory"
+    echo "$STATE/$1"
+}
+
+now() {
+    require_sensor
+    value=$(temp)
+    [ -n "$value" ] || die "sensor exists but cannot be read: $SENSOR" 75
+    echo "${value}C sensor=$SENSOR"
+    [ "$value" -lt 85 ] || exit 75
+}
+
+gate() {
+    max=600
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --max-seconds) max=${2:-}; shift 2 ;;
+            --) shift; break ;;
+            *) die "usage: thermal gate [--max-seconds N] -- <command...>" 64 ;;
+        esac
+    done
+    [ $# -gt 0 ] || die "no command given" 64
+    case "$max" in ''|*[!0-9]*) die "--max-seconds takes whole seconds" 64 ;; esac
+    require_sensor
+    [ -n "$(temp)" ] || die "sensor exists but cannot be read: $SENSOR; use CI for this" 75
+
+    lock=$(state_file gate.lock)
+    [ -e "$lock" ] || : > "$lock" 2>/dev/null || true
+    exec 9<"$lock" || die "cannot open $lock" 64
+    flock 9
+
+    waited=0
+    while :; do
+        value=$(temp)
+        [ -n "$value" ] || die "the sensor stopped answering; use CI for this" 75
+        [ "$value" -lt 75 ] && break
+        [ "$waited" -ge 300 ] && die "still ${value}C after 5 min; use CI for this" 75
+        sleep 5
+        waited=$((waited + 5))
+    done
+
+    command="$*"
+    killlog=$(state_file gate-kills.log)
+    setsid nice -n 19 "$@" 9<&- &
+    pid=$!
+    stop() { kill -TERM "-$pid" 2>/dev/null; sleep 2; kill -KILL "-$pid" 2>/dev/null; wait "$pid" 2>/dev/null; }
+    heat_stop() {
+        kill -KILL "-$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        printf '%s %s cmd=%s exit=75\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$command" >> "$killlog" 2>/dev/null
+        die "$2; use CI for this" 75
+    }
+    trap 'stop; exit 130' INT TERM HUP
+    hot=0
+    start=$(date +%s)
+    while kill -0 "$pid" 2>/dev/null; do
+        value=$(temp)
+        [ -n "$value" ] || heat_stop "reading=none" "the sensor stopped answering"
+        [ "$value" -ge 88 ] && heat_stop "reading=${value}C" "stopped at ${value}C"
+        if [ "$value" -ge 85 ]; then hot=$((hot + 1)); else hot=0; fi
+        [ "$hot" -lt 2 ] || heat_stop "reading=${value}C(2x>=85)" "stopped at ${value}C (twice at 85C or more)"
+        if [ $(( $(date +%s) - start )) -ge "$max" ]; then
+            stop
+            echo "thermal: stopped after ${max}s" >&2
+            exit 124
+        fi
+        sleep 0.5
+    done
+    trap - INT TERM HUP
+    wait "$pid"
+}
+
+watch() {
+    require_sensor
+    log=$(state_file temps.log)
+    alerts=$(state_file alerts.log)
+    hot=0
+    while :; do
+        value=$(temp)
+        [ -n "$value" ] || die "sensor exists but cannot be read: $SENSOR" 75
+        [ -f "$log" ] && [ "$(wc -c < "$log")" -gt 5242880 ] && { mv -f "$log" "$log.1"; : > "$log"; }
+        load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
+        top=$(ps -eo pcpu=,pid=,comm= --sort=-pcpu 2>/dev/null | sed -n '1,3p' | tr '\n' ';')
+        printf '%s pkg=%sC load=%s top=[%s]\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$value" "${load:-unknown}" "$top" >> "$log"
+        if [ "$value" -ge 90 ]; then hot=$((hot + 1)); else hot=0; fi
+        [ "$hot" -ne 3 ] || printf '%s pkg=%sC consecutive=3\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$value" >> "$alerts"
+        sleep 10
+    done
+}
+
+script_path() {
+    dirname "$(readlink -f "$0")"
+}
+
+launcher_path=$HOME/.local/bin/thermal
+service_path=$HOME/.config/systemd/user/thermal-guard.service
+service_text() {
+    cat <<EOF
+[Unit]
+Description=Thermal guard logger
+
+[Service]
+ExecStart=$launcher_path watch
+Restart=always
+RestartSec=5
+Nice=19
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+same_file() { [ -f "$1" ] && [ "$(cat "$1")" = "$(printf '%s' "$2")" ]; }
+
+install() {
+    if ! SENSOR=$(sensor) || [ -z "$SENSOR" ]; then
+        echo "thermal guard unsupported on this machine: no x86 package-temperature sensor found"
+        return 0
+    fi
+    target="$(script_path)/thermal"
+    if [ -e "$launcher_path" ] || [ -L "$launcher_path" ]; then
+        [ -L "$launcher_path" ] && [ "$(readlink "$launcher_path")" = "$target" ] || die "foreign launcher: $launcher_path"
+    else
+        mkdir -p "${launcher_path%/*}" || die "cannot create launcher directory"
+        ln -s "$target" "$launcher_path" || die "cannot install launcher"
+    fi
+    if ! systemctl --user show-environment >/dev/null 2>&1; then
+        echo "thermal launcher installed; systemctl --user is unavailable, service not installed"
+        return 0
+    fi
+    wanted=$(service_text)
+    if [ -e "$service_path" ] || [ -L "$service_path" ]; then
+        [ ! -L "$service_path" ] && same_file "$service_path" "$wanted" || die "foreign service: $service_path"
+    else
+        mkdir -p "${service_path%/*}" || die "cannot create systemd user directory"
+        printf '%s\n' "$wanted" > "$service_path" || die "cannot write service"
+    fi
+    systemctl --user daemon-reload && systemctl --user enable --now thermal-guard.service || die "could not enable thermal-guard service"
+    echo "thermal launcher and service installed"
+}
+
+uninstall() {
+    target="$(script_path)/thermal"
+    if [ -e "$launcher_path" ] || [ -L "$launcher_path" ]; then
+        [ -L "$launcher_path" ] && [ "$(readlink "$launcher_path")" = "$target" ] || die "foreign launcher: $launcher_path"
+    fi
+    wanted=$(service_text)
+    if [ -e "$service_path" ] || [ -L "$service_path" ]; then
+        [ ! -L "$service_path" ] && same_file "$service_path" "$wanted" || die "foreign service: $service_path"
+        systemctl --user disable --now thermal-guard.service >/dev/null 2>&1 || true
+        rm "$service_path" || die "cannot remove service"
+        systemctl --user daemon-reload >/dev/null 2>&1 || true
+    fi
+    [ ! -L "$launcher_path" ] || rm "$launcher_path" || die "cannot remove launcher"
+    echo "thermal guard uninstalled"
+}
+
+status() {
+    if ! SENSOR=$(sensor) || [ -z "$SENSOR" ]; then
+        echo "sensor=unsupported reason=no-x86-package-temperature-sensor"
+        return 0
+    fi
+    value=$(temp)
+    echo "sensor=$SENSOR temperature=${value:-unreadable}C"
+    if systemctl --user show-environment >/dev/null 2>&1; then
+        echo "service=$(systemctl --user is-active thermal-guard.service 2>/dev/null || true)"
+    else
+        echo "service=unavailable"
+    fi
+    log="$STATE/temps.log"
+    if [ -f "$log" ]; then
+        age=$(( $(date +%s) - $(stat -c %Y "$log") ))
+        echo "last_log_age=${age}s"
+    else
+        echo "last_log_age=missing"
+    fi
+    linger=$(loginctl show-user "$(id -u)" -p Linger --value 2>/dev/null || true)
+    if [ "$linger" = yes ]; then echo "linger=enabled"; else echo "linger=disabled; run loginctl enable-linger $(id -un) to keep the service after logout"; fi
+}
+
+case "${1:-}" in
+    now) [ $# -eq 1 ] || die "usage: thermal now" 64; now ;;
+    gate) shift; gate "$@" ;;
+    watch) [ $# -eq 1 ] || die "usage: thermal watch" 64; watch ;;
+    install) [ $# -eq 1 ] || die "usage: thermal install" 64; install ;;
+    uninstall) [ $# -eq 1 ] || die "usage: thermal uninstall" 64; uninstall ;;
+    status) [ $# -eq 1 ] || die "usage: thermal status" 64; status ;;
+    *) die "usage: thermal {now|gate|watch|install|uninstall|status}" 64 ;;
+esac

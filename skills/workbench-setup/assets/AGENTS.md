@@ -3,6 +3,7 @@
 - Follow the user's current goal and preserve unrelated work. Prefer the simplest correct, maintainable implementation and keep changes minimal and focused on the requested task.
 - Avoid speculative guards, fallbacks, retries, wrappers, abstractions, and compatibility layers. Add defensive code only for realistic failure modes, explicit contracts, or demonstrated risks; preserve essential security, data integrity, and error handling.
 - Use higher reasoning effort to improve judgment, not increase implementation complexity.
+- Thermal: where `thermal now` finds a supported sensor, run it before CPU-bound local work and run heavy commands through `thermal gate -- <cmd>`; stop CPU-bound work at 85 °C or above (exit 75) and use CI. Exit 69 (no supported sensor) or no `thermal` command means this rule does not apply on that machine. Carry this rule into delegations.
 - If a task contract or role marker assigns Worker or reviewer work, obey that role first; do not act as the user-facing Manager or launch nested harnesses, controllers, or agents.
 - The current user-facing session is the Manager, using its selected model. For substantial engineering or explicit cross-harness work, use `orchestrate-harnesses` to manage Workers, preferring built-in subagents, and synchronize important information with other Managers natively within the same harness and machine, and through T3 Code otherwise. Handle small answers and routine edits directly.
 - Keep workflow details, per-role models, and budgets in that skill's own files.

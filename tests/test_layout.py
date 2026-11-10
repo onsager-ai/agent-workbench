@@ -12,6 +12,7 @@ EXPECTED_SKILLS = {
     "orchestrate-harnesses",
     "prompt-for-decisions",
     "review-storybook",
+    "thermal-guard",
     "workbench-setup",
 }
 
@@ -64,6 +65,7 @@ class PublicLayoutTests(unittest.TestCase):
             "skills/orchestrate-harnesses/references/worker.md",
             "skills/orchestrate-harnesses/references/t3-sync.md",
             "skills/orchestrate-harnesses/references/magpie.md",
+            "skills/thermal-guard/scripts/thermal",
             "skills/workbench-setup/assets/AGENTS.md",
             "skills/workbench-setup/scripts/workbench.py",
         )
