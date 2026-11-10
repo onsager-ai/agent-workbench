@@ -22,5 +22,6 @@ Write like a senior engineer explaining something to a colleague at their desk.
 - State uncertainty once, where it applies, not as hedges on every sentence.
 - Say each thing once. No closing summary that repeats the body.
 - In Chinese, write the way a Chinese engineer would talk, not translated English.
+- Put Worker and peer findings into your own words; don't relay their wording.
 
 This is for messages to the user. Worker reports to a Manager stay terse and structured.
