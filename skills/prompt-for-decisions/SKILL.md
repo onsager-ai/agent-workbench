@@ -1,15 +1,15 @@
 ---
 name: prompt-for-decisions
-description: Present a genuinely unresolved user choice in the current Manager session with evidence, a recommendation and meaningful trade-offs. Use for material scope or authority boundaries, not routine engineering decisions owned by the Manager.
+description: Present a genuinely unresolved user choice in the current Manager session with evidence, a recommendation and meaningful trade-offs. Use for material scope or authority boundaries, important or costly-to-reverse design decisions and stuck rework loops, not routine engineering decisions owned by the Manager.
 ---
 
 # Present a user decision
 
-Use this skill when the user's answer is necessary to choose the next action and the request, existing answers, evidence and a sensible default do not settle it. Examples include a material change of scope, conflicting user priorities or a concrete delivery action outside the existing authorization. A milestone, green CI or a finished plan is a reason to check what comes next, not an automatic approval checkpoint.
+Use this skill when the user's answer is necessary to choose the next action and the request, existing answers, evidence and a sensible default do not settle it. Examples include a material change of scope, conflicting user priorities, a concrete delivery action outside the existing authorization, an important design decision (security or trust model, persisted or wire format, protocol shape, delivery guarantee, or anything else costly to reverse), a design mechanism that cannot be traced to a user requirement or stated threat, and a stuck trigger from orchestrate-harnesses. A milestone, green CI or a finished plan is a reason to check what comes next, not an automatic approval checkpoint.
 
 ## Ownership
 
-The current Manager asks the user and resolves engineering choices within the authorized scope, including the brief, Worker tier and rework. Worker and reviewer findings return to that Manager; they do not each open a user decision round. If a choice exceeds the authorized scope or needs a user trade-off, present the bounded recommendation and supporting evidence directly to the user.
+The current Manager asks the user and resolves engineering choices within the authorized scope, including the brief, Worker tier and rework. Worker and reviewer findings return to that Manager; they do not each open a user decision round. If a choice exceeds the authorized scope or needs a user trade-off, present the bounded recommendation and supporting evidence directly to the user. Important design decisions belong to the user even within the authorized scope: ask early, before work builds on them, and present them as options rather than as a settled Manager acceptance. For a stuck loop, include simplifying the design or narrowing scope as an option.
 
 This skill owns the question's presentation, not task intake, model routing, review policy or queue management. Use manage-lane for task continuity. This skill is self-contained; no Claude command or historical instruction chain needs loading to ask a question.
 
