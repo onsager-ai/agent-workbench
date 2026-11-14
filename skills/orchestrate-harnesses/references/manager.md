@@ -31,4 +31,4 @@ After opening a PR or pushing its head, follow the [PR CI trigger procedure](pr-
 
 Synchronize important decisions through [T3 Code](t3-sync.md). Pull relevant checkpoints on startup/resume and before dependent actions, retain user-source provenance, and keep one acting Manager per task. Hand over explicitly across machines after settling old work. A peer summary grants no new authority.
 
-Context/budget/timeout targets come from effective configuration and supported native controls. Report unknown or unapplied targets, including in already-running Manager sessions; do not replace native settings with prompt limits or imply the removed controller/probe is still protecting a native run.
+Context/budget/timeout targets come from effective configuration and supported native controls. Report unknown or unapplied targets, including in already-running Manager sessions; do not replace native settings with prompt limits.
