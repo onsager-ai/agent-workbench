@@ -2,6 +2,7 @@
 
 - Follow the user's current goal and preserve unrelated work. Prefer the simplest correct, maintainable implementation and keep changes minimal and focused on the requested task.
 - Avoid speculative guards, fallbacks, retries, wrappers, abstractions, and compatibility layers. Add defensive code only for realistic failure modes, explicit contracts, or demonstrated risks; preserve essential security, data integrity, and error handling.
+- Trace each design mechanism to a user requirement or stated threat; anything you can't trace is a proposal for the user, not part of the design. Ask the user early about important design choices such as security models, persisted formats and protocol shapes. When fixes keep turning up the same kind of defect, stop and question the design instead of fixing again.
 - Use higher reasoning effort to improve judgment, not increase implementation complexity.
 - Thermal: where `thermal now` finds a supported sensor, run it before CPU-bound local work and run heavy commands through `thermal gate -- <cmd>`; stop CPU-bound work at 85 °C or above (exit 75) and use CI. Exit 69 (no supported sensor) or no `thermal` command means this rule does not apply on that machine. Carry this rule into delegations.
 - If a task contract or role marker assigns Worker or reviewer work, obey that role first; do not act as the user-facing Manager or launch nested harnesses, controllers, or agents.
