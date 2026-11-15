@@ -42,9 +42,11 @@ Name sessions so the sidebar shows kind, project and scope at a glance. Keep tit
 | Project Manager | `<Project> PM` | `Ostrom PM` |
 | Scoped Manager | `<Project> · <scope> (#issue)` | `Duhem · Lifecycle redesign (#543)` |
 | Workbench or meta session | `Workbench · <topic>` | `Workbench · Luna effort and spike tier` |
-| Worker | `<verb> <object> (#n) · <tier>` | `Rework #571 r3 · sol` |
+| Worker | `<verb> #n [rN] · <tier>` or `<verb> <object> · <tier>` | `Rework #571 r3 · sol`, `Audit CI config · luna` |
 
-A Manager sets its own title with `t3_thread_update` on its first turn and renames itself when its scope changes. A launching Manager passes the title when it creates the thread. A Worker's title comes from the native dispatch description or name, so the Manager writes it in that format; leave out the issue number when there is none.
+Leave out the issue number when there is none. In a Worker title, `rN` marks the review or rework round and is omitted on the first pass.
+
+A Manager sets its own title with `t3_thread_update` on its first turn and renames itself when its scope changes. A launching Manager passes the title when it creates the thread. A Worker's title comes from the native dispatch description, which allows only 3–5 words, so the Manager writes that description in the Worker format.
 
 Keep one acting Manager per task. Peer updates coordinate ownership; they grant no new user authority and do not start duplicate work. Cross-machine handover carries original sources, authorization/holds, portable repository/remote/revision/CI evidence, settled Worker state and the next action. Native run IDs and local paths cannot be copied into another harness as working process controls. Workbench adds no daemon, broker or guaranteed broadcast service.
 
