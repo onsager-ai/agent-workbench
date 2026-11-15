@@ -15,6 +15,10 @@ Read [Manager responsibilities](references/manager.md), [Worker instructions](re
 
 After opening a PR or pushing its head, and on any no-checks notification, follow the [PR CI trigger procedure](references/pr-ci-trigger.md); verify event provenance for the exact PR head before treating CI as present.
 
+## GitHub API budget
+
+Every session on every machine shares one GitHub REST quota: 5,000 calls an hour for the account. Wait for CI with T3's `watch_pull_request`, never with loops, `sleep`, `gh run watch` or `--watch` flags. Read check status in one call: `gh pr view <n> --json headRefOid,statusCheckRollup` (GraphQL, a separate quota) or one `gh run list --commit <sha> --json workflowName,event,status,conclusion` when event provenance matters. Do not track progress with repeated `gh run view --json jobs`. For a failure, save the failed job's log to a file once and search the file. `gh api rate_limit` costs nothing; when REST `remaining` is below 500, make only calls needed for the current step and report the shortage instead of retrying.
+
 ## Native Worker workflow
 
 1. Read the effective model configuration, identify independent work, and choose the Worker tier using the ladder below. Inspect the actual native tool schema or configured subagent definition. Select model/effort explicitly where supported; do not inherit a costly parent model accidentally or claim unsupported settings were applied.
