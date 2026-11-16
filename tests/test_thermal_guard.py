@@ -88,6 +88,20 @@ class ThermalGuardTests(unittest.TestCase):
         self.assertEqual(process.returncode, 75, stderr)
         self.assertIn("stopped at 90C", stderr)
 
+    def test_long_gated_command_releases_lock_after_settle(self) -> None:
+        self.sensor("52000\n")
+        env = {**os.environ, "HOME": str(self.home), "THERMAL_SYSFS": str(self.sysfs), "THERMAL_SETTLE_SECONDS": "1"}
+        long_job = subprocess.Popen([str(THERMAL), "gate", "--", "sh", "-c", "sleep 30"], text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        self.addCleanup(lambda: (long_job.terminate(), long_job.communicate(timeout=10)))
+        time.sleep(0.5)
+        started = time.monotonic()
+        quick = self.thermal("gate", "--", "true", timeout=10, extra_env={"THERMAL_SETTLE_SECONDS": "1"})
+        self.assertEqual(quick.returncode, 0, quick.stderr)
+        # Waits out the first job's short settle, not its 30-second run.
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIsNone(long_job.poll())
+
     def test_install_is_a_noop_without_sensor(self) -> None:
         result = self.thermal("install")
         self.assertEqual(result.returncode, 0, result.stderr)

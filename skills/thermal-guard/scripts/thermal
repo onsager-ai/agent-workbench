@@ -68,6 +68,10 @@ gate() {
     case "$max" in ''|*[!0-9]*) die "--max-seconds takes whole seconds" 64 ;; esac
     require_sensor
     [ -n "$(temp)" ] || die "sensor exists but cannot be read: $SENSOR; use CI for this" 75
+    # The machine-wide lock covers admission and a short settle after start, so gated
+    # starts are staggered and the next admission sees this command's heat. It is not
+    # held for the whole run: long jobs must not queue unrelated ones on a cool machine.
+    settle=${THERMAL_SETTLE_SECONDS:-30}
 
     lock=$(state_file gate.lock)
     [ -e "$lock" ] || : > "$lock" 2>/dev/null || true
@@ -98,7 +102,12 @@ gate() {
     trap 'stop; exit 130' INT TERM HUP
     hot=0
     start=$(date +%s)
+    locked=1
     while kill -0 "$pid" 2>/dev/null; do
+        if [ "$locked" = 1 ] && [ $(( $(date +%s) - start )) -ge "$settle" ]; then
+            exec 9<&-
+            locked=0
+        fi
         value=$(temp)
         [ -n "$value" ] || heat_stop "reading=none" "the sensor stopped answering"
         [ "$value" -ge 88 ] && heat_stop "reading=${value}C" "stopped at ${value}C"
