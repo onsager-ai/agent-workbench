@@ -449,7 +449,7 @@ class SetupTests(unittest.TestCase):
             "  auto/openrouter/deepseek/deepseek-v4.1-flash-1017  DeepSeek Flash  medium/high\n"
             "  onsager/codex/gpt-6-luna    GPT-6 Luna  medium/high/max\n"
             "  onsager/codex/gpt-6.1-terra GPT-6.1 Terra  medium/high\n"
-            "  onsager/codex/gpt-6.1-sol   GPT-6.1 Sol  medium/high\n")
+            "  onsager/codex/gpt-6.2-sol   GPT-6.2 Sol  medium/high\n")
         self.assertNotIn("is absent", warnings)
         self.assertNotIn("is not listed", warnings)
 

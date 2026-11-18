@@ -83,12 +83,12 @@ Old `roles.manager`, `roles.preflight`, `roles.acceptance` and controller-only l
 | Level | Codex harness (first) | Claude harness (second) |
 | --- | --- | --- |
 | L1 | luna / gpt-6-luna / medium | haiku / claude-haiku-5-5 / medium |
-| L2 | sol / gpt-6.1-sol / medium | sonnet / claude-sonnet-5-5 / medium |
+| L2 | sol / gpt-6.2-sol / medium | sonnet / claude-sonnet-5-5 / medium |
 | L3 | — | opus / claude-opus-5-5 / medium |
 
 L1 is for well-specified, bounded work. Start open-ended research, spikes and architecture recommendations at L2: that task shape is a recorded reason to skip L1, or split the spike into narrow L1 probes with an L2 synthesis. Give every spike a timebox, typically 20–30 minutes, and accept a partial report that lists unresolved checks. When a brief expects a report file such as `FINDINGS.md`, name it as an authorized output so the Worker does not treat it as an out-of-scope edit. Raise a tier's level rather than its effort when a task needs more reasoning.
 
-L2 uses GPT-6.1 Sol at medium effort. On replayed workbench PRs it matched Sonnet's correctness and per-task cost. L3 has no Codex tier until a GPT candidate (Sol at `xhigh`, or Astra) matches Opus on a hard-task replay. Effort above `high` added wall time without a correctness gain, so no tier defaults above `medium`.
+L2 uses GPT-6.2 Sol at medium effort. On 42 replayed merged PRs across five projects it beat GPT-6.1 Sol 29–7 with 6 ties under blind grading, and finished five tasks where 6.1 timed out (onsager-ai/worker-bench). It reads about 4.5× more uncached input tokens than 6.1. L3 has no Codex tier until a GPT candidate (Sol at `xhigh`, or Astra) matches Opus on a hard-task replay. Effort above `high` added wall time without a correctness gain, so no tier defaults above `medium`.
 
 `terra` (GPT-6.1 Terra, medium) is an opt-in Worker outside the ladder, for bounded tasks the Manager assigns to it explicitly. GPT-6.1 Terra ends implementation turns early with unfinished work and no blocker, and neither persistence prompts nor tighter briefs correct it (openai/codex#58694, #58114). Keep it out of the ladder until several real implementation runs of over 30 minutes show the fix.
 
