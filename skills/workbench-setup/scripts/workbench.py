@@ -221,6 +221,7 @@ class Setup:
         self.codex_settings = self.home / ".codex/config.toml"
         self.models = orchestration / "models.json"
         self.worker = orchestration / "references/worker.md"
+        self.policy_hook = orchestration / "scripts/policy-hook"
         xdg = os.environ.get("XDG_CONFIG_HOME", "")
         config = Path(xdg) if self.home == Path.home() and xdg and os.path.isabs(xdg) else self.home / ".config"
         self.override = config / "agent-workbench/models.json"
@@ -439,6 +440,51 @@ class Setup:
                 plans[path] = ("file", self.native_edit(kind, data, changes), 0o600)
         return plans, record, report
 
+    def hook_plans(self, state, plans, *, uninstall=False, status=False):
+        """Own complete entries, never a matcher or another hook's command."""
+        owned = state.get("hooks", []) if state else []
+        data, _ = self.native_config("claude")
+        if data is None:
+            if owned:
+                raise Conflict("owned Claude hooks are missing; restore settings.json")
+            data = b""
+        if self.claude_settings in plans:
+            data = plans[self.claude_settings][1]
+        parsed = json.loads(data) if data else {}
+        hooks = parsed.get("hooks", {})
+        if not isinstance(hooks, dict) or not isinstance(hooks.get("PreToolUse", []), list):
+            raise Conflict("invalid Claude hooks.PreToolUse configuration")
+        current = hooks.get("PreToolUse", [])
+        for entry in owned:
+            if current.count(entry) != 1:
+                raise Conflict("owned Claude hook is missing, duplicated or edited; left unchanged")
+        desired = []
+        if not uninstall and present(self.models) and present(self.worker):
+            inspect(self.policy_hook, self.home)
+            if not self.policy_hook.is_file():
+                raise Conflict("missing canonical policy hook; distribute orchestrate-harnesses first")
+            command = shlex.quote(str(self.policy_hook))
+            desired = [{"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
+                       for matcher in ("Agent|Task", "Bash")]
+        report = {entry["matcher"]: "applied" for entry in owned}
+        if status:
+            return owned, report
+        updated = list(current)
+        for entry in owned:
+            if entry not in desired:
+                updated.remove(entry)
+        record = []
+        for entry in desired:
+            if entry in owned or entry not in updated:
+                record.append(entry)
+            if entry not in updated:
+                updated.append(entry)
+        if updated != current:
+            parsed.setdefault("hooks", {})["PreToolUse"] = updated
+            plans[self.claude_settings] = (
+                "file", (json.dumps(parsed, indent=2, ensure_ascii=False) + "\n").encode(), 0o600)
+        return record, report
+
     def check_agents(self, state, desired=()):
         owned = state.get("agents", {}) if state else {}
         for name in sorted({*owned, *desired}):
@@ -480,6 +526,18 @@ class Setup:
             for kind, entries in native.items():
                 if any(key not in allowed[kind] or type(value) is not allowed[kind][key] for key, value in entries.items()):
                     raise ValueError("invalid native ownership metadata")
+            hooks = state.get("hooks", [])
+            if not isinstance(hooks, list):
+                raise ValueError("invalid hook ownership metadata")
+            for entry in hooks:
+                if (not isinstance(entry, dict) or set(entry) != {"matcher", "hooks"}
+                        or entry["matcher"] not in ("Agent|Task", "Bash")
+                        or not isinstance(entry["hooks"], list) or len(entry["hooks"]) != 1
+                        or not isinstance(entry["hooks"][0], dict)
+                        or set(entry["hooks"][0]) != {"type", "command"}
+                        or entry["hooks"][0]["type"] != "command"
+                        or not isinstance(entry["hooks"][0]["command"], str)):
+                    raise ValueError("invalid hook ownership metadata")
             for name, entry in state.get("agents", {}).items():
                 if not ROLE.fullmatch(name) or not isinstance(entry["hash"], str):
                     raise ValueError("invalid agent ownership metadata")
@@ -623,13 +681,15 @@ class Setup:
                 claude += suffix.encode()
                 imported = {"owned": True, "line": IMPORT + b"\n"}
             native_plans, native_record, _ = self.native_plans(state, self.context_values())
+            hook_record, _ = self.hook_plans(state, native_plans)
             desired = self.desired_agents()
             self.check_agents(state, desired)
             for name in ("shared", "codex", "claude", "launcher"):
                 self.backup(name, getattr(self, name))
             for path in native_plans:
                 self.backup("claude_settings" if path == self.claude_settings else "codex_settings", path)
-            record = {"native": native_record, "schema": 1, "version": VERSION, "template_hash": digest(template),
+            record = {"native": native_record, "hooks": hook_record,
+                      "schema": 1, "version": VERSION, "template_hash": digest(template),
                       "block_hash": digest(block), "block_text": block.decode("utf-8"), "target": self.target,
                       "launcher_hash": digest(self.launcher_bytes()), "import_added": bool(added),
                       "import_suffix": suffix,
@@ -676,10 +736,12 @@ class Setup:
             raise Conflict("not installed")
         template = read(self.template)
         _, _, native_status = self.native_plans(state, self.context_values(), status=True)
+        _, hook_status = self.hook_plans(state, {}, status=True)
         print(json.dumps({"installed_version": state["version"], "available_version": VERSION,
                           "installed_template_hash": state["template_hash"],
                           "available_template_hash": digest(template),
-                          "native_settings": native_status, "private_bytes": len(private), "shared": str(self.shared),
+                          "native_settings": native_status, "hooks": hook_status,
+                          "private_bytes": len(private), "shared": str(self.shared),
                           "codex": str(self.codex), "claude": str(self.claude),
                           "launcher": str(self.launcher), "thermal": self.thermal_command("status"),
                           "agents": {name: str(self.agent_path(name)) for name in sorted(state.get("agents", {}))}},
@@ -705,6 +767,7 @@ class Setup:
                 else:
                     claude = remove_exact_line(claude, imported["line"])
             native_plans, _, _ = self.native_plans(state, None, uninstall=True)
+            self.hook_plans(state, native_plans, uninstall=True)
             for path in native_plans:
                 self.backup("claude_settings" if path == self.claude_settings else "codex_settings", path)
             # Keep current personal bytes, never restore an old snapshot over them.

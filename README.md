@@ -71,6 +71,7 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 | `~/.claude/CLAUDE.md` | Existing Claude text plus native `@~/.agents/AGENTS.md` import |
 | `~/.local/bin/agent-workbench` | Thin launcher for the installed setup skill |
 | `~/.claude/agents/<role>.md` | Generated Claude Code subagents, one per routable Worker tier (when `orchestrate-harnesses` is installed) |
+| `~/.claude/settings.json` → `hooks.PreToolUse` | Owned hooks for Opus approval and GitHub polling policy (when `orchestrate-harnesses` is installed) |
 | `~/.local/state/agent-workbench/` | Ownership, hashes, exclusive lock, private backups |
 
 The exact public markers are `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->`. Put personal rules outside that block in `~/.agents/AGENTS.md`. On first installation, existing Codex regular-file bytes migrate outside the block unchanged. When migrating old orchestration rules, inspect personal text for Gateway/fixed-Manager requirements and reconcile those explicitly; setup preserves private text and does not resolve semantic conflicts for you. Existing Claude text stays in place. Neither npx distribution nor this setup changes project instructions, other agent settings, credentials, model configuration, or native permissions.
