@@ -998,7 +998,7 @@ describe("workbench setup", () => {
     for (const entry of file.hooks.PreToolUse.slice(1)) assert.deepEqual(entry.hooks, [codexHandler(f)]);
     assert.deepEqual(file.hooks.Stop, [{ hooks: [codexHandler(f)] }]);
     assert.deepEqual(f.stateJson().codex_hooks, [...file.hooks.PreToolUse.slice(1), file.hooks.Stop[0]]);
-    assert.deepEqual(f.stateJson().hooks.length, 5);
+    assert.deepEqual(f.stateJson().hooks.length, 6);
     assert.deepEqual(JSON.parse(f.run("status").stdout).codex_hooks, {
       "Agent|spawn_agent": "applied", Bash: "applied", mcp__t3_code__delegate_task: "applied",
       mcp__t3_code__t3_thread_send: "applied", Stop: "applied",
