@@ -366,4 +366,59 @@ describe("policy hook", () => {
       assert.equal(invoke(JSON.stringify({ tool_name: "Bash", tool_input: { command } })), null, command);
     }
   });
+
+  describe("codex host", () => {
+    const codexArgs = () => ["--host", "codex", "--workers", workers];
+    const codex = (event, env) => {
+      const result = run(JSON.stringify(event), { env, args: codexArgs() });
+      return result.stdout ? JSON.parse(result.stdout).hookSpecificOutput : null;
+    };
+
+    test("thread send is stamped with allow under either T3 tool name", () => {
+      const env = t3Env();
+      for (const tool of ["mcp__t3_code__t3_thread_send", "mcp__t3-code__t3_thread_send"]) {
+        const result = codex({
+          hook_event_name: "PreToolUse", tool_name: tool,
+          tool_input: { threadId: "peer", message: "Hi.\n\n-- WB_MSG kind=request" },
+        }, env);
+        assert.equal(result.permissionDecision, "allow");
+        assert.match(result.updatedInput.message, /^Hi\.\n\n-- WB_MSG from=env-1\/.* kind=request id=74859825:\d+ re=none$/);
+      }
+    });
+
+    test("delegate_task requires a model under the sanitized name", () => {
+      const decision = codex({ tool_name: "mcp__t3_code__delegate_task", tool_input: { target: {} } });
+      assert.equal(decision.permissionDecision, "deny");
+      assert.equal(codex({
+        tool_name: "mcp__t3_code__delegate_task", tool_input: { target: { model: "gpt-6-luna" } },
+      }), null);
+    });
+
+    test("spawn_agent approval rules become deny", () => {
+      const byType = codex({ tool_name: "spawn_agent", tool_input: { agent_type: "opus", message: "x" } });
+      assert.equal(byType.permissionDecision, "deny");
+      assert.match(byType.permissionDecisionReason, /^Worker opus at level L3 needs the user's approval/);
+      assert.match(byType.permissionDecisionReason, /Get the user's approval, then retry\.$/);
+      const byModel = codex({ tool_name: "spawn_agent", tool_input: { model: "opus" } });
+      assert.equal(byModel.permissionDecision, "deny");
+      assert.match(byModel.permissionDecisionReason, /Opus Worker needs the user's approval/);
+    });
+
+    test("spawn_agent without a model or type passes through", () => {
+      assert.equal(codex({ tool_name: "spawn_agent", tool_input: { message: "x" } }), null);
+      assert.equal(codex({ tool_name: "spawn_agent", tool_input: { agent_type: "luna", model: "gpt-6-luna" } }), null);
+    });
+
+    test("Claude host keeps ask and stamps without allow", () => {
+      const ask = invoke(JSON.stringify({ tool_name: "spawn_agent", tool_input: { agent_type: "opus" } }));
+      assert.equal(ask.permissionDecision, "ask");
+    });
+
+    test("Bash rules and Stop still apply", () => {
+      const deny = codex({ tool_name: "Bash", tool_input: { command: "gh run watch 1" } });
+      assert.equal(deny.permissionDecision, "deny");
+      const result = run(JSON.stringify({ hook_event_name: "Stop", last_assistant_message: "Proceed?" }), { args: codexArgs() });
+      assert.equal(JSON.parse(result.stdout).decision, "block");
+    });
+  });
 });
