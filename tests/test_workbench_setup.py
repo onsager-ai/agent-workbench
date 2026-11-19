@@ -617,7 +617,8 @@ class SetupTests(unittest.TestCase):
         settings["hooks"]["PreToolUse"][0] = edited
         path.write_text(json.dumps(settings))
         self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"],
-                         {"Agent|Task": "missing", "Bash": "applied"})
+                         {"Agent|Task": "missing", "Bash": "applied",
+                          "mcp__t3-code__delegate_task": "applied"})
         self.run_setup("install")
         self.assertIn(edited, json.loads(path.read_bytes())["hooks"]["PreToolUse"])
         self.assertIn(canonical, json.loads(path.read_bytes())["hooks"]["PreToolUse"])
@@ -643,7 +644,7 @@ class SetupTests(unittest.TestCase):
         self.write(path, json.dumps({"hooks": {"PreToolUse": [foreign]}}).encode())
         self.run_setup("install")
         self.assertEqual([entry["matcher"] for entry in json.loads(
-            (self.state / "state.json").read_bytes())["hooks"]], ["Agent|Task"])
+            (self.state / "state.json").read_bytes())["hooks"]], ["Agent|Task", "mcp__t3-code__delegate_task"])
         self.run_setup("uninstall")
         self.assertEqual(json.loads(path.read_bytes())["hooks"]["PreToolUse"], [foreign])
 
