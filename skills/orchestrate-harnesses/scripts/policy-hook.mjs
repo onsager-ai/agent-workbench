@@ -1,5 +1,6 @@
 // Enforce Worker, GitHub polling, and user-question policies, and stamp WB_MSG footers.
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -45,17 +46,65 @@ function sleep(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
-function pidAlive(pid) {
+const pidAlive = (pid) => {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
     return error.code !== "ESRCH";
   }
+};
+
+// A lock is stale when its owner pid is dead. A lock without a readable pid is only stale once its
+// creator has had time to write one.
+function lockStale(lock) {
+  let pid = NaN;
+  try {
+    pid = Number(fs.readFileSync(path.join(lock, "pid"), "utf8"));
+  } catch {}
+  try {
+    return pid ? !pidAlive(pid) : Date.now() - fs.statSync(lock).mtimeMs > 10000;
+  } catch {
+    return false;
+  }
 }
 
-// Lock directory holding the owner pid. A lock whose owner is dead, or that outlives the retry
-// budget (the critical section takes milliseconds), is treated as stale and removed.
+const uniqueName = (lock, label) => `${lock}.${label}-${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
+
+// Move a stale lock aside before deleting it, then re-check what was moved: another process may
+// have replaced the stale lock with a live one between the check and the rename.
+function reclaimStaleLock(lock) {
+  if (!lockStale(lock)) return false;
+  const aside = uniqueName(lock, "stale");
+  try {
+    fs.renameSync(lock, aside);
+  } catch {
+    return true;
+  }
+  if (lockStale(aside)) {
+    fs.rmSync(aside, { recursive: true, force: true });
+    return true;
+  }
+  try {
+    fs.renameSync(aside, lock);
+  } catch {
+    fs.rmSync(aside, { recursive: true, force: true });
+  }
+  return false;
+}
+
+// Only the owner (the pid file names this process) removes a lock.
+function releaseLock(lock) {
+  try {
+    if (Number(fs.readFileSync(path.join(lock, "pid"), "utf8")) !== process.pid) return;
+    const aside = uniqueName(lock, "done");
+    fs.renameSync(lock, aside);
+    fs.rmSync(aside, { recursive: true, force: true });
+  } catch {}
+}
+
+// Lock directory holding the owner pid. When another process keeps it past the retry budget (the
+// critical section takes milliseconds) this throws, and the hook passes the message through unstamped.
 function withLock(lock, action) {
   let acquired = false;
   for (let attempt = 0; attempt < 100 && !acquired; attempt++) {
@@ -64,23 +113,15 @@ function withLock(lock, action) {
       acquired = true;
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
-      let pid = NaN;
-      try {
-        pid = Number(fs.readFileSync(path.join(lock, "pid"), "utf8"));
-      } catch {}
-      if (pid && !pidAlive(pid)) fs.rmSync(lock, { recursive: true, force: true });
-      else sleep(10);
+      if (!reclaimStaleLock(lock)) sleep(10);
     }
   }
-  if (!acquired) {
-    fs.rmSync(lock, { recursive: true, force: true });
-    fs.mkdirSync(lock);
-  }
+  if (!acquired) throw new Error("counter lock is busy");
   try {
     fs.writeFileSync(path.join(lock, "pid"), String(process.pid));
     return action();
   } finally {
-    fs.rmSync(lock, { recursive: true, force: true });
+    releaseLock(lock);
   }
 }
 
@@ -253,7 +294,7 @@ function shellCommands(command) {
   if (typeof command !== "string") throw new TypeError("command must be a string");
   const raw = [];
   for (const token of shlex(command, true)) {
-    if (punctuationOnly(token)) raw.push(...token);
+    if (token && punctuationOnly(token)) raw.push(...token);
     else raw.push(token);
   }
   const tokens = [];

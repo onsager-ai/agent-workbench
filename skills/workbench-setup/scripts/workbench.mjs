@@ -13,7 +13,7 @@ if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 20)) {
   console.error(`agent-workbench: Node 22.20 or newer is required (found ${process.versions.node}).`);
   process.exit(1);
 }
-const { parse: parseYaml } = await import("../vendor/yaml/index.js");
+const { isScalar, parseDocument, visit } = await import("../vendor/yaml/index.js");
 const { parse: parseToml } = await import("../vendor/smol-toml/index.js");
 
 export const VERSION = "1";
@@ -29,6 +29,32 @@ const ROLE = /^[a-z][a-z0-9-]*$/;
 const HOOK_MATCHERS = ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"];
 
 export class Conflict extends Error {}
+
+const INTEGER_KEYS = new Set(["version", "timeout_s", "max_auto_rework", "max_tokens", "gateway_window", "codex_window"]);
+
+// Parse like PyYAML's safe_load: YAML 1.1, repeated keys keep the last value, keys must be strings
+// (YAML 1.1 reads `no`, `on` and `null` as non-strings), and floats are not accepted in integer fields.
+function parseWorkersYaml(text) {
+  const document = parseDocument(text, { version: "1.1", uniqueKeys: false, intAsBigInt: true });
+  if (document.errors.length) throw document.errors[0];
+  visit(document, {
+    Pair(_, pair) {
+      if (isScalar(pair.key) && typeof pair.key.value !== "string") {
+        throw new Error(`mapping keys must be strings: ${pair.key.value}`);
+      }
+      if (isScalar(pair.key) && INTEGER_KEYS.has(pair.key.value) && isScalar(pair.value) && typeof pair.value.value === "number") {
+        throw new Error(`${pair.key.value} must be an integer`);
+      }
+    },
+  });
+  const plain = (value) => {
+    if (typeof value === "bigint") return Number(value);
+    if (Array.isArray(value)) return value.map(plain);
+    if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, plain(item)]));
+    return value;
+  };
+  return plain(document.toJS());
+}
 
 const isDict = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const has = (object, key) => Object.hasOwn(object, key);
@@ -66,7 +92,7 @@ export function shellQuote(word) {
 }
 
 // Equivalent of Python shlex.split (POSIX, no comments).
-function shellSplit(text) {
+export function shellSplit(text) {
   const words = [];
   let word = null;
   let quote = null;
@@ -82,7 +108,7 @@ function shellSplit(text) {
         const next = text[++index];
         word += next === '"' || next === "\\" ? next : "\\" + next;
       } else word += char;
-    } else if (/\s/.test(char)) {
+    } else if (" \t\r\n".includes(char)) {
       if (word !== null) words.push(word);
       word = null;
     } else if (char === "'" || char === '"') {
@@ -229,14 +255,13 @@ export function workerBundle(distributed, overlays = [], home = null) {
   const load = (file) => {
     let config;
     try {
-      // YAML 1.1 matches PyYAML's safe_load; repeated keys keep the last value.
-      config = parseYaml(read(file).toString("utf8"), { version: "1.1", uniqueKeys: false });
+      config = parseWorkersYaml(read(file).toString("utf8"));
     } catch (error) {
       throw new Conflict(`invalid YAML in ${file}: ${error.message}`);
     }
     validateWorkerShape(config);
     if (has(config, "version") && config.version !== 2) throw new Conflict(`${file}: version must be 2`);
-    const profiles = config.profiles ?? {};
+    const profiles = has(config, "profiles") ? config.profiles : {};
     keys(profiles, profiles, "profiles");
     for (const [name, profile] of Object.entries(profiles)) {
       if (!name) throw new Conflict("profile name must be a nonempty string");
@@ -250,14 +275,14 @@ export function workerBundle(distributed, overlays = [], home = null) {
   const base = {};
   for (const key of ["defaults", "tiers", "ladder", "policy"]) if (has(config, key)) base[key] = config[key];
   const profiles = {};
-  for (const [name, profile] of Object.entries(config.profiles ?? {})) {
+  for (const [name, profile] of Object.entries(has(config, "profiles") ? config.profiles : {})) {
     profiles[name] = resolveWorkerConfig(mergeWorkers(base, profile));
   }
   const selected = config.profile ?? null;
   if (selected !== null && (typeof selected !== "string" || !has(profiles, selected))) {
     throw new Conflict(`undefined default profile: ${selected}`);
   }
-  const rules = config.select ?? [];
+  const rules = has(config, "select") ? config.select : [];
   if (!Array.isArray(rules)) throw new Conflict("select must be a list");
   const resolvedRules = [];
   for (const rule of rules) {
@@ -455,7 +480,7 @@ function atomic(target, data, mode = 0o600) {
     const descriptor = fs.openSync(name, "wx", 0o600);
     try {
       fs.fchmodSync(descriptor, mode);
-      fs.writeSync(descriptor, data);
+      for (let written = 0; written < data.length;) written += fs.writeSync(descriptor, data, written);
       fs.fsyncSync(descriptor);
     } finally {
       fs.closeSync(descriptor);
@@ -528,6 +553,65 @@ const pidAlive = (pid) => {
     return error.code !== "ESRCH";
   }
 };
+
+// A lock is stale when its owner pid is dead. A lock without a readable pid is only stale once its
+// creator has had time to write one.
+function lockStale(lock) {
+  let pid = NaN;
+  try {
+    pid = Number(fs.readFileSync(path.join(lock, "pid"), "utf8"));
+  } catch {}
+  try {
+    return pid ? !pidAlive(pid) : Date.now() - fs.statSync(lock).mtimeMs > 10000;
+  } catch {
+    return false;
+  }
+}
+
+const uniqueName = (lock, label) => `${lock}.${label}-${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
+
+// Move a stale lock aside before deleting it, then re-check what was moved: another process may
+// have replaced the stale lock with a live one between the check and the rename.
+function reclaimStaleLock(lock) {
+  if (!lockStale(lock)) return false;
+  const aside = uniqueName(lock, "stale");
+  try {
+    fs.renameSync(lock, aside);
+  } catch {
+    return true;
+  }
+  if (lockStale(aside)) {
+    fs.rmSync(aside, { recursive: true, force: true });
+    return true;
+  }
+  try {
+    fs.renameSync(aside, lock);
+  } catch {
+    fs.rmSync(aside, { recursive: true, force: true });
+  }
+  return false;
+}
+
+// Only the owner (the pid file names this process) removes a lock.
+function releaseLock(lock) {
+  try {
+    if (Number(fs.readFileSync(path.join(lock, "pid"), "utf8")) !== process.pid) return;
+    const aside = uniqueName(lock, "done");
+    fs.renameSync(lock, aside);
+    fs.rmSync(aside, { recursive: true, force: true });
+  } catch {}
+}
+
+// Create a directory with default modes for parents and the given mode only on the leaf.
+function mkdirLeaf(directory, mode) {
+  fs.mkdirSync(path.dirname(directory), { recursive: true });
+  try {
+    fs.mkdirSync(directory, { mode });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+  fs.chmodSync(directory, mode);
+}
 
 function utf8(data) {
   return new TextDecoder("utf-8", { fatal: true }).decode(data);
@@ -703,8 +787,9 @@ export class Setup {
     try {
       if (kind === "claude") {
         const parsed = present(file) ? JSON.parse(utf8(data)) : {};
-        if (!isDict(parsed) || !isDict(parsed.env ?? {})) throw new TypeError("settings and env must be objects");
-        return [data, parsed.env ?? {}];
+        const env = isDict(parsed) && has(parsed, "env") ? parsed.env : {};
+        if (!isDict(parsed) || !isDict(env)) throw new TypeError("settings and env must be objects");
+        return [data, env];
       }
       return [data, parseToml(utf8(data))];
     } catch {
@@ -818,12 +903,12 @@ export class Setup {
     }
     if (plans.has(this.claudeSettings)) data = plans.get(this.claudeSettings)[1];
     const parsed = data.length ? JSON.parse(data.toString("utf8")) : {};
-    const hooks = parsed.hooks ?? {};
-    if (!isDict(hooks) || !Array.isArray(hooks.PreToolUse ?? []) || !Array.isArray(hooks.Stop ?? [])) {
+    const hooks = has(parsed, "hooks") ? parsed.hooks : {};
+    const current = isDict(hooks) && has(hooks, "PreToolUse") ? hooks.PreToolUse : [];
+    const currentStop = isDict(hooks) && has(hooks, "Stop") ? hooks.Stop : [];
+    if (!isDict(hooks) || !Array.isArray(current) || !Array.isArray(currentStop)) {
       throw new Conflict("invalid Claude hooks.PreToolUse or hooks.Stop configuration");
     }
-    const current = hooks.PreToolUse ?? [];
-    const currentStop = hooks.Stop ?? [];
     const contains = (list, entry) => list.some((item) => isDeepStrictEqual(item, entry));
     for (const entry of owned) {
       const collection = has(entry, "matcher") ? current : currentStop;
@@ -1059,36 +1144,29 @@ export class Setup {
 
   // Atomic mkdir lock holding the owner pid. A lock whose owner is gone is stale and removed.
   withLock(action) {
-    fs.mkdirSync(this.root, { recursive: true, mode: 0o700 });
-    fs.chmodSync(this.root, 0o700);
+    mkdirLeaf(this.root, 0o700);
     for (let attempt = 0; ; attempt++) {
       try {
         fs.mkdirSync(this.lockPath, { mode: 0o700 });
         break;
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
-        let pid = NaN;
-        try {
-          pid = Number(fs.readFileSync(path.join(this.lockPath, "pid"), "utf8"));
-        } catch {}
-        // A lock without a readable pid is only stale once its creator has had time to write it.
-        const stale = pid ? !pidAlive(pid) : Date.now() - fs.statSync(this.lockPath).mtimeMs > 10000;
-        if (!stale || attempt > 0) throw new Conflict("another agent-workbench operation holds the lock");
-        fs.rmSync(this.lockPath, { recursive: true, force: true });
+        if (attempt > 0 || !reclaimStaleLock(this.lockPath)) {
+          throw new Conflict("another agent-workbench operation holds the lock");
+        }
       }
     }
     try {
       fs.writeFileSync(path.join(this.lockPath, "pid"), String(process.pid));
       return action();
     } finally {
-      fs.rmSync(this.lockPath, { recursive: true, force: true });
+      releaseLock(this.lockPath);
     }
   }
 
   backup(name, target) {
     const backups = path.join(this.root, "backups");
-    fs.mkdirSync(backups, { mode: 0o700, recursive: true });
-    fs.chmodSync(backups, 0o700);
+    mkdirLeaf(backups, 0o700);
     const destination = path.join(backups, name + ".json");
     if (!present(destination)) {
       let entry = { type: "absent" };

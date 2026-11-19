@@ -83,6 +83,30 @@ describe("policy hook", () => {
     assert.equal(send("Hi.\n\n-- WB_MSG from=a/b kind=request id=x:1 re=none", env), null);
   });
 
+  test("thread send fails open without stamping while another process holds the counter lock", () => {
+    const env = t3Env();
+    const counter = path.join(directory, "wbmsg", env.T3CODE_THREAD_ID.replaceAll("/", "_") + ".seq");
+    fs.mkdirSync(path.dirname(counter), { recursive: true });
+    fs.mkdirSync(counter + ".lock");
+    fs.writeFileSync(path.join(counter + ".lock", "pid"), String(process.pid));
+    assert.equal(send("Hi.\n\n-- WB_MSG from=a/b kind=request id=x:1 re=none", env), null);
+    // The other holder's lock is left alone and no sequence number was consumed.
+    assert.equal(fs.readFileSync(path.join(counter + ".lock", "pid"), "utf8"), String(process.pid));
+    assert.equal(fs.existsSync(counter), false);
+  });
+
+  test("thread send reclaims a counter lock left by a dead process", () => {
+    const env = t3Env();
+    const counter = path.join(directory, "wbmsg", env.T3CODE_THREAD_ID.replaceAll("/", "_") + ".seq");
+    const dead = spawnSync(process.execPath, ["-e", ""]);
+    fs.mkdirSync(path.dirname(counter), { recursive: true });
+    fs.mkdirSync(counter + ".lock");
+    fs.writeFileSync(path.join(counter + ".lock", "pid"), String(dead.pid));
+    const result = send("Hi.\n\n-- WB_MSG kind=request", env);
+    assert.match(result.updatedInput.message, /id=74859825:1 /);
+    assert.deepEqual(fs.readdirSync(path.dirname(counter)).sort(), [path.basename(counter)]);
+  });
+
   test("opus requires approval", () => {
     for (const tool of ["Agent", "Task"]) {
       const decision = invoke(JSON.stringify({
@@ -257,6 +281,7 @@ describe("policy hook", () => {
   const assertAllowed = (command, cwd) => assert.equal(bashDecision(command, cwd), null, command);
 
   test("checkout and switch protection", () => {
+    assertProtected('git push "" main');
     for (const command of ["git checkout main", "git checkout master", "git switch main",
       "git checkout -B main origin/main", "git switch -C main origin/main", "git checkout -f main"]) {
       assertProtected(command);

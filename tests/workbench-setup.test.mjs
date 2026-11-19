@@ -8,7 +8,7 @@ import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
-import { Setup, effectiveWorkers, shellQuote } from "../skills/workbench-setup/scripts/workbench.mjs";
+import { Setup, effectiveWorkers, shellQuote, shellSplit } from "../skills/workbench-setup/scripts/workbench.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SKILL = path.join(ROOT, "skills/workbench-setup");
@@ -417,6 +417,31 @@ describe("workbench setup", () => {
     fs.writeFileSync(path.join(lock, "pid"), String(dead.pid));
     assert.match(f.run("install").stdout, /no-op/);
     assert.ok(!exists(lock));
+    assert.deepEqual(fs.readdirSync(f.state).filter((name) => name.startsWith("lock.d")), []);
+  });
+
+  test("a lock without a pid is held until it is old", () => {
+    const f = new Fixture();
+    f.run("install");
+    const lock = path.join(f.state, "lock.d");
+    fs.mkdirSync(lock);
+    assert.match(f.run("install", [], false).stderr, /holds the lock/);
+    const old = new Date(Date.now() - 60000);
+    fs.utimesSync(lock, old, old);
+    assert.match(f.run("install").stdout, /no-op/);
+  });
+
+  test("parent directories keep default modes and only the state directory is private", () => {
+    const f = new Fixture();
+    f.run("install");
+    const expected = 0o777 & ~process.umask();
+    assert.equal(mode(path.dirname(f.state)), expected);
+    assert.equal(mode(f.state), 0o700);
+    assert.equal(mode(path.join(f.state, "backups")), 0o700);
+  });
+
+  test("shell splitting uses ASCII whitespace only", () => {
+    assert.deepEqual(shellSplit("a\u00a0b  c\t'd e'\n\"f g\""), ["a\u00a0b", "c", "d e", "f g"]);
   });
 
   test("update failure preserves instruction bytes", () => {
@@ -897,6 +922,25 @@ describe("workbench setup", () => {
     assert.ok(!exists(path.join(f.state, "state.json")));
   });
 
+  test("null settings sections are reported as invalid configuration", () => {
+    const cases = [
+      ['{"hooks": null}', /invalid Claude hooks/],
+      ['{"hooks": {"PreToolUse": null}}', /invalid Claude hooks/],
+      ['{"hooks": {"Stop": null}}', /invalid Claude hooks/],
+      ['{"env": null}', /invalid claude configuration/],
+    ];
+    cases.forEach(([data, message], index) => {
+      const f = new Fixture();
+      f.configureHome(path.join(f.temporary, `null-${index}`));
+      f.installOrchestration();
+      const file = path.join(f.home, ".claude/settings.json");
+      f.write(file, data);
+      assert.match(f.run("install", [], false).stderr, message);
+      assert.deepEqual(read(file), Buffer.from(data));
+      assert.ok(!exists(path.join(f.state, "state.json")));
+    });
+  });
+
   test("native apply, rewrite, conflict and uninstall", () => {
     const f = new Fixture();
     f.installOrchestration({ policy: { context: { codex_window: 900000, gateway_window: 400000 } } });
@@ -1059,6 +1103,9 @@ select:
       "profiles: {unused: {tiers: {luna: {effort: false}}}}",
       "profiles: {unused: {roles: {}}}", "tiers: {luna: {cli: codex}}",
       "ladder: [{level: L1, tiers: [terra]}]", "ladder: []", "[broken",
+      "defaults: {timeout_s: 7200.0}", "version: 2.0", "policy: {max_auto_rework: 1.0}",
+      "tiers: {no: null}", "tiers: {on: {harness: claude, model: x}}", "tiers: {null: null}",
+      "profiles: {1: {tiers: {}}}", "profiles: null", "select: null",
     ];
     for (const text of invalid) {
       const f = new Fixture();
