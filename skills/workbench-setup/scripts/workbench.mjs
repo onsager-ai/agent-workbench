@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import tty from "node:tty";
 import { isDeepStrictEqual } from "node:util";
 
 const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
@@ -1074,7 +1075,8 @@ export class Setup {
   }
 
   confirmCodexTrust() {
-    if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+    // tty.isatty, not process.stdin.isTTY: creating the stdin stream makes fd 0 non-blocking, so readSync gets EAGAIN.
+    if (!tty.isatty(0) || !tty.isatty(1)) return false;
     process.stdout.write("Trust agent-workbench's Codex hooks now? [y/N] ");
     const buffer = Buffer.alloc(256);
     let answer = "";

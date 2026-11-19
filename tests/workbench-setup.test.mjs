@@ -1090,6 +1090,19 @@ describe("workbench setup", () => {
     assert.deepEqual(read(config), original);
   });
 
+  const hasScript = spawnSync("script", ["--version"]).status === 0;
+  test("codex trust prompt reads the answer from a real terminal", { skip: !hasScript && "util-linux script not available" }, () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const command = [process.execPath, f.script, "--home", f.home, "install"].map(shellQuote).join(" ");
+    const result = spawnSync("script", ["-qec", command, "/dev/null"],
+      { input: "y\n", encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: "" } });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /Trust agent-workbench's Codex hooks now\? \[y\/N\]/);
+    assert.equal(f.stateJson().codex_trust.length, 5);
+    assert.equal(JSON.parse(f.run("status").stdout).codex_trust.Bash, "trusted");
+  });
+
   test("codex trust is skipped without a terminal and reported untrusted", () => {
     const f = new Fixture();
     f.installOrchestration();
