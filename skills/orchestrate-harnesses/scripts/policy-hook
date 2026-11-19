@@ -123,6 +123,15 @@ def resolve_git_context(event, git_cwd, cd_cwd=None):
     return cwd.resolve()
 
 
+def current_branch(directory):
+    try:
+        result = subprocess.run(["git", "-C", str(directory), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                                capture_output=True, text=True, timeout=2, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
 def protected_branch_git(command, event):
     reason = None
     for words in shell_commands(command):
@@ -160,19 +169,18 @@ def protected_branch_git(command, event):
                 return PROTECTED_BRANCH_REASON
         if operation == "push":
             refs = [arg for arg in args if not arg.startswith("-")]
-            refspecs = refs[1:] if len(refs) >= 2 else []
+            refspecs = [ref.lstrip("+") for ref in refs[1:]]
             if any(ref.split(":", 1)[-1].removeprefix("refs/heads/") in PROTECTED_BRANCHES
                    or ref.split(":", 1)[0].removeprefix("refs/heads/") in PROTECTED_BRANCHES
                    for ref in refspecs):
                 return PROTECTED_BRANCH_REASON
-        if operation in {"commit", "merge", "rebase", "cherry-pick", "revert", "reset", "am"} or operation == "push" and len([arg for arg in args if not arg.startswith("-")]) < 2:
-            try:
-                result = subprocess.run(["git", "-C", str(directory), "symbolic-ref", "--quiet", "--short", "HEAD"],
-                                        capture_output=True, text=True, timeout=2, check=False)
-            except (OSError, subprocess.TimeoutExpired):
+            # With no refspec, or a HEAD/@ source, the pushed branch is the current one.
+            if refspecs and not any(ref.split(":", 1)[0] in ("HEAD", "@") for ref in refspecs):
                 continue
-            if result.returncode == 0 and result.stdout.strip() in PROTECTED_BRANCHES:
-                return PROTECTED_BRANCH_REASON
+        elif operation not in {"commit", "merge", "rebase", "cherry-pick", "revert", "reset", "am"}:
+            continue
+        if current_branch(directory) in PROTECTED_BRANCHES:
+            return PROTECTED_BRANCH_REASON
     return reason
 
 

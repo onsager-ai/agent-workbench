@@ -229,7 +229,8 @@ class PolicyHookTests(unittest.TestCase):
             feature = self.make_git_repo(root / "feature", "feature")
             for command in ("git commit -m x", "git merge feature", "git rebase feature",
                             "git cherry-pick HEAD", "git revert HEAD", "git reset --hard HEAD",
-                            "git am patch.mbox", "git push origin", "git push"):
+                            "git am patch.mbox", "git push origin", "git push",
+                            "git push origin HEAD", "git push -u origin HEAD", "git push origin @"):
                 with self.subTest(command=command, context="cwd"):
                     self.assert_protected(command, main)
                 with self.subTest(command=command, context="git -C"):
