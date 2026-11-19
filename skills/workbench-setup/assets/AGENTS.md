@@ -1,6 +1,7 @@
 # Shared agent instructions
 
 - Follow the user's current goal and preserve unrelated work. Prefer the simplest correct, maintainable implementation and keep changes minimal and focused on the requested task.
+- When you need the user's answer, including confirmations such as “proceed?”, “merge?” or “which next?”, use the native question tool (Claude Code AskUserQuestion; Codex's equivalent when exposed), not a prose question. Put the recommended option first; for open-ended answers, offer the best 2–3 guesses as options. Don't end a turn with a prose question; only when no question tool exists, ask one concise direct question. See prompt-for-decisions for how to present the question.
 - Avoid speculative guards, fallbacks, retries, wrappers, abstractions, and compatibility layers. Add defensive code only for realistic failure modes, explicit contracts, or demonstrated risks; preserve essential security, data integrity, and error handling.
 - Trace each design mechanism to a user requirement or stated threat; anything you can't trace is a proposal for the user, not part of the design. Ask the user early about important design choices such as security models, persisted formats and protocol shapes. When fixes keep turning up the same kind of defect, stop and question the design instead of fixing again.
 - Use higher reasoning effort to improve judgment, not increase implementation complexity.

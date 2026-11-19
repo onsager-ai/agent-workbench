@@ -452,13 +452,17 @@ class Setup:
             data = plans[self.claude_settings][1]
         parsed = json.loads(data) if data else {}
         hooks = parsed.get("hooks", {})
-        if not isinstance(hooks, dict) or not isinstance(hooks.get("PreToolUse", []), list):
-            raise Conflict("invalid Claude hooks.PreToolUse configuration")
+        if (not isinstance(hooks, dict) or not isinstance(hooks.get("PreToolUse", []), list)
+                or not isinstance(hooks.get("Stop", []), list)):
+            raise Conflict("invalid Claude hooks.PreToolUse or hooks.Stop configuration")
         current = hooks.get("PreToolUse", [])
+        current_stop = hooks.get("Stop", [])
         for entry in owned:
-            if current.count(entry) > 1:
+            collection = current_stop if "matcher" not in entry else current
+            if collection.count(entry) > 1:
                 raise Conflict("owned Claude hook is duplicated; left unchanged")
         desired = []
+        desired_stop = []
         if not uninstall and present(self.models) and present(self.worker):
             inspect(self.policy_hook, self.home)
             if not self.policy_hook.is_file():
@@ -466,21 +470,35 @@ class Setup:
             command = shlex.quote(str(self.policy_hook))
             desired = [{"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
                        for matcher in ("Agent|Task", "Bash", "mcp__t3-code__delegate_task")]
-        report = {entry["matcher"]: "applied" if entry in current else "missing" for entry in owned}
+            desired_stop = [{"hooks": [{"type": "command", "command": command}]}]
+        report = {entry["matcher"]: "applied" if entry in current else "missing"
+                  for entry in owned if "matcher" in entry}
+        report.update({"Stop": "applied" if entry in current_stop else "missing"
+                       for entry in owned if "matcher" not in entry})
         if status:
             return owned, report
         updated = list(current)
+        updated_stop = list(current_stop)
         for entry in owned:
-            if entry not in desired and entry in updated:
-                updated.remove(entry)
+            collection = updated_stop if "matcher" not in entry else updated
+            desired_entries = desired_stop if "matcher" not in entry else desired
+            if entry not in desired_entries and entry in collection:
+                collection.remove(entry)
         record = []
         for entry in desired:
             if entry in owned or entry not in updated:
                 record.append(entry)
             if entry not in updated:
                 updated.append(entry)
-        if updated != current:
-            parsed.setdefault("hooks", {})["PreToolUse"] = updated
+        for entry in desired_stop:
+            if entry in owned or entry not in updated_stop:
+                record.append(entry)
+            if entry not in updated_stop:
+                updated_stop.append(entry)
+        if updated != current or updated_stop != current_stop:
+            parsed_hooks = parsed.setdefault("hooks", {})
+            parsed_hooks["PreToolUse"] = updated
+            parsed_hooks["Stop"] = updated_stop
             plans[self.claude_settings] = (
                 "file", (json.dumps(parsed, indent=2, ensure_ascii=False) + "\n").encode(), 0o600)
         return record, report
@@ -530,8 +548,9 @@ class Setup:
             if not isinstance(hooks, list):
                 raise ValueError("invalid hook ownership metadata")
             for entry in hooks:
-                if (not isinstance(entry, dict) or set(entry) != {"matcher", "hooks"}
-                        or entry["matcher"] not in ("Agent|Task", "Bash", "mcp__t3-code__delegate_task")
+                if (not isinstance(entry, dict) or set(entry) not in ({"matcher", "hooks"}, {"hooks"})
+                        or ("matcher" in entry and entry["matcher"] not in (
+                            "Agent|Task", "Bash", "mcp__t3-code__delegate_task"))
                         or not isinstance(entry["hooks"], list) or len(entry["hooks"]) != 1
                         or not isinstance(entry["hooks"][0], dict)
                         or set(entry["hooks"][0]) != {"type", "command"}

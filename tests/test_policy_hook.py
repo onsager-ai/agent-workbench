@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -76,6 +77,42 @@ class PolicyHookTests(unittest.TestCase):
         ):
             with self.subTest(payload=payload):
                 self.assertIsNone(self.invoke(payload))
+
+    def invoke_stop(self, event):
+        result = subprocess.run([sys.executable, "-I", str(HOOK)],
+                                input=json.dumps(event), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        return json.loads(result.stdout) if result.stdout else None
+
+    def test_stop_blocks_question_from_last_assistant_message(self):
+        result = self.invoke_stop({"hook_event_name": "Stop",
+                                   "last_assistant_message": "Proceed with option A? **"})
+        self.assertEqual(result["decision"], "block")
+        self.assertIn("AskUserQuestion", result["reason"])
+        self.assertIn("recommended option first", result["reason"])
+
+    def test_stop_blocks_question_from_transcript_tail(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / "transcript.jsonl"
+            transcript.write_text(json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Question?"}]}}) + "\n")
+            result = self.invoke_stop({"hook_event_name": "Stop", "transcript_path": str(transcript)})
+        self.assertEqual(result["decision"], "block")
+
+    def test_stop_passes_active_no_question_and_malformed_input(self):
+        for event in (
+            {"hook_event_name": "Stop", "stop_hook_active": True, "last_assistant_message": "Question?"},
+            {"hook_event_name": "Stop", "last_assistant_message": "Finished."},
+            {"hook_event_name": "Stop", "transcript_path": "/missing/transcript"},
+            {"hook_event_name": "Stop"},
+        ):
+            with self.subTest(event=event):
+                self.assertIsNone(self.invoke_stop(event))
+        result = subprocess.run([sys.executable, "-I", str(HOOK)], input="{bad",
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
 
     def test_polling_is_denied(self):
         for command in (
