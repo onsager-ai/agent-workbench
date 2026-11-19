@@ -1,63 +1,66 @@
-"""Configuration contract for native Worker model selection."""
-import json
-import math
+"""Distributed Worker configuration and schema validation contract."""
+import copy
+import importlib.util
 from pathlib import Path
 import unittest
 
-
 ROOT = Path(__file__).resolve().parents[1]
-MODELS_PATH = ROOT / "skills/orchestrate-harnesses/models.json"
-EXPECTED_WORKERS = {
-    "luna": ("codex", "gpt-6-luna", "medium"),
-    "haiku": ("claude", "claude-haiku-5-5", "medium"),
-    "flash": ("codex", "openrouter/deepseek/deepseek-v4.1-flash-1017", "high"),
-    "terra": ("codex", "gpt-6.1-terra", "medium"),
-    "sonnet": ("claude", "claude-sonnet-5-5", "medium"),
-    "sol": ("codex", "gpt-6.1-sol", "medium"),
-    "opus": ("claude", "claude-opus-5-5", "medium"),
-}
+SPEC = importlib.util.spec_from_file_location("worker_config", ROOT / "skills/workbench-setup/scripts/workbench.py")
+WORKBENCH = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(WORKBENCH)
+WORKERS = ROOT / "skills/orchestrate-harnesses/workers.yml"
 
 
 class WorkerConfigurationTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.models = json.loads(MODELS_PATH.read_text(encoding="utf-8"))
+    def setUp(self):
+        self.bundle = WORKBENCH.worker_bundle(WORKERS)
+        self.config = self.bundle["base"]
 
-    def test_worker_tiers_keep_the_distributed_models_and_efforts(self) -> None:
-        roles = self.models["roles"]
-        self.assertEqual(set(roles), set(EXPECTED_WORKERS))
-        self.assertNotIn("manager", roles)
-        self.assertNotIn("reviewer", roles)
+    def test_distributed_ladder_and_tiers(self):
+        self.assertEqual([(entry["level"], entry["tiers"]) for entry in self.config["ladder"]],
+                         [("L1", ["luna", "haiku"]), ("L2", ["sol", "sonnet"]), ("L3", ["opus"])])
+        self.assertEqual(self.config["ladder"][1]["start_for"], ["spike", "research", "architecture"])
+        self.assertEqual(self.config["ladder"][2]["approval"], "required")
+        expected = {
+            "luna": ("codex", "gpt-6-luna", "medium"),
+            "haiku": ("claude", "claude-haiku-5-5", "medium"),
+            "flash": ("codex", "openrouter/deepseek/deepseek-v4.1-flash-1017", "high"),
+            "terra": ("codex", "gpt-6.1-terra", "medium"),
+            "sonnet": ("claude", "claude-sonnet-5-5", "medium"),
+            "sol": ("codex", "gpt-6.1-sol", "medium"),
+            "opus": ("claude", "claude-opus-5-5", "medium"),
+        }
+        self.assertEqual(set(self.config["tiers"]), set(expected))
+        for name, values in expected.items():
+            tier = self.config["tiers"][name]
+            self.assertEqual(tuple(tier[key] for key in ("harness", "model", "effort")), values)
+            self.assertEqual(tier["timeout_s"], 7200)
+            self.assertIsNone(tier["budget_usd"])
+            self.assertEqual(tier["opt_in"], name in ("flash", "terra"))
+        self.assertEqual(self.config["tiers"]["sol"]["weekly_brake_percent"], 100)
+        self.assertEqual(list(self.bundle["profiles"]["claude-only"]["tiers"]), ["haiku", "sonnet", "opus"])
 
-        for tier, expected in EXPECTED_WORKERS.items():
-            with self.subTest(tier=tier):
-                role = roles[tier]
-                cli = expected[0]
-                self.assertEqual((role["cli"], role["model"], role["effort"]), expected)
-                fields = {"cli", "model", "effort", "timeout_s"}
-                if cli == "claude":
-                    fields.add("budget_usd")
-                    self.assertIsNone(role["budget_usd"])
-                else:
-                    fields.add("claude_model")
-                    self.assertEqual(role["claude_model"], None if tier == "flash" else "onsager/codex/" + role["model"])
-                self.assertEqual(set(role), fields)
-                self.assertIs(type(role["timeout_s"]), int)
-                self.assertGreater(role["timeout_s"], 0)
-
-    def test_shared_policy_fields_are_valid_configuration(self) -> None:
-        self.assertEqual(
-            set(self.models),
-            {"version", "roles", "max_auto_rework", "sol_weekly_brake_percent", "max_context_tokens", "gateway_context_window", "codex_context_window"},
-        )
-        self.assertEqual(self.models["version"], 1)
-        self.assertIs(type(self.models["max_auto_rework"]), int)
-        self.assertGreaterEqual(self.models["max_auto_rework"], 0)
-        brake = self.models["sol_weekly_brake_percent"]
-        self.assertTrue(type(brake) in (int, float) and math.isfinite(brake))
-        self.assertGreater(brake, 0)
-        self.assertLessEqual(brake, 100)
-        self.assertIs(type(self.models["max_context_tokens"]), int)
-        self.assertGreater(self.models["max_context_tokens"], 0)
+    def test_schema_rejects_bad_resolved_values(self):
+        mutations = [
+            lambda c: c["tiers"]["luna"].update(timeout_s=True),
+            lambda c: c["tiers"]["luna"].update(budget_usd=1),
+            lambda c: c["tiers"]["sonnet"].update(budget_usd=float("inf")),
+            lambda c: c["tiers"]["sonnet"].update(claude_route=None),
+            lambda c: c["tiers"]["sol"].update(weekly_brake_percent=101),
+            lambda c: c["tiers"]["sol"].update(opt_in=True),
+            lambda c: c["ladder"][0]["tiers"].append("unknown"),
+            lambda c: c["ladder"][1]["tiers"].append("luna"),
+            lambda c: c["ladder"][1].update(level="L1"),
+            lambda c: c["ladder"][0].update(approval="optional"),
+            lambda c: c["policy"]["context"].update(max_tokens=0),
+            lambda c: c["policy"].update(max_auto_rework=-1),
+            lambda c: c["tiers"]["luna"].update(cli="codex"),
+        ]
+        for mutate in mutations:
+            config = copy.deepcopy(self.config)
+            mutate(config)
+            with self.subTest(mutate=mutate), self.assertRaises(WORKBENCH.Conflict):
+                WORKBENCH.resolve_worker_config(config)
 
 
 if __name__ == "__main__":

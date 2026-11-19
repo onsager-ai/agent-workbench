@@ -47,7 +47,7 @@ def merge_workers(base, overlay):
                 raise Conflict("tiers must be a mapping")
             for name, tier in value.items():
                 if tier is None:
-                    tiers.pop(name, None)
+                    tiers[name] = None
                 elif isinstance(tier, dict) and isinstance(tiers.get(name), dict):
                     tiers[name] = merge_workers(tiers[name], tier)
                 else:
@@ -104,7 +104,8 @@ def resolve_worker_config(config):
     if defaults.get("budget_usd") is not None and not positive(defaults["budget_usd"]):
         raise Conflict("defaults.budget_usd must be positive and finite or null")
     result = copy.deepcopy(config)
-    tiers = result.get("tiers", {})
+    tiers = {name: tier for name, tier in result.get("tiers", {}).items() if tier is not None}
+    result["tiers"] = tiers
     for name, raw in tiers.items():
         if not isinstance(raw, dict):
             raise Conflict(f"tier {name} must be a mapping")
@@ -408,7 +409,7 @@ class Setup:
         self.worker = orchestration / "references/worker.md"
         self.policy_hook = orchestration / "scripts/policy-hook"
         xdg = os.environ.get("XDG_CONFIG_HOME", "")
-        config = Path(xdg) if self.home == Path.home() and xdg and os.path.isabs(xdg) else self.home / ".config"
+        config = Path(xdg) if xdg and os.path.isabs(xdg) else self.home / ".config"
         self.override = config / "agent-workbench/workers.yml"
         self.legacy_override = config / "agent-workbench/models.json"
 
@@ -482,7 +483,7 @@ class Setup:
                 print(f"warning: {name} tier effort {effort!r} is not listed for {model!r} "
                       "by magpie models claude", file=sys.stderr)
 
-    def desired_agents(self):
+    def desired_agents(self, *, warn=True):
         """Render the union of tiers routable from Claude across all profiles."""
         bundle = self.workers_bundle()
         inspect(self.worker, self.home)
@@ -507,7 +508,8 @@ class Setup:
                                 "<!-- Managed by agent-workbench; ownership is recorded in state.json. -->\n\n"
                                 + body).encode()
                 targets[name] = (model, effort)
-        self.warn_catalog(targets)
+        if warn:
+            self.warn_catalog(targets)
         return agents
 
     def context_values(self):
@@ -649,7 +651,7 @@ class Setup:
             inspect(self.policy_hook, self.home)
             if not self.policy_hook.is_file():
                 raise Conflict("missing canonical policy hook; distribute orchestrate-harnesses first")
-            command = shlex.quote(str(self.policy_hook))
+            command = shlex.join([str(self.policy_hook), "--workers", str(self.workers_path)])
             desired = [{"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
                        for matcher in ("Agent|Task", "Bash", "mcp__t3-code__delegate_task")]
             desired_stop = [{"hooks": [{"type": "command", "command": command}]}]
@@ -719,6 +721,8 @@ class Setup:
                         or not isinstance(imported.get("line"), str)):
                     raise ValueError("invalid Claude import ownership metadata")
                 base64.b64decode(imported["line"], validate=True)
+            if state.get("workers_hash") is not None and not isinstance(state["workers_hash"], str):
+                raise ValueError("invalid Worker ownership metadata")
             native = state.get("native", {})
             if not isinstance(native, dict) or any(kind not in ("claude", "codex") or not isinstance(entries, dict) for kind, entries in native.items()):
                 raise ValueError("invalid native ownership metadata")
@@ -814,7 +818,17 @@ class Setup:
             elif "claude_import" not in state and lines[0].strip() != IMPORT:
                 raise Conflict("managed Claude import missing or modified; left unchanged")
         self.check_agents(state)
+        inspect(self.workers_path, self.home)
+        owned_workers = state.get("workers_hash") if state else None
+        if present(self.workers_path):
+            if not owned_workers or digest(read(self.workers_path)) != owned_workers:
+                raise Conflict(f"foreign or edited resolved Worker configuration: {self.workers_path}")
+        elif owned_workers:
+            raise Conflict(f"owned resolved Worker configuration is missing: {self.workers_path}")
         if not uninstall:
+            self.workers_bundle()
+            self.desired_agents(warn=False)
+
             inspect(self.script, self.home)
             inspect(self.template, self.home)
             if not self.script.is_file() or not self.template.is_file():
@@ -889,7 +903,10 @@ class Setup:
                 self.backup(name, getattr(self, name))
             for path in native_plans:
                 self.backup("claude_settings" if path == self.claude_settings else "codex_settings", path)
-            record = {"native": native_record, "hooks": hook_record,
+            bundle = self.workers_bundle()
+            workers_bytes = (json.dumps(bundle, indent=2) + "\n").encode() if bundle else None
+            record = {"workers_hash": digest(workers_bytes) if workers_bytes else None,
+                      "native": native_record, "hooks": hook_record,
                       "schema": 1, "version": VERSION, "template_hash": digest(template),
                       "block_hash": digest(block), "block_text": block.decode("utf-8"), "target": self.target,
                       "launcher_hash": digest(self.launcher_bytes()), "import_added": bool(added),
@@ -908,6 +925,10 @@ class Setup:
             agents = {self.agent_path(name): ("file", desired[name], 0o600) if name in desired
                       else ("absent", None, None)
                       for name in {*(state.get("agents", {}) if state else ()), *desired}}
+            if workers_bytes is not None:
+                agents[self.workers_path] = ("file", workers_bytes, 0o600)
+            elif state and state.get("workers_hash"):
+                agents[self.workers_path] = ("absent", None, None)
             plans.update(agents)
             plans.update(native_plans)
             with transaction(plans):
@@ -973,6 +994,8 @@ class Setup:
                 self.backup("claude_settings" if path == self.claude_settings else "codex_settings", path)
             # Keep current personal bytes, never restore an old snapshot over them.
             agents = {self.agent_path(name): ("absent", None, None) for name in state.get("agents", {})}
+            if state.get("workers_hash"):
+                agents[self.workers_path] = ("absent", None, None)
             plans = {**agents, self.shared: ("file", private, 0o600), self.codex: ("file", private, 0o600),
                      self.claude: ("file", claude, 0o600), self.launcher: ("absent", None, None),
                      self.state_path: ("absent", None, None)}

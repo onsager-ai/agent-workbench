@@ -20,7 +20,31 @@ The current interactive session is the **Manager**, using its selected native mo
 
 Agent Workbench covers user/machine instructions and Manager/Worker scope, distributed globally. Repository-committed conventions—pinned skills, the generated shared section of `AGENTS.md`, `.claude` projections, and generated `.githooks`—are owned by [onsager-ai/dev-skills](https://github.com/onsager-ai/dev-skills) and reach managed repos through its manifest and sync process. AW never writes into managed repos.
 
-Workers use a Codex-first ladder: **Luna medium / Haiku medium → Sol medium / Sonnet medium → Opus medium**. GPT-6.1 Terra and DeepSeek Flash are opt-in and outside the ladder. A Claude Manager dispatches luna, terra and sol as gateway-routed native subagents; flash runs as a sandboxed `codex exec` Worker. Each role's `timeout_s` (7200 s by default) is a ceiling; the Manager sizes each dispatch's timeout to the task. Escalation needs evidence; Claude alternatives need a cost justification; L3 (Opus) needs the user's approval for each task. Model IDs, efforts, timeouts, optional monetary caps, rework policy and context targets live in [models.json](skills/orchestrate-harnesses/models.json), with partial per-user overrides described in [local model configuration](skills/orchestrate-harnesses/SKILL.md#local-model-configuration). No fixed amount ceiling is imposed; `budget_usd: null` adds no monetary cap. See [Magpie guidance](skills/orchestrate-harnesses/references/magpie.md) for quota-aware tier choices, catalog warnings and usage reporting.
+Workers use a configurable ladder. The default is Codex-first: **Luna medium / Haiku medium → Sol medium / Sonnet medium → Opus medium**. GPT-6.1 Terra and DeepSeek Flash are opt-in and outside the ladder. A Claude Manager dispatches luna, terra and sol as gateway-routed native subagents; flash runs as a sandboxed `codex exec` Worker. Each tier's `timeout_s` (7200 s by default) is a ceiling; the Manager sizes each dispatch's timeout to the task. Escalation needs evidence; moving to the next listed tier needs a recorded reason; L3 (Opus) needs the user's approval for each task. Model IDs, efforts, timeouts, optional monetary caps, rework policy and context targets live in [workers.yml](skills/orchestrate-harnesses/workers.yml), with partial per-user overrides described in [local model configuration](skills/orchestrate-harnesses/SKILL.md#local-model-configuration). No fixed amount ceiling is imposed; `budget_usd: null` adds no monetary cap. See [Magpie guidance](skills/orchestrate-harnesses/references/magpie.md) for quota-aware tier choices, catalog warnings and usage reporting.
+
+Worker configuration is YAML, loaded with vendored PyYAML without pip or network access. Put partial overrides in `~/.config/agent-workbench/workers.yml` (or the absolute `$XDG_CONFIG_HOME` equivalent). Mappings merge, lists replace, and null tiers are deleted. Run `agent-workbench workers --cwd PATH` to inspect the chosen profile and resolved configuration, then `agent-workbench install` to apply agent and hook changes.
+
+For a corporate setup, add a profile and select it for your work directory:
+
+```yaml
+profiles:
+  corporate:
+    tiers:
+      glm: {harness: claude, model: glm, effort: medium}
+    ladder:
+      - {level: L1, tiers: [luna, glm]}
+      - {level: L2, tiers: [sonnet]}
+      - {level: L3, tiers: [sol], approval: required}
+select:
+  - {path: ~/work, profile: corporate}
+```
+
+For a setup without Codex or a gateway, select the shipped Claude-only profile:
+
+```yaml
+profile: claude-only
+```
+
 
 Managers apply these settings through actual native tool capabilities. A configured target does not establish native model/effort, timeout, monetary budget, context or permission enforcement. Report unsupported/unverified settings, preserve the user's native permissions, and hold dependent work when a missing control is required. Do not substitute prompt limits for native configuration or claim compaction is a hard request-token cap. The same applies to already-running Manager sessions.
 
@@ -70,13 +94,14 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 | `~/.codex/AGENTS.md` | Native Codex symlink to the shared file |
 | `~/.claude/CLAUDE.md` | Existing Claude text plus native `@~/.agents/AGENTS.md` import |
 | `~/.local/bin/agent-workbench` | Thin launcher for the installed setup skill |
-| `~/.claude/agents/<role>.md` | Generated Claude Code subagents, one per routable Worker tier (when `orchestrate-harnesses` is installed) |
+| `~/.local/state/agent-workbench/workers.json` | Owned resolved base and profile policy used by the dispatch hook |
+| `~/.claude/agents/<tier>.md` | Generated Claude Code subagents, one per routable Worker tier (when `orchestrate-harnesses` is installed) |
 | `~/.claude/settings.json` → `hooks.PreToolUse` | Owned hooks for Opus approval and GitHub polling policy (when `orchestrate-harnesses` is installed) |
 | `~/.local/state/agent-workbench/` | Ownership, hashes, exclusive lock, private backups |
 
 The exact public markers are `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->`. Put personal rules outside that block in `~/.agents/AGENTS.md`. On first installation, existing Codex regular-file bytes migrate outside the block unchanged. When migrating old orchestration rules, inspect personal text for Gateway/fixed-Manager requirements and reconcile those explicitly; setup preserves private text and does not resolve semantic conflicts for you. Existing Claude text stays in place. Neither npx distribution nor this setup changes project instructions, other agent settings, credentials, model configuration, or native permissions.
 
-The generated agents let a Claude Manager dispatch each tier as `subagent_type: luna`, `haiku`, and so on. A tier is generated when its role has `cli: claude` or a non-null `claude_model`. By default luna, terra and sol route through Magpie as `onsager/codex/<model>`; flash has no route. Gateway prefixes are installation-specific, so set a different ID, or `null` to run a tier as a Codex Worker, in your partial model override (`{"roles": {"luna": {"claude_model": "<gateway model ID>"}}}`). Rerun `agent-workbench install` after editing the override. Generated files are owned by hash: setup refuses to overwrite a foreign or edited file, leaves other files in `~/.claude/agents` alone, and `uninstall` removes only unmodified owned files.
+The generated agents let a Claude Manager dispatch each tier as `subagent_type: luna`, `haiku`, and so on. A tier is generated when its role has `harness: claude` or a non-null `claude_route`. By default luna, terra and sol route through Magpie as `onsager/codex/<model>`; flash has no route. Gateway prefixes are installation-specific, so set a different ID, or `null` to run a tier as a Codex Worker, in your partial model override (`{"tiers": {"luna": {"claude_route": "<gateway model ID>"}}}`). Rerun `agent-workbench install` after editing the override. Generated files are owned by hash: setup refuses to overwrite a foreign or edited file, leaves other files in `~/.claude/agents` alone, and `uninstall` removes only unmodified owned files.
 
 ~~~sh
 # Reapply already distributed public assets (idempotent).

@@ -1,4 +1,5 @@
 import json
+import importlib.util
 from pathlib import Path
 import subprocess
 import sys
@@ -10,8 +11,19 @@ HOOK = Path(__file__).resolve().parents[1] / "skills/orchestrate-harnesses/scrip
 
 
 class PolicyHookTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.workers = Path(temporary.name) / "workers.json"
+        root = HOOK.parents[3]
+        spec = importlib.util.spec_from_file_location("hook_config", root / "skills/workbench-setup/scripts/workbench.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.bundle = module.worker_bundle(root / "skills/orchestrate-harnesses/workers.yml")
+        self.workers.write_text(json.dumps(self.bundle))
+
     def invoke(self, payload):
-        result = subprocess.run([sys.executable, "-I", str(HOOK)], input=payload,
+        result = subprocess.run([sys.executable, "-I", str(HOOK), "--workers", str(self.workers)], input=payload,
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "")
@@ -25,7 +37,45 @@ class PolicyHookTests(unittest.TestCase):
                 self.assertEqual(decision["hookEventName"], "PreToolUse")
                 self.assertEqual(decision["permissionDecision"], "ask")
                 self.assertEqual(decision["permissionDecisionReason"],
-                    "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).")
+                    "Worker opus at level L3 needs the user's approval for this task (configured Worker ladder).")
+
+    def test_approval_uses_profile_and_event_cwd(self):
+        work = self.workers.parent / "work"
+        work.mkdir()
+        alias = self.workers.parent / "alias"
+        alias.symlink_to(work, target_is_directory=True)
+        corporate = json.loads(json.dumps(self.bundle["base"]))
+        corporate["ladder"] = [{"level": "expert", "tiers": ["sol"], "approval": "required"}]
+        self.bundle["profiles"]["corporate"] = corporate
+        self.bundle["select"] = [{"path": str(work), "profile": "corporate"}]
+        self.workers.write_text(json.dumps(self.bundle))
+        for tool in ("Agent", "Task"):
+            payload = {"tool_name": tool, "cwd": str(alias / "nested"), "tool_input": {"subagent_type": "sol"}}
+            result = self.invoke(json.dumps(payload))
+            self.assertEqual(result["permissionDecision"], "ask")
+            self.assertIn("expert", result["permissionDecisionReason"])
+            payload["cwd"] = str(work.parent)
+            self.assertIsNone(self.invoke(json.dumps(payload)))
+            payload["cwd"] = str(work)
+            payload["tool_input"]["subagent_type"] = "opus"
+            self.assertIsNone(self.invoke(json.dumps(payload)))
+        self.bundle["profile"] = "corporate"
+        self.workers.write_text(json.dumps(self.bundle))
+        self.assertEqual(self.invoke(json.dumps({"tool_name": "Agent", "tool_input": {"subagent_type": "sol"}}))["permissionDecision"], "ask")
+
+    def test_missing_or_unreadable_workers_asks_on_every_dispatch(self):
+        for content in (None, "invalid json", "{}"):
+            if content is None:
+                self.workers.unlink()
+            else:
+                self.workers.write_text(content)
+            for tier in ("luna", "Plan", "custom"):
+                result = self.invoke(json.dumps({"tool_name": "Agent", "tool_input": {"subagent_type": tier}}))
+                self.assertEqual(result["permissionDecision"], "ask")
+                self.assertIn("agent-workbench install", result["permissionDecisionReason"])
+        self.workers.unlink()
+        self.workers.mkdir()
+        self.assertEqual(self.invoke(json.dumps({"tool_name": "Task", "tool_input": {}}))["permissionDecision"], "ask")
 
     def test_t3_delegate_requires_worker_model(self):
         for target in ({}, {"model": ""}, {"options": {"effort": "low"}}):

@@ -1,6 +1,8 @@
 # Worker configuration schema. User mappings merge; lists replace wholesale.
 version: 2
 # Values inherited by every tier unless the tier supplies its own value.
+# effort is a native effort string; timeout_s is a positive integer ceiling;
+# budget_usd is a positive finite Claude budget target, or null for no cap.
 defaults: {effort: medium, timeout_s: 7200, budget_usd: null}
 # harness selects the client; model is its native identifier. claude_route routes
 # a Codex tier from Claude (null disables that route). opt_in requires explicit

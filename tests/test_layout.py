@@ -60,7 +60,7 @@ class PublicLayoutTests(unittest.TestCase):
         required = (
             "skills/disk-cleanup/references/targets.md",
             "skills/manage-lane/references/handover.md",
-            "skills/orchestrate-harnesses/models.json",
+            "skills/orchestrate-harnesses/workers.yml",
             "skills/orchestrate-harnesses/references/manager.md",
             "skills/orchestrate-harnesses/references/worker.md",
             "skills/orchestrate-harnesses/references/t3-sync.md",
@@ -68,6 +68,9 @@ class PublicLayoutTests(unittest.TestCase):
             "skills/thermal-guard/scripts/thermal",
             "skills/workbench-setup/assets/AGENTS.md",
             "skills/workbench-setup/scripts/workbench.py",
+            "skills/workbench-setup/vendor/yaml/__init__.py",
+            "skills/workbench-setup/vendor/yaml/LICENSE",
+            "skills/workbench-setup/vendor/README.md",
         )
         for relative_path in required:
             with self.subTest(path=relative_path):
