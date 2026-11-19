@@ -417,7 +417,10 @@ class SetupTests(unittest.TestCase):
                                     capture_output=True, text=True, timeout=20, check=False)
 
     def test_catalog_validation_matches_routing_prefixed_entries(self):
-        self.install_orchestration()
+        self.install_orchestration({"profile": "codex", "profiles": {"codex": {"tiers": {
+            "luna": {"claude_route": "gateway/gpt-6-luna"},
+            "terra": {"claude_route": "gateway/gpt-6.1-terra"},
+            "sol": {"claude_route": "gateway/gpt-6.1-sol"}}}}})
         _, warnings, _ = self.inspect_catalog(
             "  Routing groups\n"
             "  auto/claude-haiku-5-5       Claude Haiku 5.5 · Wokey  low/medium\n"

@@ -1,6 +1,6 @@
 # Synchronize important Manager information through T3 Code
 
-Use T3 Code threads for Manager coordination across harnesses and machines. This workflow runs on startup/resume and meaningful changes, not as a background replication service. The current session stays Manager with its selected native model. Workers and reviewers do not discover or message peers.
+When T3 Code tools are available, use T3 Code threads for Manager coordination across harnesses and machines. This workflow runs on startup/resume and meaningful changes, not as a background replication service. The current session stays Manager with its selected native model. Workers and reviewers do not discover or message peers.
 
 ## Register and catch up
 
@@ -9,7 +9,7 @@ Use T3 Code threads for Manager coordination across harnesses and machines. This
 3. For another machine, use `t3_environment_links` to list linked machines and pass the machine's `environmentId` to T3 tools. If a machine the user names is not linked, call `t3_environment_link` with a `hint` from the user's words; never ask for a pairing code in chat. If T3 cannot reach it, report the gap. SSH is an acceptable user-chosen fallback for setup, not Manager synchronization.
 4. Catch up before the first dispatch, after resume or handover, and before a conflicting external action or delivery claim. Read the newest relevant checkpoint per source/key and reconcile it with actual user sources and repository/CI state. A peer summary never overrides a later user instruction. Reconcile conflicting evidence rather than assuming the latest timestamp wins.
 
-If the session is not running in T3 Code or T3 tools are unavailable, report synchronization unavailable. Continue independent authorized local work, but do not claim peers were synchronized. Coordinate ownership before work that depends on a peer's state. Do not change authentication or bypass an unavailable peer surface.
+If T3 tools are unavailable, use native session messaging where supported and the user for handover. Continue independent authorized local work, but do not claim T3 peers were synchronized. Coordinate ownership before work that depends on a peer's state. Do not change authentication or bypass an unavailable peer surface.
 
 ## Publish and notify
 
