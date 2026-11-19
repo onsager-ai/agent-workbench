@@ -85,6 +85,7 @@ class SetupTests(unittest.TestCase):
         result = subprocess.run([str(self.launcher), "status"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["private_bytes"], 0)
+        self.assertEqual(json.loads(result.stdout)["personal_package"], {"present": False, "applied_files": []})
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
         for path in (self.state / "backups").iterdir():
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -103,6 +104,82 @@ class SetupTests(unittest.TestCase):
         import base64
         backup = json.loads((self.state / "backups/codex.json").read_bytes())
         self.assertEqual(base64.b64decode(backup["base64"]), personal)
+
+    def test_personal_instructions_install_idempotence_and_uninstall(self):
+        personal = self.home / ".agents/skills/workbench-personal/AGENTS.md"
+        self.write(personal, "Personal π rules\n".encode())
+        self.write(self.shared, b"private after\x80")
+        self.run_setup("install")
+        expected = b"<!-- BEGIN agent-workbench personal -->\n" + personal.read_bytes() + b"<!-- END agent-workbench personal -->\n"
+        self.assertIn(END + b"\n" + expected, self.shared.read_bytes())
+        self.shared.write_bytes(b"private before\n" + self.shared.read_bytes())
+        before = self.snapshot()
+        self.assertIn("no-op", self.run_setup("install").stdout)
+        self.assertEqual(before, self.snapshot())
+        status = json.loads(self.run_setup("status").stdout)
+        self.assertEqual(status["personal_package"], {"present": True, "applied_files": ["AGENTS.md"]})
+        self.assertEqual(status["private_bytes"], len(b"private before\nprivate after\x80"))
+        self.run_setup("uninstall")
+        self.assertEqual(self.shared.read_bytes(), b"private before\nprivate after\x80")
+        self.assertEqual(self.codex.read_bytes(), self.shared.read_bytes())
+
+    def test_personal_block_removed_with_file_or_package(self):
+        personal = self.home / ".agents/skills/workbench-personal/AGENTS.md"
+        for remove_package in (False, True):
+            with self.subTest(remove_package=remove_package):
+                self.write(personal, b"personal rules")
+                self.run_setup("install")
+                if remove_package:
+                    shutil.rmtree(personal.parent)
+                else:
+                    personal.unlink()
+                self.run_setup("install")
+                self.assertNotIn(b"agent-workbench personal", self.shared.read_bytes())
+                self.assertIsNone(json.loads((self.state / "state.json").read_bytes())["personal_block"])
+
+    def test_personal_instruction_update_preserves_private_positions(self):
+        self.run_setup("install")
+        self.shared.write_bytes(b"before\x80\n" + self.shared.read_bytes() + b"after\x81")
+        personal = self.home / ".agents/skills/workbench-personal/AGENTS.md"
+        self.write(personal, b"first rules\n")
+        self.run_setup("install")
+        personal.write_bytes(b"new rules\n")
+        self.run_setup("install")
+        data = self.shared.read_bytes()
+        self.assertTrue(data.startswith(b"before\x80\n" + BEGIN))
+        self.assertTrue(data.endswith(b"after\x81"))
+        self.assertIn(END + b"\n<!-- BEGIN agent-workbench personal -->\nnew rules\n", data)
+        self.assertNotIn(b"first rules", data)
+
+    def test_personal_instruction_symlink_refused(self):
+        personal = self.home / ".agents/skills/workbench-personal/AGENTS.md"
+        self.write(self.home / "foreign-instructions", b"rules")
+        personal.parent.mkdir(parents=True)
+        personal.symlink_to(self.home / "foreign-instructions")
+        before = self.snapshot()
+        self.assertIn("symlink", self.run_setup("install", ok=False).stderr)
+        self.assertEqual(before, self.snapshot())
+
+    def test_personal_managed_markers_and_edits_conflict(self):
+        personal = self.home / ".agents/skills/workbench-personal/AGENTS.md"
+        self.write(personal, b"personal rules\n")
+        self.run_setup("install")
+        original = self.shared.read_bytes()
+        variants = (
+            original.replace(b"personal rules", b"edited rules"),
+            original + b"<!-- BEGIN agent-workbench personal -->\n",
+            original.replace(b"<!-- END agent-workbench personal -->", b""),
+            original.replace(END + b"\n", b"").replace(b"personal rules", END + b"\npersonal rules"),
+        )
+        for data in variants:
+            self.shared.write_bytes(data)
+            for command in ("install", "status", "uninstall"):
+                before = self.snapshot()
+                self.run_setup(command, ok=False)
+                self.assertEqual(before, self.snapshot())
+        self.shared.write_bytes(original)
+        personal.write_bytes(BEGIN)
+        self.assertIn("managed markers", self.run_setup("install", ok=False).stderr)
 
     def test_preexisting_import_not_owned_or_duplicated(self):
         data = b"private\n" + IMPORT + b"\n"
@@ -269,6 +346,25 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(marker.read_text(), "fresh")
         self.assertIn(b"new public template", self.shared.read_bytes())
 
+    def test_update_includes_personal_package_from_any_source(self):
+        self.run_setup("install")
+        self.native_lock()
+        lock_path = self.home / ".agents/.skill-lock.json"
+        lock = json.loads(lock_path.read_bytes())
+        lock["skills"]["workbench-personal"] = {"source": "private/personal", "sourceType": "git"}
+        lock_path.write_text(json.dumps(lock))
+        log = self.home / "calls.json"
+        personal = self.home / ".agents/skills/workbench-personal/AGENTS.md"
+        command = self.fake_command(
+            "import json, pathlib, sys\n"
+            f"pathlib.Path({str(log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+            f"p = pathlib.Path({str(personal)!r})\n"
+            "p.parent.mkdir(parents=True)\n"
+            "p.write_text('updated personal rules')\n")
+        self.run_setup("update", "--skills-cmd", command)
+        self.assertEqual(json.loads(log.read_text()), ["update", "disk-cleanup", "workbench-personal", "workbench-setup", "-g", "-y"])
+        self.assertIn(b"updated personal rules", self.shared.read_bytes())
+
     def test_template_update_preserves_private_positions_and_bytes(self):
         self.run_setup("install")
         self.shared.write_bytes(b"prefix\x80" + self.shared.read_bytes() + b"suffix")
@@ -370,6 +466,26 @@ class SetupTests(unittest.TestCase):
         (self.home / ".codex").mkdir(exist_ok=True)
         if override is not None:
             self.write(self.home / ".config/agent-workbench/workers.yml", json.dumps(override).encode())
+
+    def test_personal_worker_layering_and_validation(self):
+        self.install_orchestration({"defaults": {"timeout_s": 900}})
+        personal = self.home / ".agents/skills/workbench-personal/workers.yml"
+        self.write(personal, b"defaults: {timeout_s: 800, effort: high}\n")
+        workers = json.loads(self.run_setup("workers").stdout)
+        self.assertEqual(workers["defaults"]["timeout_s"], 900)
+        self.assertEqual(workers["defaults"]["effort"], "high")
+        self.run_setup("install")
+        self.assertEqual(json.loads(self.run_setup("status").stdout)["personal_package"],
+                         {"present": True, "applied_files": ["workers.yml"]})
+        (self.home / ".config/agent-workbench/workers.yml").unlink()
+        self.assertEqual(json.loads(self.run_setup("workers").stdout)["defaults"]["timeout_s"], 800)
+        self.write(personal, b"defaults: {unknown: true}\n")
+        before = self.snapshot()
+        self.assertIn("unknown keys", self.run_setup("install", ok=False).stderr)
+        self.assertEqual(before, self.snapshot())
+        personal.unlink()
+        personal.symlink_to(self.home / "foreign-workers")
+        self.assertIn("symlink", self.run_setup("workers", ok=False).stderr)
 
     def agent(self, name):
         return self.home / ".claude/agents" / (name + ".md")
