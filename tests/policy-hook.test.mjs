@@ -404,9 +404,9 @@ describe("policy hook", () => {
       assert.match(byModel.permissionDecisionReason, /Opus Worker needs the user's approval/);
     });
 
-    test("spawn_agent without a model or type passes through", () => {
+    test("spawn_agent of an unknown type or an L1 tier passes through", () => {
       assert.equal(codex({ tool_name: "spawn_agent", tool_input: { message: "x" } }), null);
-      assert.equal(codex({ tool_name: "spawn_agent", tool_input: { agent_type: "luna", model: "gpt-6-luna" } }), null);
+      assert.equal(codex({ tool_name: "spawn_agent", tool_input: { agent_type: "haiku", model: "claude-haiku-5-5" } }), null);
     });
 
     test("Claude host keeps ask and stamps without allow", () => {
