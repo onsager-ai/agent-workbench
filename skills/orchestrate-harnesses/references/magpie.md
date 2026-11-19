@@ -1,10 +1,10 @@
-# Magpie
+# Optional Magpie integration
 
-Use Magpie's local CLI for routing context, quota checks and usage reports. Never read credentials to obtain usage.
+If you use Magpie and the `magpie` CLI is installed, use its local CLI for routing context, quota checks and usage reports. Never read credentials to obtain usage.
 
 ## Quota-aware tier picks
 
-Before dispatching a Worker, run `magpie quota <provider> --json` for the provider backing the chosen tier. Confirm `readAt` is fresh for this dispatch; stale or unavailable data is unknown. When the tier sets `weekly_brake_percent`, compare the fresh seven-day `used` percentage with that threshold; at or above the brake blocks that tier. The default sets Sol’s brake to 100. If a tier's allowance is exhausted or near its applicable brake, the Manager records a decision to wait with `magpie quota wait <provider> --timeout <duration>`, or move to the next listed tier at the same level with the quota reason. Do not substitute tiers automatically.
+Before dispatching a Worker, run `magpie quota <provider> --json` for the provider backing the chosen tier. Confirm `readAt` is fresh for this dispatch; stale or unavailable data is unknown. When the tier sets `weekly_brake_percent`, compare the fresh seven-day `used` percentage with that threshold; at or above the brake blocks that tier. No default tier sets a brake; an override may set one. If a tier's allowance is exhausted or near its applicable brake, the Manager records a decision to wait with `magpie quota wait <provider> --timeout <duration>`, or move to the next listed tier at the same level with the quota reason. Do not substitute tiers automatically.
 
 ## Usage reports
 

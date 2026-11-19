@@ -44,8 +44,9 @@ class PolicyHookTests(unittest.TestCase):
         work.mkdir()
         alias = self.workers.parent / "alias"
         alias.symlink_to(work, target_is_directory=True)
-        corporate = json.loads(json.dumps(self.bundle["base"]))
+        corporate = json.loads(json.dumps(self.bundle["profiles"]["codex"]))
         corporate["ladder"] = [{"level": "expert", "tiers": ["sol"], "approval": "required"}]
+        self.bundle["profile"] = "codex"
         self.bundle["profiles"]["corporate"] = corporate
         self.bundle["select"] = [{"path": str(work), "profile": "corporate"}]
         self.workers.write_text(json.dumps(self.bundle))
@@ -107,7 +108,7 @@ class PolicyHookTests(unittest.TestCase):
                     "tool_input": {"subagent_type": "Plan", "model": "claude-sonnet-5-5"}})))
 
     def test_named_fork_and_custom_agents_pass_through(self):
-        for subagent_type in ("fork", "luna", "sonnet", "custom-agent"):
+        for subagent_type in ("fork", "sonnet", "custom-agent"):
             with self.subTest(subagent_type=subagent_type):
                 self.assertIsNone(self.invoke(json.dumps({"tool_name": "Agent",
                     "tool_input": {"subagent_type": subagent_type}})))
@@ -116,7 +117,7 @@ class PolicyHookTests(unittest.TestCase):
         for tool in ("Agent", "Task"):
             with self.subTest(tool=tool):
                 decision = self.invoke(json.dumps({"tool_name": tool,
-                    "tool_input": {"subagent_type": "luna", "model": "opus"}}))
+                    "tool_input": {"subagent_type": "haiku", "model": "opus"}}))
                 self.assertEqual(decision["permissionDecision"], "ask")
                 self.assertEqual(decision["permissionDecisionReason"],
                     "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).")
