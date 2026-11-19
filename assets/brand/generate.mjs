@@ -15,7 +15,7 @@ import { Resvg } from '@resvg/resvg-js';
 const OUT = dirname(fileURLToPath(import.meta.url));
 const NAME = 'Agent Workbench';
 const SLUG = 'agent-workbench';
-const TAGLINE = 'Manager and Worker skills for Codex and Claude Code.';
+const TAGLINE = 'Orchestrate your coding agents as one team.';
 const NAVY = '#1E3A5F'; // shared onsager-ai accent (Duhem, Tolmap)
 const INK_LIGHT = '#111111';
 const INK_DARK = '#FFFFFF';
