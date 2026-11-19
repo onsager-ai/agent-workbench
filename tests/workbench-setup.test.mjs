@@ -826,23 +826,33 @@ describe("workbench setup", () => {
     assert.deepEqual(entries[0], foreign);
     assert.deepEqual(entries.slice(1).map((entry) => entry.matcher),
       ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"]);
+    assert.deepEqual(settings.hooks.PostToolUse, [{
+      matcher: "Agent|Task", hooks: [{ type: "command", command: f.hookCommand }],
+    }]);
     const stopEntry = settings.hooks.Stop.at(-1);
     assert.deepEqual(stopEntry, { hooks: [{ type: "command", command: f.hookCommand }] });
     for (const entry of entries.slice(1)) {
       assert.deepEqual(entry.hooks, [{ type: "command", command: f.hookCommand }]);
       fs.accessSync(f.hook, fs.constants.X_OK);
     }
-    assert.deepEqual(f.stateJson().hooks, [...entries.slice(1), stopEntry]);
+    assert.deepEqual(f.stateJson().hooks, [...entries.slice(1), settings.hooks.PostToolUse[0], stopEntry]);
     assert.deepEqual(JSON.parse(f.run("status").stdout).hooks, {
       "Agent|Task": "applied", Bash: "applied",
+      "PostToolUse:Agent|Task": "applied",
       "mcp__t3-code__delegate_task": "applied", "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
     });
+    const postEntry = settings.hooks.PostToolUse[0];
+    settings.hooks.PostToolUse = [];
+    fs.writeFileSync(settingsPath, JSON.stringify(settings));
+    assert.equal(JSON.parse(f.run("status").stdout).hooks["PostToolUse:Agent|Task"], "missing");
+    f.run("install");
+    assert.deepEqual(f.json(settingsPath).hooks.PostToolUse, [postEntry]);
     const before = f.snapshot();
     assert.match(f.run("install").stdout, /no-op/);
     assert.deepEqual(f.snapshot(), before);
     f.run("uninstall");
     settings = f.json(settingsPath);
-    assert.deepEqual(settings.hooks, { PreToolUse: [foreign], Stop: [{ hooks: [] }] });
+    assert.deepEqual(settings.hooks, { PreToolUse: [foreign], PostToolUse: [], Stop: [{ hooks: [] }] });
     assert.equal(settings.model, "personal");
     assert.deepEqual(settings.env, { OTHER: "yes" });
   });

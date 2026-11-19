@@ -28,6 +28,7 @@ const IMPORT = Buffer.from("@~/.agents/AGENTS.md");
 const LIMIT = 10 * 1024 * 1024;
 const ROLE = /^[a-z][a-z0-9-]*$/;
 const HOOK_MATCHERS = ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"];
+const POST_TOOL_MATCHERS = ["Agent|Task"];
 const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send"];
 const CODEX_HOOK_TIMEOUT = 30;
 
@@ -919,6 +920,8 @@ export class Setup {
   // Own complete entries, never a matcher or another hook's command.
   hookPlans(state, plans, { uninstall = false, status = false } = {}) {
     const owned = state ? state.hooks : [];
+    const ownedPost = owned.filter((entry) => has(entry, "matcher") && POST_TOOL_MATCHERS.includes(entry.matcher));
+    const ownedOther = owned.filter((entry) => !ownedPost.includes(entry));
     let [data] = this.nativeConfig("claude");
     if (data === null) {
       if (owned.length) throw new Conflict("owned Claude hooks are missing; restore settings.json");
@@ -928,18 +931,20 @@ export class Setup {
     const parsed = data.length ? JSON.parse(data.toString("utf8")) : {};
     const hooks = has(parsed, "hooks") ? parsed.hooks : {};
     const current = isDict(hooks) && has(hooks, "PreToolUse") ? hooks.PreToolUse : [];
+    const currentPost = isDict(hooks) && has(hooks, "PostToolUse") ? hooks.PostToolUse : [];
     const currentStop = isDict(hooks) && has(hooks, "Stop") ? hooks.Stop : [];
-    if (!isDict(hooks) || !Array.isArray(current) || !Array.isArray(currentStop)) {
-      throw new Conflict("invalid Claude hooks.PreToolUse or hooks.Stop configuration");
+    if (!isDict(hooks) || !Array.isArray(current) || !Array.isArray(currentPost) || !Array.isArray(currentStop)) {
+      throw new Conflict("invalid Claude hooks.PreToolUse, hooks.PostToolUse, or hooks.Stop configuration");
     }
     const contains = (list, entry) => list.some((item) => isDeepStrictEqual(item, entry));
     for (const entry of owned) {
-      const collection = has(entry, "matcher") ? current : currentStop;
+      const collection = ownedPost.includes(entry) ? currentPost : !has(entry, "matcher") ? currentStop : current;
       if (collection.filter((item) => isDeepStrictEqual(item, entry)).length > 1) {
         throw new Conflict("owned Claude hook is duplicated; left unchanged");
       }
     }
     let desired = [];
+    let desiredPost = [];
     let desiredStop = [];
     if (!uninstall && present(this.models) && present(this.worker)) {
       inspect(this.policyHook, this.home);
@@ -948,34 +953,49 @@ export class Setup {
       }
       const command = [this.policyHook, "--workers", this.workersPath].map(shellQuote).join(" ");
       desired = HOOK_MATCHERS.map((matcher) => ({ matcher, hooks: [{ type: "command", command }] }));
+      desiredPost = POST_TOOL_MATCHERS.map((matcher) => ({ matcher, hooks: [{ type: "command", command }] }));
       desiredStop = [{ hooks: [{ type: "command", command }] }];
     }
     const report = {};
-    for (const entry of owned) if (has(entry, "matcher")) report[entry.matcher] = contains(current, entry) ? "applied" : "missing";
-    for (const entry of owned) if (!has(entry, "matcher")) report.Stop = contains(currentStop, entry) ? "applied" : "missing";
+    for (const entry of ownedOther) if (has(entry, "matcher")) {
+      report[entry.matcher] = contains(current, entry) ? "applied" : "missing";
+    }
+    for (const entry of ownedPost) {
+      report[`PostToolUse:${entry.matcher}`] = contains(currentPost, entry) ? "applied" : "missing";
+    }
+    for (const entry of ownedOther) if (!has(entry, "matcher")) report.Stop = contains(currentStop, entry) ? "applied" : "missing";
     if (status) return [owned, report];
     const updated = [...current];
+    const updatedPost = [...currentPost];
     const updatedStop = [...currentStop];
     const remove = (list, entry) => {
       const index = list.findIndex((item) => isDeepStrictEqual(item, entry));
       if (index !== -1) list.splice(index, 1);
     };
     for (const entry of owned) {
-      const collection = has(entry, "matcher") ? updated : updatedStop;
-      if (!contains(has(entry, "matcher") ? desired : desiredStop, entry)) remove(collection, entry);
+      const isPost = ownedPost.includes(entry);
+      const collection = !has(entry, "matcher") ? updatedStop : isPost ? updatedPost : updated;
+      const wanted = !has(entry, "matcher") ? desiredStop : isPost ? desiredPost : desired;
+      if (!contains(wanted, entry)) remove(collection, entry);
     }
     const record = [];
     for (const entry of desired) {
-      if (contains(owned, entry) || !contains(updated, entry)) record.push(entry);
+      if (contains(ownedOther, entry) || !contains(updated, entry)) record.push(entry);
       if (!contains(updated, entry)) updated.push(entry);
     }
+    for (const entry of desiredPost) {
+      if (contains(ownedPost, entry) || !contains(updatedPost, entry)) record.push(entry);
+      if (!contains(updatedPost, entry)) updatedPost.push(entry);
+    }
     for (const entry of desiredStop) {
-      if (contains(owned, entry) || !contains(updatedStop, entry)) record.push(entry);
+      if (contains(ownedOther, entry) || !contains(updatedStop, entry)) record.push(entry);
       if (!contains(updatedStop, entry)) updatedStop.push(entry);
     }
-    if (!isDeepStrictEqual(updated, current) || !isDeepStrictEqual(updatedStop, currentStop)) {
+    if (!isDeepStrictEqual(updated, current) || !isDeepStrictEqual(updatedPost, currentPost) ||
+        !isDeepStrictEqual(updatedStop, currentStop)) {
       if (!has(parsed, "hooks")) parsed.hooks = {};
       parsed.hooks.PreToolUse = updated;
+      parsed.hooks.PostToolUse = updatedPost;
       parsed.hooks.Stop = updatedStop;
       plans.set(this.claudeSettings, ["file", Buffer.from(dumps(parsed, { indent: 2, ascii: false }) + "\n"), 0o600]);
     }
@@ -1216,7 +1236,7 @@ export class Setup {
         const names = isDict(entry) ? Object.keys(entry).sort().join(",") : "";
         const inner = isDict(entry) ? entry.hooks : null;
         if (!["hooks,matcher", "hooks"].includes(names)
-            || (has(entry, "matcher") && !HOOK_MATCHERS.includes(entry.matcher))
+            || (has(entry, "matcher") && ![...HOOK_MATCHERS, ...POST_TOOL_MATCHERS].includes(entry.matcher))
             || !Array.isArray(inner) || inner.length !== 1 || !isDict(inner[0])
             || Object.keys(inner[0]).sort().join(",") !== "command,type"
             || inner[0].type !== "command" || typeof inner[0].command !== "string") {

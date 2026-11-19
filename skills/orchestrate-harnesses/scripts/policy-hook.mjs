@@ -456,6 +456,65 @@ function lastAssistantText(event) {
   return "";
 }
 
+function normalizeModel(model) {
+  return model.replace(/\[1m\]$/, "").split("/").at(-1).replace(/^auto-/, "");
+}
+
+function postToolModelWarning(workers, event) {
+  try {
+    const response = dict(event.tool_response);
+    if (response.status !== "completed" || typeof response.agentId !== "string" ||
+        !/^[a-zA-Z0-9_-]+$/.test(response.agentId)) return null;
+    if (typeof response.agentType !== "string" || typeof event.transcript_path !== "string") return null;
+    if (workers === null) return null;
+    const bundle = JSON.parse(fs.readFileSync(workers, "utf8"));
+    let profile = bundle.profile;
+    const cwd = resolvePath(event.cwd || process.cwd());
+    for (const rule of bundle.select) {
+      if (isRelativeTo(cwd, rule.path)) {
+        profile = rule.profile;
+        break;
+      }
+    }
+    const config = profile ? bundle.profiles[profile] : bundle.base;
+    const tier = config.tiers[response.agentType];
+    if (!tier) return null;
+    const expected = tier.harness === "codex" ? tier.claude_route : tier.model;
+    if (expected == null) return null;
+    const mismatches = [];
+    if (response.resolvedModel !== expected) mismatches.push(response.resolvedModel ?? "unknown requested model");
+    const transcript = event.transcript_path.replace(/\.jsonl$/, "") +
+      `/subagents/agent-${response.agentId}.jsonl`;
+    const descriptor = fs.openSync(transcript, "r");
+    let content;
+    try {
+      const size = fs.fstatSync(descriptor).size;
+      const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+      const buffer = Buffer.alloc(length);
+      fs.readSync(descriptor, buffer, 0, length, size - length);
+      content = buffer.toString("utf8");
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    const models = new Set();
+    for (const line of content.split(/\r\n|\r|\n/)) {
+      try {
+        const entry = JSON.parse(line);
+        if (isDict(entry) && entry.type === "assistant" && isDict(entry.message) &&
+            typeof entry.message.model === "string") models.add(entry.message.model);
+      } catch {}
+    }
+    const actual = [...new Set([response.resolvedModel, ...models].filter((model) => typeof model === "string"))];
+    for (const model of models) {
+      if (normalizeModel(model) !== normalizeModel(expected) && !mismatches.includes(model)) mismatches.push(model);
+    }
+    if (!mismatches.length) return null;
+    return `The ${response.agentType} Worker expected ${expected} but ran on ${actual.join(", ") || mismatches.join(", ")}; report the real model.`;
+  } catch {
+    return null;
+  }
+}
+
 function endsWithQuestion(text) {
   const trimmed = text.replace(/[\s*_`~]+$/, "");
   return trimmed.endsWith("?") || trimmed.endsWith("？");
@@ -524,6 +583,12 @@ function main() {
   try {
     const event = JSON.parse(fs.readFileSync(0, "utf8"));
     if (!isDict(event)) return;
+    if (event.hook_event_name === "PostToolUse") {
+      if (event.tool_name !== "Agent" && event.tool_name !== "Task") return;
+      const warning = postToolModelWarning(workers, event);
+      if (warning) emit({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: warning } });
+      return;
+    }
     if (event.hook_event_name === "Stop") {
       if (event.stop_hook_active) return;
       try {
