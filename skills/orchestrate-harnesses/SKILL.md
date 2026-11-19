@@ -89,11 +89,11 @@ Unknown keys and invalid configurations fail installation without changing manag
 
 The distributed default ladder is:
 
-| Level | First tier | Second tier |
-| --- | --- | --- |
-| L1 | haiku / claude-haiku-5-5 / medium | — |
-| L2 | sonnet / claude-sonnet-5-5 / medium | — |
-| L3 | opus / claude-opus-5-5 / medium | — |
+| Level | Tier / model / effort |
+| --- | --- |
+| L1 | haiku / claude-haiku-5-5 / medium |
+| L2 | sonnet / claude-sonnet-5-5 / medium |
+| L3 | opus / claude-opus-5-5 / medium, needs approval |
 
 Use the resolved ladder in order. Start at its first level for bounded work. A task kind listed in `start_for` may start at that level; record that reason. By default research, spikes and architecture recommendations start at L2, or can be split into narrow L1 probes with an L2 synthesis. Give every spike a timebox, typically 20–30 minutes, and accept a partial report that lists unresolved checks. When a brief expects a report file such as `FINDINGS.md`, name it as an authorized output. Escalate one level at a time with actual complexity, defects or failed-attempt evidence. Choose the next level rather than raising effort when more reasoning is needed.
 
