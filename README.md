@@ -1,4 +1,15 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/agent-workbench-lockup-dark.svg">
+    <img src="docs/brand/agent-workbench-lockup-light.svg" alt="Agent Workbench" width="360">
+  </picture>
+</p>
+
 # Agent Workbench Skills
+
+**Orchestrate your coding agents as one team.**
+
+Skills and tools for multi-agent engineering. A Manager session plans and delegates, Workers build and review, and work hands off cleanly across sessions, harnesses and machines.
 
 Seven portable skills for Codex and Claude Code. Core skills are manage-lane, orchestrate-harnesses, prompt-for-decisions, thermal-guard and workbench-setup; disk-cleanup and review-storybook are optional:
 
