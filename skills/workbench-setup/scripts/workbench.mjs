@@ -27,7 +27,12 @@ const MARKERS = [BEGIN, END, PERSONAL_BEGIN, PERSONAL_END];
 const IMPORT = Buffer.from("@~/.agents/AGENTS.md");
 const LIMIT = 10 * 1024 * 1024;
 const ROLE = /^[a-z][a-z0-9-]*$/;
-const HOOK_MATCHERS = ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"];
+const CLAUDE_HOOK_MATCHERS = {
+  PreToolUse: ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"],
+  PostToolUse: ["Agent|Task"],
+  Stop: [undefined],
+};
+const claudeHookKey = (event, matcher) => matcher === undefined ? event : `${event}:${matcher}`;
 const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send"];
 const CODEX_HOOK_TIMEOUT = 30;
 
@@ -918,7 +923,7 @@ export class Setup {
 
   // Own complete entries, never a matcher or another hook's command.
   hookPlans(state, plans, { uninstall = false, status = false } = {}) {
-    const owned = state ? state.hooks : [];
+    const owned = state?.hooks ?? [];
     let [data] = this.nativeConfig("claude");
     if (data === null) {
       if (owned.length) throw new Conflict("owned Claude hooks are missing; restore settings.json");
@@ -927,59 +932,52 @@ export class Setup {
     if (plans.has(this.claudeSettings)) data = plans.get(this.claudeSettings)[1];
     const parsed = data.length ? JSON.parse(data.toString("utf8")) : {};
     const hooks = has(parsed, "hooks") ? parsed.hooks : {};
-    const current = isDict(hooks) && has(hooks, "PreToolUse") ? hooks.PreToolUse : [];
-    const currentStop = isDict(hooks) && has(hooks, "Stop") ? hooks.Stop : [];
-    if (!isDict(hooks) || !Array.isArray(current) || !Array.isArray(currentStop)) {
-      throw new Conflict("invalid Claude hooks.PreToolUse or hooks.Stop configuration");
+    const events = Object.entries(CLAUDE_HOOK_MATCHERS);
+    if (!isDict(hooks) || events.some(([event]) => has(hooks, event) && !Array.isArray(hooks[event]))) {
+      throw new Conflict("invalid Claude hooks.PreToolUse, hooks.PostToolUse, or hooks.Stop configuration");
     }
-    const contains = (list, entry) => list.some((item) => isDeepStrictEqual(item, entry));
-    for (const entry of owned) {
-      const collection = has(entry, "matcher") ? current : currentStop;
-      if (collection.filter((item) => isDeepStrictEqual(item, entry)).length > 1) {
-        throw new Conflict("owned Claude hook is duplicated; left unchanged");
-      }
-    }
-    let desired = [];
-    let desiredStop = [];
+    let command = null;
     if (!uninstall && present(this.models) && present(this.worker)) {
       inspect(this.policyHook, this.home);
       if (!isFile(this.policyHook)) {
         throw new Conflict("missing canonical policy hook; distribute orchestrate-harnesses first");
       }
-      const command = [this.policyHook, "--workers", this.workersPath].map(shellQuote).join(" ");
-      desired = HOOK_MATCHERS.map((matcher) => ({ matcher, hooks: [{ type: "command", command }] }));
-      desiredStop = [{ hooks: [{ type: "command", command }] }];
+      command = [this.policyHook, "--workers", this.workersPath].map(shellQuote).join(" ");
     }
+    const contains = (list, entry) => list.some((item) => isDeepStrictEqual(item, entry));
     const report = {};
-    for (const entry of owned) if (has(entry, "matcher")) report[entry.matcher] = contains(current, entry) ? "applied" : "missing";
-    for (const entry of owned) if (!has(entry, "matcher")) report.Stop = contains(currentStop, entry) ? "applied" : "missing";
-    if (status) return [owned, report];
-    const updated = [...current];
-    const updatedStop = [...currentStop];
-    const remove = (list, entry) => {
-      const index = list.findIndex((item) => isDeepStrictEqual(item, entry));
-      if (index !== -1) list.splice(index, 1);
-    };
-    for (const entry of owned) {
-      const collection = has(entry, "matcher") ? updated : updatedStop;
-      if (!contains(has(entry, "matcher") ? desired : desiredStop, entry)) remove(collection, entry);
-    }
     const record = [];
-    for (const entry of desired) {
-      if (contains(owned, entry) || !contains(updated, entry)) record.push(entry);
-      if (!contains(updated, entry)) updated.push(entry);
+    const changes = {};
+    for (const [event, matchers] of events) {
+      const current = hooks[event] ?? [];
+      const previous = owned.filter(({ key, matcher }) => key === claudeHookKey(event, matcher));
+      const desired = command === null ? [] : matchers.map((matcher) => ({
+        ...(matcher === undefined ? {} : { matcher }), hooks: [{ type: "command", command }],
+      }));
+      const updated = [...current];
+      for (const { key, ...entry } of previous) {
+        const matches = current.filter((item) => isDeepStrictEqual(item, entry));
+        if (matches.length > 1) throw new Conflict("owned Claude hook is duplicated; left unchanged");
+        const label = event === "PreToolUse" ? entry.matcher : key;
+        report[label] = matches.length ? "applied" : "missing";
+        if (!status && matches.length && !contains(desired, entry)) {
+          updated.splice(updated.indexOf(matches[0]), 1);
+        }
+      }
+      if (status) continue;
+      for (const entry of desired) {
+        const key = claudeHookKey(event, entry.matcher);
+        const exists = contains(updated, entry);
+        if (!exists || contains(previous, { ...entry, key })) record.push({ ...entry, key });
+        if (!exists) updated.push(entry);
+      }
+      if (!isDeepStrictEqual(updated, current)) changes[event] = updated;
     }
-    for (const entry of desiredStop) {
-      if (contains(owned, entry) || !contains(updatedStop, entry)) record.push(entry);
-      if (!contains(updatedStop, entry)) updatedStop.push(entry);
-    }
-    if (!isDeepStrictEqual(updated, current) || !isDeepStrictEqual(updatedStop, currentStop)) {
-      if (!has(parsed, "hooks")) parsed.hooks = {};
-      parsed.hooks.PreToolUse = updated;
-      parsed.hooks.Stop = updatedStop;
+    if (Object.keys(changes).length) {
+      parsed.hooks = { ...hooks, ...changes };
       plans.set(this.claudeSettings, ["file", Buffer.from(dumps(parsed, { indent: 2, ascii: false }) + "\n"), 0o600]);
     }
-    return [record, report];
+    return [status ? owned : record, report];
   }
 
   // Codex user hooks live in ~/.codex/hooks.json with the same ownership rules as the Claude entries.
@@ -1179,6 +1177,7 @@ export class Setup {
       const importText = IMPORT.toString();
       if (need(state, "schema") !== 2 || typeof need(state, "block_hash") !== "string"
           || !isDict(need(state, "native")) || !Array.isArray(need(state, "hooks"))
+          || (has(state, "post_hooks") && !Array.isArray(state.post_hooks))
           || !isDict(need(state, "agents")) || need(state, "target") !== this.target
           || typeof need(state, "launcher_hash") !== "string" || typeof need(state, "version") !== "string"
           || typeof need(state, "template_hash") !== "string"
@@ -1212,17 +1211,31 @@ export class Setup {
           }
         }
       }
-      for (const entry of state.hooks) {
-        const names = isDict(entry) ? Object.keys(entry).sort().join(",") : "";
-        const inner = isDict(entry) ? entry.hooks : null;
-        if (!["hooks,matcher", "hooks"].includes(names)
-            || (has(entry, "matcher") && !HOOK_MATCHERS.includes(entry.matcher))
-            || !Array.isArray(inner) || inner.length !== 1 || !isDict(inner[0])
-            || Object.keys(inner[0]).sort().join(",") !== "command,type"
-            || inner[0].type !== "command" || typeof inner[0].command !== "string") {
+      const hookKeys = new Set();
+      const normalizeHook = (saved, legacyEvent) => {
+        if (!isDict(saved)) throw invalid("invalid hook ownership metadata");
+        const { key, ...entry } = saved;
+        const names = Object.keys(entry).sort().join(",");
+        const { matcher, hooks } = entry;
+        const event = legacyEvent ?? (typeof key === "string" && key.startsWith("PostToolUse:")
+          ? "PostToolUse" : has(entry, "matcher") ? "PreToolUse" : "Stop");
+        const expectedKey = claudeHookKey(event, matcher);
+        const bareKey = event === "PreToolUse" && key === matcher;
+        if (names !== (event === "Stop" ? "hooks" : "hooks,matcher") ||
+            !CLAUDE_HOOK_MATCHERS[event].includes(matcher) || hookKeys.has(expectedKey) ||
+            (has(saved, "key") && key !== expectedKey && !bareKey) ||
+            !Array.isArray(hooks) || hooks.length !== 1 || !isDict(hooks[0]) ||
+            Object.keys(hooks[0]).sort().join(",") !== "command,type" ||
+            hooks[0].type !== "command" || typeof hooks[0].command !== "string") {
           throw invalid("invalid hook ownership metadata");
         }
-      }
+        hookKeys.add(expectedKey);
+        return { ...entry, key: expectedKey };
+      };
+      state.hooks = [
+        ...state.hooks.map((entry) => normalizeHook(entry)),
+        ...(state.post_hooks ?? []).map((entry) => normalizeHook(entry, "PostToolUse")),
+      ];
       if (has(state, "codex_hooks") && !Array.isArray(state.codex_hooks)) throw invalid("invalid Codex hook ownership metadata");
       for (const entry of state.codex_hooks ?? []) {
         const names = isDict(entry) ? Object.keys(entry).sort().join(",") : "";

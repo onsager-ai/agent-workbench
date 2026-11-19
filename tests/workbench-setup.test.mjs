@@ -826,30 +826,76 @@ describe("workbench setup", () => {
     assert.deepEqual(entries[0], foreign);
     assert.deepEqual(entries.slice(1).map((entry) => entry.matcher),
       ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"]);
+    assert.deepEqual(settings.hooks.PostToolUse, [{
+      matcher: "Agent|Task", hooks: [{ type: "command", command: f.hookCommand }],
+    }]);
     const stopEntry = settings.hooks.Stop.at(-1);
     assert.deepEqual(stopEntry, { hooks: [{ type: "command", command: f.hookCommand }] });
     for (const entry of entries.slice(1)) {
       assert.deepEqual(entry.hooks, [{ type: "command", command: f.hookCommand }]);
       fs.accessSync(f.hook, fs.constants.X_OK);
     }
-    assert.deepEqual(f.stateJson().hooks, [...entries.slice(1), stopEntry]);
+    assert.deepEqual(f.stateJson().hooks, [
+      ...entries.slice(1).map((entry) => ({ ...entry, key: `PreToolUse:${entry.matcher}` })),
+      { ...settings.hooks.PostToolUse[0], key: "PostToolUse:Agent|Task" },
+      { ...stopEntry, key: "Stop" },
+    ]);
     assert.deepEqual(JSON.parse(f.run("status").stdout).hooks, {
       "Agent|Task": "applied", Bash: "applied",
-      "mcp__t3-code__delegate_task": "applied", "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
+      "PostToolUse:Agent|Task": "applied", "mcp__t3-code__delegate_task": "applied",
+      "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
     });
+    const postEntry = settings.hooks.PostToolUse[0];
+    settings.hooks.PostToolUse = [];
+    fs.writeFileSync(settingsPath, JSON.stringify(settings));
+    assert.equal(JSON.parse(f.run("status").stdout).hooks["PostToolUse:Agent|Task"], "missing");
+    f.run("install");
+    assert.deepEqual(f.json(settingsPath).hooks.PostToolUse, [postEntry]);
     const before = f.snapshot();
     assert.match(f.run("install").stdout, /no-op/);
     assert.deepEqual(f.snapshot(), before);
     f.run("uninstall");
     settings = f.json(settingsPath);
-    assert.deepEqual(settings.hooks, { PreToolUse: [foreign], Stop: [{ hooks: [] }] });
+    assert.deepEqual(settings.hooks, { PreToolUse: [foreign], PostToolUse: [], Stop: [{ hooks: [] }] });
     assert.equal(settings.model, "personal");
     assert.deepEqual(settings.env, { OTHER: "yes" });
   });
 
-  test("policy hook command is run through its shebang with Node only", () => {
+  test("older Claude hook ownership upgrades on reinstall", () => {
     const f = new Fixture();
     f.installOrchestration();
+    f.run("install");
+    const settingsPath = path.join(f.home, ".claude/settings.json");
+    const statePath = path.join(f.state, "state.json");
+    const fresh = f.stateJson();
+    const settings = f.json(settingsPath);
+    const post = fresh.hooks.find((entry) => entry.key === "PostToolUse:Agent|Task");
+    const older = fresh.hooks.filter((entry) => entry !== post).map(({ key, ...entry }) => {
+      if (key === "PreToolUse:Agent|Task") return { ...entry, key: "Agent|Task" };
+      if (key === "Stop") return { ...entry, key };
+      return entry;
+    });
+    const olderSettings = { ...settings.hooks };
+    delete olderSettings.PostToolUse;
+    for (const split of [false, true]) {
+      f.write(statePath, JSON.stringify({ ...fresh, hooks: older, ...(split ? { post_hooks: [post] } : {}) }));
+      f.write(settingsPath, JSON.stringify({ ...settings, hooks: split ? settings.hooks : olderSettings }));
+      const status = JSON.parse(f.run("status").stdout).hooks;
+      assert.equal(status["Agent|Task"], "applied");
+      assert.equal(status.Stop, "applied");
+      assert.equal(status["PostToolUse:Agent|Task"], split ? "applied" : undefined);
+      f.run("install");
+      const upgraded = f.stateJson();
+      assert.deepEqual(upgraded.hooks, fresh.hooks);
+      assert.ok(!Object.hasOwn(upgraded, "post_hooks"));
+      assert.deepEqual(f.json(settingsPath).hooks, settings.hooks);
+    }
+  });
+
+  test("policy hook runs through its shebang without the setup skill", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    fs.rmSync(f.skill, { recursive: true });
     const result = spawnSync(f.hook, ["--workers", path.join(f.state, "workers.json")], {
       input: JSON.stringify({ tool_name: "Read", tool_input: {} }), encoding: "utf8",
     });
@@ -868,8 +914,8 @@ describe("workbench setup", () => {
     settings.hooks.PreToolUse[0] = edited;
     fs.writeFileSync(settingsPath, JSON.stringify(settings));
     assert.deepEqual(JSON.parse(f.run("status").stdout).hooks, {
-      "Agent|Task": "missing", Bash: "applied", "mcp__t3-code__delegate_task": "applied",
-      "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
+      "Agent|Task": "missing", Bash: "applied", "PostToolUse:Agent|Task": "applied",
+      "mcp__t3-code__delegate_task": "applied", "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
     });
     f.run("install");
     const reapplied = f.json(settingsPath).hooks.PreToolUse;
@@ -885,11 +931,14 @@ describe("workbench setup", () => {
     f.run("install");
     const settingsPath = path.join(f.home, ".claude/settings.json");
     const settings = f.json(settingsPath);
-    settings.hooks.PreToolUse.push(settings.hooks.PreToolUse[0]);
-    fs.writeFileSync(settingsPath, JSON.stringify(settings));
-    const data = read(settingsPath);
-    assert.match(f.run("install", [], false).stderr, /duplicated/);
-    assert.deepEqual(read(settingsPath), data);
+    for (const event of ["PreToolUse", "PostToolUse"]) {
+      settings.hooks[event].push(settings.hooks[event][0]);
+      fs.writeFileSync(settingsPath, JSON.stringify(settings));
+      const data = read(settingsPath);
+      assert.match(f.run("install", [], false).stderr, /duplicated/);
+      assert.deepEqual(read(settingsPath), data);
+      settings.hooks[event].pop();
+    }
   });
 
   test("preexisting identical policy hook is not owned", () => {
@@ -900,9 +949,10 @@ describe("workbench setup", () => {
     f.write(settingsPath, JSON.stringify({ hooks: { PreToolUse: [foreign] } }));
     f.run("install");
     const saved = f.stateJson().hooks;
-    assert.deepEqual(saved.filter((entry) => "matcher" in entry).map((entry) => entry.matcher),
-      ["Agent|Task", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"]);
-    assert.equal(saved.filter((entry) => !("matcher" in entry)).length, 1);
+    assert.deepEqual(saved.map((entry) => entry.key), [
+      "PreToolUse:Agent|Task", "PreToolUse:mcp__t3-code__delegate_task", "PreToolUse:mcp__t3-code__t3_thread_send",
+      "PostToolUse:Agent|Task", "Stop",
+    ]);
     f.run("uninstall");
     const hooks = f.json(settingsPath).hooks;
     assert.deepEqual(hooks.PreToolUse, [foreign]);
@@ -916,7 +966,8 @@ describe("workbench setup", () => {
     fs.rmSync(path.join(f.home, ".agents/skills/orchestrate-harnesses"), { recursive: true });
     f.run("install");
     assert.deepEqual(f.stateJson().hooks, []);
-    assert.deepEqual(f.json(path.join(f.home, ".claude/settings.json")).hooks.PreToolUse, []);
+    assert.deepEqual(f.json(path.join(f.home, ".claude/settings.json")).hooks,
+      { PreToolUse: [], PostToolUse: [], Stop: [] });
   });
 
   test("policy hooks invalid configuration conflicts without writes", () => {
@@ -947,7 +998,7 @@ describe("workbench setup", () => {
     for (const entry of file.hooks.PreToolUse.slice(1)) assert.deepEqual(entry.hooks, [codexHandler(f)]);
     assert.deepEqual(file.hooks.Stop, [{ hooks: [codexHandler(f)] }]);
     assert.deepEqual(f.stateJson().codex_hooks, [...file.hooks.PreToolUse.slice(1), file.hooks.Stop[0]]);
-    assert.deepEqual(f.stateJson().hooks.length, 5);
+    assert.deepEqual(f.stateJson().hooks.length, 6);
     assert.deepEqual(JSON.parse(f.run("status").stdout).codex_hooks, {
       "Agent|spawn_agent": "applied", Bash: "applied", mcp__t3_code__delegate_task: "applied",
       mcp__t3_code__t3_thread_send: "applied", Stop: "applied",
