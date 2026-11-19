@@ -539,6 +539,106 @@ class SetupTests(unittest.TestCase):
         self.run_setup("uninstall")
         self.assertFalse(self.agent("sonnet").exists())
 
+    def test_policy_hooks_install_status_uninstall_preserves_foreign_entries(self):
+        self.install_orchestration()
+        path = self.home / ".claude/settings.json"
+        foreign = {"matcher": "Bash", "hooks": [{"type": "command", "command": "personal-hook"}]}
+        self.write(path, json.dumps({"model": "personal", "hooks": {
+            "PreToolUse": [foreign], "Stop": [{"hooks": []}]}, "env": {"OTHER": "yes"}}).encode())
+        self.run_setup("install")
+        settings = json.loads(path.read_bytes())
+        self.assertEqual(list(settings), ["model", "hooks", "env"])
+        entries = settings["hooks"]["PreToolUse"]
+        self.assertEqual(entries[0], foreign)
+        self.assertEqual([entry["matcher"] for entry in entries[1:]], ["Agent|Task", "Bash"])
+        hook = self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"
+        for entry in entries[1:]:
+            self.assertEqual(entry["hooks"], [{"type": "command", "command": shlex.quote(str(hook))}])
+            self.assertTrue(os.access(hook, os.X_OK))
+        state = json.loads((self.state / "state.json").read_bytes())
+        self.assertEqual(state["hooks"], entries[1:])
+        self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"],
+                         {"Agent|Task": "applied", "Bash": "applied"})
+        before = self.snapshot()
+        self.assertIn("no-op", self.run_setup("install").stdout)
+        self.assertEqual(before, self.snapshot())
+        self.run_setup("uninstall")
+        settings = json.loads(path.read_bytes())
+        self.assertEqual(settings["hooks"], {"PreToolUse": [foreign], "Stop": [{"hooks": []}]})
+        self.assertEqual(settings["model"], "personal")
+        self.assertEqual(settings["env"], {"OTHER": "yes"})
+
+    def test_policy_hooks_without_orchestration_and_legacy_state(self):
+        self.run_setup("install")
+        self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"], {})
+        state_path = self.state / "state.json"
+        state = json.loads(state_path.read_bytes())
+        del state["hooks"]
+        state_path.write_text(json.dumps(state))
+        self.install_orchestration()
+        self.run_setup("install")
+        self.assertEqual(len(json.loads(state_path.read_bytes())["hooks"]), 2)
+        self.run_setup("uninstall")
+        self.assertEqual(json.loads((self.home / ".claude/settings.json").read_bytes())["hooks"]["PreToolUse"], [])
+
+    def test_policy_hooks_edited_owned_entry_is_kept_and_canonical_reapplied(self):
+        self.install_orchestration()
+        self.run_setup("install")
+        path = self.home / ".claude/settings.json"
+        settings = json.loads(path.read_bytes())
+        canonical = settings["hooks"]["PreToolUse"][0]
+        edited = json.loads(json.dumps(canonical))
+        edited["hooks"][0]["command"] = "edited-hook"
+        settings["hooks"]["PreToolUse"][0] = edited
+        path.write_text(json.dumps(settings))
+        self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"],
+                         {"Agent|Task": "missing", "Bash": "applied"})
+        self.run_setup("install")
+        self.assertIn(edited, json.loads(path.read_bytes())["hooks"]["PreToolUse"])
+        self.assertIn(canonical, json.loads(path.read_bytes())["hooks"]["PreToolUse"])
+        self.run_setup("uninstall")
+        self.assertEqual(json.loads(path.read_bytes())["hooks"]["PreToolUse"], [edited])
+
+    def test_policy_hooks_duplicated_owned_entry_conflicts(self):
+        self.install_orchestration()
+        self.run_setup("install")
+        path = self.home / ".claude/settings.json"
+        settings = json.loads(path.read_bytes())
+        settings["hooks"]["PreToolUse"].append(settings["hooks"]["PreToolUse"][0])
+        path.write_text(json.dumps(settings))
+        data = path.read_bytes()
+        self.assertIn("duplicated", self.run_setup("install", ok=False).stderr)
+        self.assertEqual(path.read_bytes(), data)
+
+    def test_preexisting_identical_policy_hook_is_not_owned(self):
+        self.install_orchestration()
+        path = self.home / ".claude/settings.json"
+        hook = self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"
+        foreign = {"matcher": "Bash", "hooks": [{"type": "command", "command": shlex.quote(str(hook))}]}
+        self.write(path, json.dumps({"hooks": {"PreToolUse": [foreign]}}).encode())
+        self.run_setup("install")
+        self.assertEqual([entry["matcher"] for entry in json.loads(
+            (self.state / "state.json").read_bytes())["hooks"]], ["Agent|Task"])
+        self.run_setup("uninstall")
+        self.assertEqual(json.loads(path.read_bytes())["hooks"]["PreToolUse"], [foreign])
+
+    def test_policy_hooks_removed_when_orchestration_is_removed(self):
+        self.install_orchestration()
+        self.run_setup("install")
+        shutil.rmtree(self.home / ".agents/skills/orchestrate-harnesses")
+        self.run_setup("install")
+        self.assertEqual(json.loads((self.state / "state.json").read_bytes())["hooks"], [])
+        self.assertEqual(json.loads((self.home / ".claude/settings.json").read_bytes())["hooks"]["PreToolUse"], [])
+
+    def test_policy_hooks_invalid_configuration_conflicts_without_writes(self):
+        self.install_orchestration()
+        path = self.home / ".claude/settings.json"
+        data = b'{"hooks":{"PreToolUse":{}}}'
+        self.write(path, data)
+        self.assertIn("invalid Claude hooks", self.run_setup("install", ok=False).stderr)
+        self.assertEqual(path.read_bytes(), data)
+        self.assertFalse((self.state / "state.json").exists())
+
     def test_native_apply_rewrite_conflict_and_uninstall(self):
         self.install_orchestration({"codex_context_window": 900000})
         claude = self.home / ".claude/settings.json"

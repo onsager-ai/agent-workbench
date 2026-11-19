@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Enforce the Worker approval and GitHub polling policies at PreToolUse."""
+import json
+import shlex
+import sys
+
+
+APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder)."
+POLLING = ("GitHub polling is disabled. Use watch_pull_request and the single-call status reads "
+           "in orchestrate-harnesses' GitHub API budget section.")
+
+
+def polls_github(command):
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";|&()\n")
+    lexer.whitespace = " \t\r"
+    tokens = []
+    for token in lexer:
+        tokens.extend(token if token and all(char in ";|&()\n" for char in token) else [token])
+    separators = {";", "|", "&", "(", ")", "\n", "do", "then", "!", "while", "until"}
+    commands = []
+    loops, stack = [], []
+    for index, token in enumerate(tokens):
+        if index == 0 or tokens[index - 1] in separators:
+            if token in ("while", "until", "for"):
+                stack.append(index)
+            elif token == "done" and stack:
+                loops.append((stack.pop(), index))
+            end = index + 1
+            while end < len(tokens) and tokens[end] not in separators:
+                end += 1
+            commands.append((index, tokens[index:end]))
+    for _, words in commands:
+        if words[:3] == ["gh", "run", "watch"]:
+            return True
+        if words[:3] == ["gh", "pr", "checks"] and any(
+                word == "--watch" or word.startswith("--watch=") for word in words[3:]):
+            return True
+    return any("do" in tokens[start:end] and
+               any(start < index < end and words[0] == "sleep" for index, words in commands) and
+               any(start < index < end and words[0] == "gh" for index, words in commands)
+               for start, end in loops)
+
+
+def main():
+    try:
+        event = json.load(sys.stdin)
+        tool = event.get("tool_name")
+        arguments = event.get("tool_input", {})
+        decision = reason = None
+        if tool in ("Agent", "Task") and arguments.get("subagent_type") == "opus":
+            decision, reason = "ask", APPROVAL
+        elif tool == "Bash" and polls_github(arguments.get("command", "")):
+            decision, reason = "deny", POLLING
+    except (ValueError, TypeError, AttributeError):
+        return
+    if decision:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                                "permissionDecision": decision,
+                                                "permissionDecisionReason": reason}}))
+
+
+if __name__ == "__main__":
+    main()
