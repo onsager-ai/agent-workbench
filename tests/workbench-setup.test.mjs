@@ -136,6 +136,14 @@ class Fixture {
     return [this.hook, "--workers", path.join(this.state, "workers.json")].map(shellQuote).join(" ");
   }
 
+  get codexHookCommand() {
+    return [this.hook, "--host", "codex", "--workers", path.join(this.state, "workers.json")].map(shellQuote).join(" ");
+  }
+
+  get codexHooksPath() {
+    return path.join(this.home, ".codex/hooks.json");
+  }
+
   personalFile(name = "AGENTS.md") {
     return path.join(this.home, ".agents/skills/workbench-personal", name);
   }
@@ -920,6 +928,111 @@ describe("workbench setup", () => {
     assert.match(f.run("install", [], false).stderr, /invalid Claude hooks/);
     assert.deepEqual(read(settingsPath), data);
     assert.ok(!exists(path.join(f.state, "state.json")));
+  });
+
+  const codexHandler = (f) => ({ type: "command", command: f.codexHookCommand, timeout: 30 });
+  const CODEX_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send"];
+
+  test("codex hooks install, status and uninstall preserve foreign entries", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const foreign = { matcher: "Bash", hooks: [{ type: "command", command: "personal-hook" }] };
+    f.write(f.codexHooksPath, JSON.stringify({ note: "keep", hooks: { PreToolUse: [foreign], SessionStart: [] } }));
+    f.run("install");
+    let file = f.json(f.codexHooksPath);
+    assert.deepEqual(Object.keys(file), ["note", "hooks"]);
+    assert.deepEqual(Object.keys(file.hooks), ["PreToolUse", "SessionStart", "Stop"]);
+    assert.deepEqual(file.hooks.PreToolUse[0], foreign);
+    assert.deepEqual(file.hooks.PreToolUse.slice(1).map((entry) => entry.matcher), CODEX_MATCHERS);
+    for (const entry of file.hooks.PreToolUse.slice(1)) assert.deepEqual(entry.hooks, [codexHandler(f)]);
+    assert.deepEqual(file.hooks.Stop, [{ hooks: [codexHandler(f)] }]);
+    assert.deepEqual(f.stateJson().codex_hooks, [...file.hooks.PreToolUse.slice(1), file.hooks.Stop[0]]);
+    assert.deepEqual(f.stateJson().hooks.length, 5);
+    assert.deepEqual(JSON.parse(f.run("status").stdout).codex_hooks, {
+      "Agent|spawn_agent": "applied", Bash: "applied", mcp__t3_code__delegate_task: "applied",
+      mcp__t3_code__t3_thread_send: "applied", Stop: "applied",
+    });
+    const before = f.snapshot();
+    assert.match(f.run("install").stdout, /no-op/);
+    assert.deepEqual(f.snapshot(), before);
+    f.run("uninstall");
+    file = f.json(f.codexHooksPath);
+    assert.deepEqual(file.hooks, { PreToolUse: [foreign], SessionStart: [], Stop: [] });
+    assert.equal(file.note, "keep");
+  });
+
+  test("codex hooks are skipped without a codex directory or orchestration", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    fs.rmdirSync(path.join(f.home, ".codex"));
+    f.run("install");
+    assert.ok(!exists(f.codexHooksPath));
+    assert.deepEqual(f.stateJson().codex_hooks, []);
+    const g = new Fixture();
+    g.configureHome(path.join(g.temporary, "plain"));
+    fs.mkdirSync(path.join(g.home, ".codex"), { recursive: true });
+    g.run("install");
+    assert.ok(!exists(g.codexHooksPath));
+  });
+
+  test("codex hooks edited owned entry is kept, duplicates conflict, identical foreign is unowned", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    const file = f.json(f.codexHooksPath);
+    const canonical = file.hooks.PreToolUse[0];
+    const edited = JSON.parse(JSON.stringify(canonical));
+    edited.hooks[0].command = "edited-hook";
+    file.hooks.PreToolUse[0] = edited;
+    fs.writeFileSync(f.codexHooksPath, JSON.stringify(file));
+    assert.equal(JSON.parse(f.run("status").stdout).codex_hooks["Agent|spawn_agent"], "missing");
+    f.run("install");
+    const reapplied = f.json(f.codexHooksPath).hooks.PreToolUse;
+    assert.ok(reapplied.some((entry) => isDeepStrictEqual(entry, edited)));
+    assert.ok(reapplied.some((entry) => isDeepStrictEqual(entry, canonical)));
+    f.run("uninstall");
+    assert.deepEqual(f.json(f.codexHooksPath).hooks.PreToolUse, [edited]);
+
+    const g = new Fixture();
+    g.configureHome(path.join(g.temporary, "duplicate"));
+    g.installOrchestration();
+    g.run("install");
+    const dup = g.json(g.codexHooksPath);
+    dup.hooks.PreToolUse.push(dup.hooks.PreToolUse[0]);
+    fs.writeFileSync(g.codexHooksPath, JSON.stringify(dup));
+    const data = read(g.codexHooksPath);
+    assert.match(g.run("install", [], false).stderr, /duplicated/);
+    assert.deepEqual(read(g.codexHooksPath), data);
+
+    const h = new Fixture();
+    h.configureHome(path.join(h.temporary, "identical"));
+    h.installOrchestration();
+    const same = { matcher: "Bash", hooks: [codexHandler(h)] };
+    h.write(h.codexHooksPath, JSON.stringify({ hooks: { PreToolUse: [same] } }));
+    h.run("install");
+    assert.deepEqual(h.stateJson().codex_hooks.filter((entry) => "matcher" in entry).map((entry) => entry.matcher),
+      ["Agent|spawn_agent", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send"]);
+    h.run("uninstall");
+    assert.deepEqual(h.json(h.codexHooksPath).hooks.PreToolUse, [same]);
+  });
+
+  test("codex hooks removed when orchestration is removed; invalid file conflicts", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    fs.rmSync(path.join(f.home, ".agents/skills/orchestrate-harnesses"), { recursive: true });
+    f.run("install");
+    assert.deepEqual(f.stateJson().codex_hooks, []);
+    assert.deepEqual(f.json(f.codexHooksPath).hooks.PreToolUse, []);
+    for (const [index, data] of ['{"hooks":{"PreToolUse":{}}}', "{broken", '{"hooks":null}'].entries()) {
+      const g = new Fixture();
+      g.configureHome(path.join(g.temporary, `invalid-${index}`));
+      g.installOrchestration();
+      g.write(g.codexHooksPath, data);
+      assert.match(g.run("install", [], false).stderr, /invalid Codex hooks/);
+      assert.deepEqual(read(g.codexHooksPath), Buffer.from(data));
+      assert.ok(!exists(path.join(g.state, "state.json")));
+    }
   });
 
   test("null settings sections are reported as invalid configuration", () => {
