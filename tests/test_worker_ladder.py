@@ -18,16 +18,12 @@ class WorkerConfigurationTests(unittest.TestCase):
 
     def test_distributed_ladder_and_tiers(self):
         self.assertEqual([(entry["level"], entry["tiers"]) for entry in self.config["ladder"]],
-                         [("L1", ["luna", "haiku"]), ("L2", ["sol", "sonnet"]), ("L3", ["opus"])])
+                         [("L1", ["haiku"]), ("L2", ["sonnet"]), ("L3", ["opus"])])
         self.assertEqual(self.config["ladder"][1]["start_for"], ["spike", "research", "architecture"])
         self.assertEqual(self.config["ladder"][2]["approval"], "required")
         expected = {
-            "luna": ("codex", "gpt-6-luna", "medium"),
             "haiku": ("claude", "claude-haiku-5-5", "medium"),
-            "flash": ("codex", "openrouter/deepseek/deepseek-v4.1-flash-1017", "high"),
-            "terra": ("codex", "gpt-6.1-terra", "medium"),
             "sonnet": ("claude", "claude-sonnet-5-5", "medium"),
-            "sol": ("codex", "gpt-6.1-sol", "medium"),
             "opus": ("claude", "claude-opus-5-5", "medium"),
         }
         self.assertEqual(set(self.config["tiers"]), set(expected))
@@ -36,9 +32,16 @@ class WorkerConfigurationTests(unittest.TestCase):
             self.assertEqual(tuple(tier[key] for key in ("harness", "model", "effort")), values)
             self.assertEqual(tier["timeout_s"], 7200)
             self.assertIsNone(tier["budget_usd"])
-            self.assertEqual(tier["opt_in"], name in ("flash", "terra"))
-        self.assertEqual(self.config["tiers"]["sol"]["weekly_brake_percent"], 100)
-        self.assertEqual(list(self.bundle["profiles"]["claude-only"]["tiers"]), ["haiku", "sonnet", "opus"])
+            self.assertFalse(tier["opt_in"])
+        self.assertIsNone(self.config["policy"]["context"]["gateway_window"])
+        codex = self.bundle["profiles"]["codex"]
+        self.assertEqual(set(codex["tiers"]), {"haiku", "sonnet", "opus", "luna", "sol", "terra"})
+        self.assertEqual([e["tiers"] for e in codex["ladder"]], [["luna", "haiku"], ["sol", "sonnet"], ["opus"]])
+        for name, model in (("luna", "gpt-6-luna"), ("sol", "gpt-6.1-sol"), ("terra", "gpt-6.1-terra")):
+            self.assertEqual(codex["tiers"][name]["harness"], "codex")
+            self.assertEqual(codex["tiers"][name]["model"], model)
+            self.assertIsNone(codex["tiers"][name]["claude_route"])
+            self.assertEqual(codex["tiers"][name]["opt_in"], name == "terra")
 
     def test_schema_rejects_bad_resolved_values(self):
         mutations = [
@@ -57,7 +60,7 @@ class WorkerConfigurationTests(unittest.TestCase):
             lambda c: c["tiers"]["luna"].update(cli="codex"),
         ]
         for mutate in mutations:
-            config = copy.deepcopy(self.config)
+            config = copy.deepcopy(self.bundle["profiles"]["codex"])
             mutate(config)
             with self.subTest(mutate=mutate), self.assertRaises(WORKBENCH.Conflict):
                 WORKBENCH.resolve_worker_config(config)

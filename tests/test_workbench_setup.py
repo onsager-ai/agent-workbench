@@ -379,7 +379,7 @@ class SetupTests(unittest.TestCase):
         (self.home / ".claude").mkdir(exist_ok=True)
         (self.home / ".codex").mkdir(exist_ok=True)
         self.run_setup("install")
-        self.assertEqual({p.stem for p in self.agent("x").parent.iterdir()}, {"haiku", "sonnet", "opus", "luna", "terra", "sol"})
+        self.assertEqual({p.stem for p in self.agent("x").parent.iterdir()}, {"haiku", "sonnet", "opus"})
         text = self.agent("haiku").read_text()
         worker = (ORCHESTRATION / "references/worker.md").read_text()
         self.assertTrue(text.startswith("---\nname: haiku\n"))
@@ -387,7 +387,7 @@ class SetupTests(unittest.TestCase):
         self.assertIn("Managed by agent-workbench", text)
         self.assertTrue(text.endswith(worker))
         state = json.loads((self.state / "state.json").read_bytes())
-        self.assertEqual(set(state["agents"]), {"haiku", "sonnet", "opus", "luna", "terra", "sol"})
+        self.assertEqual(set(state["agents"]), {"haiku", "sonnet", "opus"})
         self.assertIn("haiku", json.loads(self.run_setup("status").stdout)["agents"])
         self.assertIn("no-op", self.run_setup("install").stdout)
 
@@ -406,9 +406,9 @@ class SetupTests(unittest.TestCase):
         return agents, output.getvalue(), run
 
     def test_catalog_validation_warns_for_unknown_model_and_effort(self):
-        self.install_orchestration({"tiers": {
+        self.install_orchestration({"profile": "codex", "profiles": {"codex": {"tiers": {
             "luna": {"claude_route": "unknown/model", "effort": "max"},
-            "terra": {"claude_route": "known/model", "effort": "xhigh"}}})
+            "terra": {"claude_route": "known/model", "effort": "xhigh"}}}}})
         _, warnings, run = self.inspect_catalog(
             "  known/model  Known Model  low/medium/high/max\n")
         self.assertIn("luna tier model 'unknown/model' is absent", warnings)
@@ -423,10 +423,9 @@ class SetupTests(unittest.TestCase):
             "  auto/claude-haiku-5-5       Claude Haiku 5.5 · Wokey  low/medium\n"
             "  hub/wokey/claude-sonnet-5-5 Claude Sonnet 5.5 · Wokey  medium/high\n"
             "  claude/claude-opus-5-5      Claude Opus 5.5  low/medium/high\n"
-            "  auto/openrouter/deepseek/deepseek-v4.1-flash-1017  DeepSeek Flash  medium/high\n"
-            "  onsager/codex/gpt-6-luna    GPT-6 Luna  medium/high/max\n"
-            "  onsager/codex/gpt-6.1-terra GPT-6.1 Terra  medium/high\n"
-            "  onsager/codex/gpt-6.1-sol   GPT-6.1 Sol  medium/high\n")
+            "  gateway/gpt-6-luna    GPT-6 Luna  medium/high/max\n"
+            "  gateway/gpt-6.1-terra GPT-6.1 Terra  medium/high\n"
+            "  gateway/gpt-6.1-sol   GPT-6.1 Sol  medium/high\n")
         self.assertNotIn("is absent", warnings)
         self.assertNotIn("is not listed", warnings)
 
@@ -454,20 +453,19 @@ class SetupTests(unittest.TestCase):
         self.assertIn("not installed", result.stdout)
         self.assertFalse(self.agent("x").parent.exists())
 
-    def test_codex_role_routed_by_default_override_and_removed_by_null(self):
-        self.install_orchestration()
+    def test_codex_profile_routes_only_with_override(self):
+        self.install_orchestration({"profile": "codex"})
+        self.run_setup("install")
+        self.assertEqual({p.stem for p in self.agent("x").parent.iterdir()}, {"haiku", "sonnet", "opus"})
+        route = "gateway/gpt-6-luna"
+        self.write(self.home / ".config/agent-workbench/workers.yml",
+                   json.dumps({"profile": "codex", "profiles": {"codex": {"tiers": {"luna": {"claude_route": route}}}}}).encode())
         self.run_setup("install")
         text = self.agent("luna").read_text()
-        self.assertIn('model: "onsager/codex/gpt-6-luna"\neffort: "medium"\n', text)
+        self.assertIn(f'model: "{route}"\neffort: "medium"\n', text)
         self.assertIn("gpt-6-luna via configured gateway", text)
-        self.assertFalse(self.agent("flash").exists())
-        route = "other/gpt-6-luna"
         self.write(self.home / ".config/agent-workbench/workers.yml",
-                   json.dumps({"tiers": {"luna": {"claude_route": route}}}).encode())
-        self.run_setup("install")
-        self.assertIn(f'model: "{route}"\n', self.agent("luna").read_text())
-        self.write(self.home / ".config/agent-workbench/workers.yml",
-                   json.dumps({"tiers": {"luna": {"claude_route": None}}}).encode())
+                   json.dumps({"profile": "codex"}).encode())
         self.run_setup("install")
         self.assertFalse(self.agent("luna").exists())
         self.assertTrue(self.agent("opus").exists())
@@ -601,7 +599,7 @@ class SetupTests(unittest.TestCase):
         self.assertFalse((self.state / "state.json").exists())
 
     def test_native_apply_rewrite_conflict_and_uninstall(self):
-        self.install_orchestration({"policy": {"context": {"codex_window": 900000}}})
+        self.install_orchestration({"policy": {"context": {"codex_window": 900000, "gateway_window": 400000}}})
         claude = self.home / ".claude/settings.json"
         codex = self.home / ".codex/config.toml"
         original = b'model = "magpie" # routing\nmodel_reasoning_effort = "high"\n\n[model_providers.magpie]\nname = "route"\n[projects."/tmp"]\ntrust_level = "trusted"\n'
@@ -673,33 +671,33 @@ profiles:
   corporate:
     tiers:
       glm: {harness: claude, model: glm, effort: high}
-      terra: null
+      sonnet: null
     policy: {context: {max_tokens: 12345}}
     ladder:
-      - {level: junior, tiers: [luna, glm]}
-      - {level: senior, tiers: [sonnet]}
-      - {level: expert, tiers: [sol], approval: required}
-profile: claude-only
+      - {level: junior, tiers: [haiku]}
+      - {level: senior, tiers: [opus]}
+      - {level: expert, tiers: [glm], approval: required}
+profile: codex
 select:
   - {path: ~/work, profile: corporate}
-  - {path: "~", profile: claude-only}
+  - {path: "~", profile: codex}
 ''')
         resolved = json.loads(self.run_setup("workers", "--cwd", str(alias / "nested")).stdout)
         self.assertEqual(resolved["profile"], "corporate")
-        self.assertNotIn("terra", resolved["tiers"])
+        self.assertNotIn("sonnet", resolved["tiers"])
         self.assertEqual(resolved["tiers"]["glm"]["effort"], "high")
         self.assertEqual(resolved["tiers"]["glm"]["timeout_s"], 900)
-        self.assertEqual(resolved["policy"]["context"]["gateway_window"], 400000)
+        self.assertIsNone(resolved["policy"]["context"]["gateway_window"])
         self.assertEqual([entry["level"] for entry in resolved["ladder"]], ["junior", "senior", "expert"])
         default = json.loads(self.run_setup("workers", "--cwd", str(self.home.parent)).stdout)
-        self.assertEqual(default["profile"], "claude-only")
-        self.assertEqual(list(default["tiers"]), ["haiku", "sonnet", "opus"])
+        self.assertEqual(default["profile"], "codex")
+        self.assertEqual(set(default["tiers"]), {"haiku", "sonnet", "opus", "luna", "sol", "terra"})
         self.run_setup("install")
         self.assertTrue(self.agent("glm").exists())
-        self.assertTrue(self.agent("terra").exists())  # Needed by the base config.
-        self.assertNotIn(" L1 ", self.agent("luna").read_text())
+        self.assertFalse(self.agent("terra").exists())
+        self.assertFalse(self.agent("luna").exists())
         bundle = json.loads((self.state / "workers.json").read_text())
-        self.assertEqual(bundle["profile"], "claude-only")
+        self.assertEqual(bundle["profile"], "codex")
         self.assertEqual(bundle["select"][0]["path"], str(work.resolve()))
         self.assertEqual(bundle["profiles"]["corporate"]["policy"]["context"]["max_tokens"], 12345)
         settings = json.loads((self.home / ".claude/settings.json").read_text())
@@ -720,17 +718,17 @@ select:
                 mock.patch.object(module.Path, "home", return_value=self.home):
             setup = module.Setup(self.home)
             self.assertEqual(setup.override, xdg / "agent-workbench/workers.yml")
-            self.write(setup.override, b"profile: claude-only")
-            self.assertEqual(module.effective_workers(setup.workers_bundle(), self.home)["profile"], "claude-only")
+            self.write(setup.override, b"profile: codex")
+            self.assertEqual(module.effective_workers(setup.workers_bundle(), self.home)["profile"], "codex")
         for value in ("", "relative"):
             with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": value}):
                 self.assertEqual(module.Setup(self.home).override, self.home / ".config/agent-workbench/workers.yml")
 
     def test_cross_profile_tier_identity_conflict_without_writes(self):
-        self.install_orchestration({"profiles": {"other": {"tiers": {"luna": {"effort": "high"}}}}})
+        self.install_orchestration({"profiles": {"other": {"tiers": {"haiku": {"effort": "high"}}}}})
         before = self.snapshot()
         result = self.run_setup("install", ok=False)
-        self.assertIn("luna", result.stderr)
+        self.assertIn("haiku", result.stderr)
         self.assertIn("rename", result.stderr)
         self.assertEqual(self.snapshot(), before)
 
