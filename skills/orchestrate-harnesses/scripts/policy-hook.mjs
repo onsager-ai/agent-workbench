@@ -16,6 +16,8 @@ const T3_MODEL = "Set target.model (and effort in target.options) for the Worker
 const INHERITED_MODEL = "Built-in agents inherit the Manager's model. Use a tier agent " +
   "(subagent_type: <role>) or pass model explicitly.";
 const INHERITING_AGENT_TYPES = new Set([undefined, null, "general-purpose", "Plan", "Explore", "claude"]);
+const MODEL_OVERRIDE = "model overrides the model in this agent's definition, so a tier agent would run on " +
+  "the wrong model. Drop model and let subagent_type select the tier.";
 const STOP_REASON = "If this asks the user something, re-ask it with AskUserQuestion, putting the recommended " +
   "option first and offering your best guesses as options for open-ended answers. " +
   "If it was not a question to the user, end the turn without it.";
@@ -536,7 +538,9 @@ function main() {
     } else if (tool === "Agent" || tool === "Task") {
       const subagentType = dict(args).subagent_type;
       const approval = dispatchApproval(workers, event, subagentType);
-      if (approval) [decision, reason] = ["ask", approval];
+      if (args.model && !INHERITING_AGENT_TYPES.has(subagentType) && subagentType !== "fork") {
+        [decision, reason] = ["deny", MODEL_OVERRIDE];
+      } else if (approval) [decision, reason] = ["ask", approval];
       else if (args.model === "opus") [decision, reason] = ["ask", APPROVAL];
       else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason] = ["deny", INHERITED_MODEL];
     } else if (tool === "Bash") {
