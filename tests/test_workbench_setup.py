@@ -807,6 +807,9 @@ select:
         spec.loader.exec_module(module)
         xdg = self.home / "xdg"
         with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}):
+            self.assertEqual(module.Setup(self.home).override, self.home / ".config/agent-workbench/workers.yml")
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}), \
+                mock.patch.object(module.Path, "home", return_value=self.home):
             setup = module.Setup(self.home)
             self.assertEqual(setup.override, xdg / "agent-workbench/workers.yml")
             self.write(setup.override, b"profile: claude-only")

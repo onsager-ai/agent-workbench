@@ -409,7 +409,7 @@ class Setup:
         self.worker = orchestration / "references/worker.md"
         self.policy_hook = orchestration / "scripts/policy-hook"
         xdg = os.environ.get("XDG_CONFIG_HOME", "")
-        config = Path(xdg) if xdg and os.path.isabs(xdg) else self.home / ".config"
+        config = Path(xdg) if self.home == Path.home() and xdg and os.path.isabs(xdg) else self.home / ".config"
         self.override = config / "agent-workbench/workers.yml"
         self.legacy_override = config / "agent-workbench/models.json"
 
@@ -441,8 +441,10 @@ class Setup:
                            "max_context_tokens -> policy.context.max_tokens, "
                            "gateway_context_window -> policy.context.gateway_window, "
                            "codex_context_window -> policy.context.codex_window; version: 2")
-        for path in (self.models, self.override):
-            inspect(path, self.home if path.is_relative_to(self.home) else path.parent)
+        inspect(self.models, self.home)
+        if present(self.override):
+            base = self.home if self.override.is_relative_to(self.home) else self.override.parent
+            inspect(self.override, base)
         if not present(self.models):
             return None
         return worker_bundle(self.models, self.override, self.home)
