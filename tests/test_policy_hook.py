@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import subprocess
 import sys
+import shlex
 import tempfile
 import unittest
 
@@ -168,6 +169,87 @@ class PolicyHookTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
+
+    def make_git_repo(self, path, branch):
+        path.mkdir()
+        subprocess.run(["git", "init", "-b", branch, str(path)], check=True,
+                       capture_output=True, text=True)
+        file = path / "tracked"
+        file.write_text("initial\\n")
+        subprocess.run(["git", "-C", str(path), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                        "add", "tracked"], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(path), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                        "commit", "-m", "initial"], check=True, capture_output=True, text=True)
+        return path
+
+    def bash_decision(self, command, cwd=None):
+        event = {"tool_name": "Bash", "tool_input": {"command": command}}
+        if cwd is not None:
+            event["cwd"] = str(cwd)
+        return self.invoke(json.dumps(event))
+
+    def assert_protected(self, command, cwd=None):
+        decision = self.bash_decision(command, cwd)
+        self.assertEqual(decision["permissionDecision"], "deny", command)
+        reason = decision["permissionDecisionReason"]
+        self.assertIn("local main branch is protected", reason)
+        self.assertIn("task branch", reason)
+        self.assertIn("origin/main", reason)
+
+    def assert_allowed(self, command, cwd=None):
+        self.assertIsNone(self.bash_decision(command, cwd), command)
+
+    def test_checkout_and_switch_protection(self):
+        for command in ("git checkout main", "git checkout master", "git switch main",
+                        "git checkout -B main origin/main", "git switch -C main origin/main",
+                        "git checkout -f main"):
+            with self.subTest(command=command):
+                self.assert_protected(command)
+        for command in ("git checkout -b x origin/main", "git switch -c x main",
+                        "git checkout main -- path", "git checkout main path",
+                        "git checkout origin/main", "git checkout feature", "git switch --detach main"):
+            with self.subTest(command=command):
+                self.assert_allowed(command)
+
+    def test_worktree_and_remote_push_protection(self):
+        for command in ("git worktree add /tmp/test-tree main", "git worktree add /tmp/test-tree master",
+                        "git push origin main", "git push origin HEAD:main",
+                        "git push origin x:refs/heads/main", "git push -f origin main"):
+            with self.subTest(command=command):
+                self.assert_protected(command)
+        for command in ("git worktree add -b x /tmp/test-tree main", "git push origin feature",
+                        "git push -u origin HEAD"):
+            with self.subTest(command=command):
+                self.assert_allowed(command)
+
+    def test_protected_current_branch_blocks_mutations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            main = self.make_git_repo(root / "main", "main")
+            feature = self.make_git_repo(root / "feature", "feature")
+            for command in ("git commit -m x", "git merge feature", "git rebase feature",
+                            "git cherry-pick HEAD", "git revert HEAD", "git reset --hard HEAD",
+                            "git am patch.mbox", "git push origin", "git push",
+                            "git push origin HEAD", "git push -u origin HEAD", "git push origin @"):
+                with self.subTest(command=command, context="cwd"):
+                    self.assert_protected(command, main)
+                with self.subTest(command=command, context="git -C"):
+                    self.assert_protected(f"git -C {shlex.quote(str(main))} {command[4:]}", root)
+            self.assert_protected(f"cd {shlex.quote(str(main))} && git commit -m x", root)
+            for command in ("git commit -m x", "git merge main", "git rebase main", "git push origin"):
+                self.assert_allowed(command, feature)
+            for command in ("git pull", "git fetch", "git status", "git log -1", "git diff",
+                            "git switch -c topic"):
+                self.assert_allowed(command, main)
+
+    def test_push_to_protected_ref_is_denied_even_on_feature(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            feature = self.make_git_repo(Path(temporary) / "feature", "feature")
+            for command in ("git push origin main", "git push origin HEAD:main",
+                            "git push origin x:refs/heads/master", "git push -f origin main"):
+                self.assert_protected(command, feature)
+            self.assert_allowed("git push origin feature", feature)
+            self.assert_allowed("git push -u origin HEAD", feature)
 
     def test_polling_is_denied(self):
         for command in (
