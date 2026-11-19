@@ -47,7 +47,7 @@ Agent Workbench runs work as one user-facing Manager session that delegates to W
 ## Regenerating
 
 ```sh
-cd assets/brand
+cd docs/brand
 npm install
 npm run generate
 ```

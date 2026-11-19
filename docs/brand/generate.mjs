@@ -3,7 +3,7 @@
 // except README.md, package*.json and this script is derived from the mark
 // geometry below and outlined Inter 400 glyphs. Output is deterministic.
 //
-// Usage: npm install && npm run generate (from assets/brand/)
+// Usage: npm install && npm run generate (from docs/brand/)
 
 import { copyFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

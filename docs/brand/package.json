@@ -2,7 +2,7 @@
   "name": "@agent-workbench/brand-assets",
   "private": true,
   "version": "0.0.0",
-  "description": "Generator for the Agent Workbench brand kit (assets/brand). Not published.",
+  "description": "Generator for the Agent Workbench brand kit (docs/brand). Not published.",
   "type": "module",
   "scripts": {
     "generate": "node generate.mjs"

@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/agent-workbench-lockup-dark.svg">
-    <img src="assets/brand/agent-workbench-lockup-light.svg" alt="Agent Workbench" width="360">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/agent-workbench-lockup-dark.svg">
+    <img src="docs/brand/agent-workbench-lockup-light.svg" alt="Agent Workbench" width="360">
   </picture>
 </p>
 
