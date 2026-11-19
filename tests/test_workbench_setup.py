@@ -47,7 +47,8 @@ class SetupTests(unittest.TestCase):
     def run_setup(self, command, *args, ok=True):
         self.assertNotEqual(self.home, Path.home())
         result = subprocess.run([sys.executable, str(self.script), "--home", str(self.home),
-                                 command, *args], capture_output=True, text=True)
+                                 command, *args], capture_output=True, text=True,
+                                env={**os.environ, "XDG_CONFIG_HOME": ""})
         self.assertEqual(result.returncode == 0, ok, result.stdout + result.stderr)
         return result
 
@@ -84,11 +85,12 @@ class SetupTests(unittest.TestCase):
         result = subprocess.run([str(self.launcher), "status"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["private_bytes"], 0)
+        self.assertEqual(json.loads(result.stdout)["personal_package"], {"present": False, "applied_files": []})
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
         for path in (self.state / "backups").iterdir():
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
-    def test_migration_exact_bytes_and_idempotency(self):
+    def test_first_install_keeps_existing_bytes_and_is_idempotent(self):
         personal = "private π rules".encode() + b"\x80"
         self.write(self.shared, b"existing shared\n")
         self.write(self.codex, personal)
@@ -102,6 +104,82 @@ class SetupTests(unittest.TestCase):
         import base64
         backup = json.loads((self.state / "backups/codex.json").read_bytes())
         self.assertEqual(base64.b64decode(backup["base64"]), personal)
+
+    def test_personal_instructions_install_idempotence_and_uninstall(self):
+        personal = self.home / ".agents/skills/workbench-personal/AGENTS.md"
+        self.write(personal, "Personal π rules\n".encode())
+        self.write(self.shared, b"private after\x80")
+        self.run_setup("install")
+        expected = b"<!-- BEGIN agent-workbench personal -->\n" + personal.read_bytes() + b"<!-- END agent-workbench personal -->\n"
+        self.assertIn(END + b"\n" + expected, self.shared.read_bytes())
+        self.shared.write_bytes(b"private before\n" + self.shared.read_bytes())
+        before = self.snapshot()
+        self.assertIn("no-op", self.run_setup("install").stdout)
+        self.assertEqual(before, self.snapshot())
+        status = json.loads(self.run_setup("status").stdout)
+        self.assertEqual(status["personal_package"], {"present": True, "applied_files": ["AGENTS.md"]})
+        self.assertEqual(status["private_bytes"], len(b"private before\nprivate after\x80"))
+        self.run_setup("uninstall")
+        self.assertEqual(self.shared.read_bytes(), b"private before\nprivate after\x80")
+        self.assertEqual(self.codex.read_bytes(), self.shared.read_bytes())
+
+    def test_personal_block_removed_with_file_or_package(self):
+        personal = self.home / ".agents/skills/workbench-personal/AGENTS.md"
+        for remove_package in (False, True):
+            with self.subTest(remove_package=remove_package):
+                self.write(personal, b"personal rules")
+                self.run_setup("install")
+                if remove_package:
+                    shutil.rmtree(personal.parent)
+                else:
+                    personal.unlink()
+                self.run_setup("install")
+                self.assertNotIn(b"agent-workbench personal", self.shared.read_bytes())
+                self.assertIsNone(json.loads((self.state / "state.json").read_bytes())["personal_block"])
+
+    def test_personal_instruction_update_preserves_private_positions(self):
+        self.run_setup("install")
+        self.shared.write_bytes(b"before\x80\n" + self.shared.read_bytes() + b"after\x81")
+        personal = self.home / ".agents/skills/workbench-personal/AGENTS.md"
+        self.write(personal, b"first rules\n")
+        self.run_setup("install")
+        personal.write_bytes(b"new rules\n")
+        self.run_setup("install")
+        data = self.shared.read_bytes()
+        self.assertTrue(data.startswith(b"before\x80\n" + BEGIN))
+        self.assertTrue(data.endswith(b"after\x81"))
+        self.assertIn(END + b"\n<!-- BEGIN agent-workbench personal -->\nnew rules\n", data)
+        self.assertNotIn(b"first rules", data)
+
+    def test_personal_instruction_symlink_refused(self):
+        personal = self.home / ".agents/skills/workbench-personal/AGENTS.md"
+        self.write(self.home / "foreign-instructions", b"rules")
+        personal.parent.mkdir(parents=True)
+        personal.symlink_to(self.home / "foreign-instructions")
+        before = self.snapshot()
+        self.assertIn("symlink", self.run_setup("install", ok=False).stderr)
+        self.assertEqual(before, self.snapshot())
+
+    def test_personal_managed_markers_and_edits_conflict(self):
+        personal = self.home / ".agents/skills/workbench-personal/AGENTS.md"
+        self.write(personal, b"personal rules\n")
+        self.run_setup("install")
+        original = self.shared.read_bytes()
+        variants = (
+            original.replace(b"personal rules", b"edited rules"),
+            original + b"<!-- BEGIN agent-workbench personal -->\n",
+            original.replace(b"<!-- END agent-workbench personal -->", b""),
+            original.replace(END + b"\n", b"").replace(b"personal rules", END + b"\npersonal rules"),
+        )
+        for data in variants:
+            self.shared.write_bytes(data)
+            for command in ("install", "status", "uninstall"):
+                before = self.snapshot()
+                self.run_setup(command, ok=False)
+                self.assertEqual(before, self.snapshot())
+        self.shared.write_bytes(original)
+        personal.write_bytes(BEGIN)
+        self.assertIn("managed markers", self.run_setup("install", ok=False).stderr)
 
     def test_preexisting_import_not_owned_or_duplicated(self):
         data = b"private\n" + IMPORT + b"\n"
@@ -173,30 +251,6 @@ class SetupTests(unittest.TestCase):
         self.claude.write_bytes(self.claude.read_bytes() + b"personal edit \xcf\x80\n")
         self.run_setup("uninstall")
         self.assertEqual(self.claude.read_bytes(), b"personal edit \xcf\x80\n")
-
-    def test_legacy_reused_import_remains_non_owned(self):
-        original = b"Prior caf\xc3\xa9\n" + IMPORT + b"\nAfter"
-        self.write(self.claude, original)
-        self.run_setup("install")
-        state_path = self.state / "state.json"
-        state = json.loads(state_path.read_bytes())
-        self.assertFalse(state["import_added"])
-        state.pop("claude_import")
-        state_path.write_text(json.dumps(state) + "\n")
-        self.run_setup("status")
-        self.run_setup("uninstall")
-        self.assertEqual(self.claude.read_bytes(), original)
-
-    def test_legacy_added_import_remains_owned(self):
-        self.run_setup("install")
-        state_path = self.state / "state.json"
-        state = json.loads(state_path.read_bytes())
-        self.assertTrue(state["import_added"])
-        state.pop("claude_import")
-        state_path.write_text(json.dumps(state) + "\n")
-        self.run_setup("status")
-        self.run_setup("uninstall")
-        self.assertEqual(self.claude.read_bytes(), b"")
 
     def test_foreign_link_refuses_without_writes(self):
         target = self.home / "foreign"
@@ -291,6 +345,25 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(json.loads(log.read_text()), ["update", "disk-cleanup", "workbench-setup", "-g", "-y"])
         self.assertEqual(marker.read_text(), "fresh")
         self.assertIn(b"new public template", self.shared.read_bytes())
+
+    def test_update_includes_personal_package_from_any_source(self):
+        self.run_setup("install")
+        self.native_lock()
+        lock_path = self.home / ".agents/.skill-lock.json"
+        lock = json.loads(lock_path.read_bytes())
+        lock["skills"]["workbench-personal"] = {"source": "private/personal", "sourceType": "git"}
+        lock_path.write_text(json.dumps(lock))
+        log = self.home / "calls.json"
+        personal = self.home / ".agents/skills/workbench-personal/AGENTS.md"
+        command = self.fake_command(
+            "import json, pathlib, sys\n"
+            f"pathlib.Path({str(log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+            f"p = pathlib.Path({str(personal)!r})\n"
+            "p.parent.mkdir(parents=True)\n"
+            "p.write_text('updated personal rules')\n")
+        self.run_setup("update", "--skills-cmd", command)
+        self.assertEqual(json.loads(log.read_text()), ["update", "disk-cleanup", "workbench-personal", "workbench-setup", "-g", "-y"])
+        self.assertIn(b"updated personal rules", self.shared.read_bytes())
 
     def test_template_update_preserves_private_positions_and_bytes(self):
         self.run_setup("install")
@@ -392,7 +465,27 @@ class SetupTests(unittest.TestCase):
         (self.home / ".claude").mkdir(exist_ok=True)
         (self.home / ".codex").mkdir(exist_ok=True)
         if override is not None:
-            self.write(self.home / ".config/agent-workbench/models.json", json.dumps(override).encode())
+            self.write(self.home / ".config/agent-workbench/workers.yml", json.dumps(override).encode())
+
+    def test_personal_worker_layering_and_validation(self):
+        self.install_orchestration({"defaults": {"timeout_s": 900}})
+        personal = self.home / ".agents/skills/workbench-personal/workers.yml"
+        self.write(personal, b"defaults: {timeout_s: 800, effort: high}\n")
+        workers = json.loads(self.run_setup("workers").stdout)
+        self.assertEqual(workers["defaults"]["timeout_s"], 900)
+        self.assertEqual(workers["defaults"]["effort"], "high")
+        self.run_setup("install")
+        self.assertEqual(json.loads(self.run_setup("status").stdout)["personal_package"],
+                         {"present": True, "applied_files": ["workers.yml"]})
+        (self.home / ".config/agent-workbench/workers.yml").unlink()
+        self.assertEqual(json.loads(self.run_setup("workers").stdout)["defaults"]["timeout_s"], 800)
+        self.write(personal, b"defaults: {unknown: true}\n")
+        before = self.snapshot()
+        self.assertIn("unknown keys", self.run_setup("install", ok=False).stderr)
+        self.assertEqual(before, self.snapshot())
+        personal.unlink()
+        personal.symlink_to(self.home / "foreign-workers")
+        self.assertIn("symlink", self.run_setup("workers", ok=False).stderr)
 
     def agent(self, name):
         return self.home / ".claude/agents" / (name + ".md")
@@ -402,7 +495,7 @@ class SetupTests(unittest.TestCase):
         (self.home / ".claude").mkdir(exist_ok=True)
         (self.home / ".codex").mkdir(exist_ok=True)
         self.run_setup("install")
-        self.assertEqual({p.stem for p in self.agent("x").parent.iterdir()}, {"haiku", "sonnet", "opus", "luna", "terra", "sol"})
+        self.assertEqual({p.stem for p in self.agent("x").parent.iterdir()}, {"haiku", "sonnet", "opus"})
         text = self.agent("haiku").read_text()
         worker = (ORCHESTRATION / "references/worker.md").read_text()
         self.assertTrue(text.startswith("---\nname: haiku\n"))
@@ -410,7 +503,7 @@ class SetupTests(unittest.TestCase):
         self.assertIn("Managed by agent-workbench", text)
         self.assertTrue(text.endswith(worker))
         state = json.loads((self.state / "state.json").read_bytes())
-        self.assertEqual(set(state["agents"]), {"haiku", "sonnet", "opus", "luna", "terra", "sol"})
+        self.assertEqual(set(state["agents"]), {"haiku", "sonnet", "opus"})
         self.assertIn("haiku", json.loads(self.run_setup("status").stdout)["agents"])
         self.assertIn("no-op", self.run_setup("install").stdout)
 
@@ -429,9 +522,9 @@ class SetupTests(unittest.TestCase):
         return agents, output.getvalue(), run
 
     def test_catalog_validation_warns_for_unknown_model_and_effort(self):
-        self.install_orchestration({"roles": {
-            "luna": {"claude_model": "unknown/model", "effort": "max"},
-            "terra": {"claude_model": "known/model", "effort": "xhigh"}}})
+        self.install_orchestration({"profile": "codex", "profiles": {"codex": {"tiers": {
+            "luna": {"claude_route": "unknown/model", "effort": "max"},
+            "terra": {"claude_route": "known/model", "effort": "xhigh"}}}}})
         _, warnings, run = self.inspect_catalog(
             "  known/model  Known Model  low/medium/high/max\n")
         self.assertIn("luna tier model 'unknown/model' is absent", warnings)
@@ -440,16 +533,18 @@ class SetupTests(unittest.TestCase):
                                     capture_output=True, text=True, timeout=20, check=False)
 
     def test_catalog_validation_matches_routing_prefixed_entries(self):
-        self.install_orchestration()
+        self.install_orchestration({"profile": "codex", "profiles": {"codex": {"tiers": {
+            "luna": {"claude_route": "gateway/gpt-6-luna"},
+            "terra": {"claude_route": "gateway/gpt-6.1-terra"},
+            "sol": {"claude_route": "gateway/gpt-6.2-sol"}}}}})
         _, warnings, _ = self.inspect_catalog(
             "  Routing groups\n"
             "  auto/claude-haiku-5-5       Claude Haiku 5.5 · Wokey  low/medium\n"
             "  hub/wokey/claude-sonnet-5-5 Claude Sonnet 5.5 · Wokey  medium/high\n"
             "  claude/claude-opus-5-5      Claude Opus 5.5  low/medium/high\n"
-            "  auto/openrouter/deepseek/deepseek-v4.1-flash-1017  DeepSeek Flash  medium/high\n"
-            "  onsager/codex/gpt-6-luna    GPT-6 Luna  medium/high/max\n"
-            "  onsager/codex/gpt-6.1-terra GPT-6.1 Terra  medium/high\n"
-            "  onsager/codex/gpt-6.2-sol   GPT-6.2 Sol  medium/high\n")
+            "  gateway/gpt-6-luna    GPT-6 Luna  medium/high/max\n"
+            "  gateway/gpt-6.1-terra GPT-6.1 Terra  medium/high\n"
+            "  gateway/gpt-6.2-sol   GPT-6.2 Sol  medium/high\n")
         self.assertNotIn("is absent", warnings)
         self.assertNotIn("is not listed", warnings)
 
@@ -477,20 +572,19 @@ class SetupTests(unittest.TestCase):
         self.assertIn("not installed", result.stdout)
         self.assertFalse(self.agent("x").parent.exists())
 
-    def test_codex_role_routed_by_default_override_and_removed_by_null(self):
-        self.install_orchestration()
+    def test_codex_profile_routes_only_with_override(self):
+        self.install_orchestration({"profile": "codex"})
+        self.run_setup("install")
+        self.assertEqual({p.stem for p in self.agent("x").parent.iterdir()}, {"haiku", "sonnet", "opus"})
+        route = "gateway/gpt-6-luna"
+        self.write(self.home / ".config/agent-workbench/workers.yml",
+                   json.dumps({"profile": "codex", "profiles": {"codex": {"tiers": {"luna": {"claude_route": route}}}}}).encode())
         self.run_setup("install")
         text = self.agent("luna").read_text()
-        self.assertIn('model: "onsager/codex/gpt-6-luna"\neffort: "medium"\n', text)
+        self.assertIn(f'model: "{route}"\neffort: "medium"\n', text)
         self.assertIn("gpt-6-luna via configured gateway", text)
-        self.assertFalse(self.agent("flash").exists())
-        route = "other/gpt-6-luna"
-        self.write(self.home / ".config/agent-workbench/models.json",
-                   json.dumps({"roles": {"luna": {"claude_model": route}}}).encode())
-        self.run_setup("install")
-        self.assertIn(f'model: "{route}"\n', self.agent("luna").read_text())
-        self.write(self.home / ".config/agent-workbench/models.json",
-                   json.dumps({"roles": {"luna": {"claude_model": None}}}).encode())
+        self.write(self.home / ".config/agent-workbench/workers.yml",
+                   json.dumps({"profile": "codex"}).encode())
         self.run_setup("install")
         self.assertFalse(self.agent("luna").exists())
         self.assertTrue(self.agent("opus").exists())
@@ -526,21 +620,105 @@ class SetupTests(unittest.TestCase):
         self.run_setup("uninstall")
         self.assertEqual([p.name for p in self.agent("x").parent.iterdir()], ["custom.md"])
 
-    def test_state_without_agent_records_still_loads(self):
+    def test_policy_hooks_install_status_uninstall_preserves_foreign_entries(self):
+        self.install_orchestration()
+        path = self.home / ".claude/settings.json"
+        foreign = {"matcher": "Bash", "hooks": [{"type": "command", "command": "personal-hook"}]}
+        self.write(path, json.dumps({"model": "personal", "hooks": {
+            "PreToolUse": [foreign], "Stop": [{"hooks": []}]}, "env": {"OTHER": "yes"}}).encode())
         self.run_setup("install")
-        path = self.state / "state.json"
-        state = json.loads(path.read_bytes())
-        del state["agents"]
-        path.write_text(json.dumps(state))
-        self.run_setup("status")
+        settings = json.loads(path.read_bytes())
+        self.assertEqual(list(settings), ["model", "hooks", "env"])
+        entries = settings["hooks"]["PreToolUse"]
+        self.assertEqual(entries[0], foreign)
+        self.assertEqual([entry["matcher"] for entry in entries[1:]],
+                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task"])
+        stop_entry = settings["hooks"]["Stop"][-1]
+        self.assertEqual(stop_entry, {"hooks": [{"type": "command", "command":
+                                                  shlex.join([str(self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"), "--workers", str(self.state / "workers.json")])}]})
+        hook = self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"
+        for entry in entries[1:]:
+            self.assertEqual(entry["hooks"], [{"type": "command", "command": shlex.join([str(hook), "--workers", str(self.state / "workers.json")])}])
+            self.assertTrue(os.access(hook, os.X_OK))
+        state = json.loads((self.state / "state.json").read_bytes())
+        self.assertEqual(state["hooks"], entries[1:] + [stop_entry])
+        self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"],
+                         {"Agent|Task": "applied", "Bash": "applied",
+                          "mcp__t3-code__delegate_task": "applied", "Stop": "applied"})
+        before = self.snapshot()
+        self.assertIn("no-op", self.run_setup("install").stdout)
+        self.assertEqual(before, self.snapshot())
+        self.run_setup("uninstall")
+        settings = json.loads(path.read_bytes())
+        self.assertEqual(settings["hooks"], {"PreToolUse": [foreign], "Stop": [{"hooks": []}]})
+        self.assertEqual(settings["model"], "personal")
+        self.assertEqual(settings["env"], {"OTHER": "yes"})
+
+    def test_policy_hooks_edited_owned_entry_is_kept_and_canonical_reapplied(self):
         self.install_orchestration()
         self.run_setup("install")
-        self.assertTrue(self.agent("sonnet").exists())
+        path = self.home / ".claude/settings.json"
+        settings = json.loads(path.read_bytes())
+        canonical = settings["hooks"]["PreToolUse"][0]
+        edited = json.loads(json.dumps(canonical))
+        edited["hooks"][0]["command"] = "edited-hook"
+        settings["hooks"]["PreToolUse"][0] = edited
+        path.write_text(json.dumps(settings))
+        self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"],
+                         {"Agent|Task": "missing", "Bash": "applied",
+                          "mcp__t3-code__delegate_task": "applied", "Stop": "applied"})
+        self.run_setup("install")
+        self.assertIn(edited, json.loads(path.read_bytes())["hooks"]["PreToolUse"])
+        self.assertIn(canonical, json.loads(path.read_bytes())["hooks"]["PreToolUse"])
         self.run_setup("uninstall")
-        self.assertFalse(self.agent("sonnet").exists())
+        self.assertEqual(json.loads(path.read_bytes())["hooks"]["PreToolUse"], [edited])
+
+    def test_policy_hooks_duplicated_owned_entry_conflicts(self):
+        self.install_orchestration()
+        self.run_setup("install")
+        path = self.home / ".claude/settings.json"
+        settings = json.loads(path.read_bytes())
+        settings["hooks"]["PreToolUse"].append(settings["hooks"]["PreToolUse"][0])
+        path.write_text(json.dumps(settings))
+        data = path.read_bytes()
+        self.assertIn("duplicated", self.run_setup("install", ok=False).stderr)
+        self.assertEqual(path.read_bytes(), data)
+
+    def test_preexisting_identical_policy_hook_is_not_owned(self):
+        self.install_orchestration()
+        path = self.home / ".claude/settings.json"
+        hook = self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"
+        foreign = {"matcher": "Bash", "hooks": [{"type": "command", "command": shlex.join([str(hook), "--workers", str(self.state / "workers.json")])}]}
+        self.write(path, json.dumps({"hooks": {"PreToolUse": [foreign]}}).encode())
+        self.run_setup("install")
+        saved = json.loads((self.state / "state.json").read_bytes())["hooks"]
+        self.assertEqual([entry["matcher"] for entry in saved if "matcher" in entry],
+                         ["Agent|Task", "mcp__t3-code__delegate_task"])
+        self.assertEqual(len([entry for entry in saved if "matcher" not in entry]), 1)
+        self.run_setup("uninstall")
+        hooks = json.loads(path.read_bytes())["hooks"]
+        self.assertEqual(hooks["PreToolUse"], [foreign])
+        self.assertEqual(hooks["Stop"], [])
+
+    def test_policy_hooks_removed_when_orchestration_is_removed(self):
+        self.install_orchestration()
+        self.run_setup("install")
+        shutil.rmtree(self.home / ".agents/skills/orchestrate-harnesses")
+        self.run_setup("install")
+        self.assertEqual(json.loads((self.state / "state.json").read_bytes())["hooks"], [])
+        self.assertEqual(json.loads((self.home / ".claude/settings.json").read_bytes())["hooks"]["PreToolUse"], [])
+
+    def test_policy_hooks_invalid_configuration_conflicts_without_writes(self):
+        self.install_orchestration()
+        path = self.home / ".claude/settings.json"
+        data = b'{"hooks":{"PreToolUse":{}}}'
+        self.write(path, data)
+        self.assertIn("invalid Claude hooks", self.run_setup("install", ok=False).stderr)
+        self.assertEqual(path.read_bytes(), data)
+        self.assertFalse((self.state / "state.json").exists())
 
     def test_native_apply_rewrite_conflict_and_uninstall(self):
-        self.install_orchestration({"codex_context_window": 900000})
+        self.install_orchestration({"policy": {"context": {"codex_window": 900000, "gateway_window": 400000}}})
         claude = self.home / ".claude/settings.json"
         codex = self.home / ".codex/config.toml"
         original = b'model = "magpie" # routing\nmodel_reasoning_effort = "high"\n\n[model_providers.magpie]\nname = "route"\n[projects."/tmp"]\ntrust_level = "trusted"\n'
@@ -571,20 +749,6 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(json.loads(claude.read_bytes())["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "420000")
         self.assertEqual(codex.read_bytes(), original)
 
-    def test_native_migrates_owned_autocompact_percentage(self):
-        self.install_orchestration()
-        claude = self.home / ".claude/settings.json"
-        self.write(claude, b'{"env":{"OTHER":"x"}}')
-        self.run_setup("install")
-        state_path = self.state / "state.json"
-        state = json.loads(state_path.read_bytes())
-        state["native"]["claude"] = {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "30"}
-        state_path.write_text(json.dumps(state))
-        claude.write_text(json.dumps({"env": {"OTHER": "x", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "30"}}))
-        self.run_setup("install")
-        self.assertEqual(json.loads(claude.read_bytes())["env"], {"OTHER": "x", "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000", "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000"})
-        self.assertEqual(json.loads(state_path.read_bytes())["native"]["claude"], {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000", "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000"})
-
     def test_native_preexisting_values_and_invalid_files(self):
         for index, (kind, data, succeeds) in enumerate((
             ("claude", b'{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"300000"}}', True),
@@ -607,12 +771,118 @@ class SetupTests(unittest.TestCase):
                     self.assertEqual(path.read_bytes(), data)
 
     def test_native_missing_directory_and_override_validation(self):
-        self.install_orchestration({"max_context_tokens": 500000, "gateway_context_window": None})
+        self.install_orchestration({"policy": {"context": {"max_tokens": 500000, "gateway_window": None}}})
         (self.home / ".codex").rmdir()
         self.run_setup("install")
         self.assertEqual(json.loads((self.home / ".claude/settings.json").read_bytes())["env"], {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "500000"})
         state = json.loads((self.state / "state.json").read_bytes())
         self.assertNotIn("codex", state["native"])
+
+    def test_profiles_merge_delete_select_and_workers_command(self):
+        self.install_orchestration()
+        override = self.home / ".config/agent-workbench/workers.yml"
+        work = self.home / "work"
+        work.mkdir()
+        alias = self.home / "alias"
+        alias.symlink_to(work, target_is_directory=True)
+        self.write(override, b'''defaults: {timeout_s: 900}
+profiles:
+  corporate:
+    tiers:
+      glm: {harness: claude, model: glm, effort: high}
+      sonnet: null
+    policy: {context: {max_tokens: 12345}}
+    ladder:
+      - {level: junior, tiers: [haiku]}
+      - {level: senior, tiers: [opus]}
+      - {level: expert, tiers: [glm], approval: required}
+profile: codex
+select:
+  - {path: ~/work, profile: corporate}
+  - {path: "~", profile: codex}
+''')
+        resolved = json.loads(self.run_setup("workers", "--cwd", str(alias / "nested")).stdout)
+        self.assertEqual(resolved["profile"], "corporate")
+        self.assertNotIn("sonnet", resolved["tiers"])
+        self.assertEqual(resolved["tiers"]["glm"]["effort"], "high")
+        self.assertEqual(resolved["tiers"]["glm"]["timeout_s"], 900)
+        self.assertIsNone(resolved["policy"]["context"]["gateway_window"])
+        self.assertEqual([entry["level"] for entry in resolved["ladder"]], ["junior", "senior", "expert"])
+        default = json.loads(self.run_setup("workers", "--cwd", str(self.home.parent)).stdout)
+        self.assertEqual(default["profile"], "codex")
+        self.assertEqual(set(default["tiers"]), {"haiku", "sonnet", "opus", "luna", "sol", "terra"})
+        self.run_setup("install")
+        self.assertTrue(self.agent("glm").exists())
+        self.assertFalse(self.agent("terra").exists())
+        self.assertFalse(self.agent("luna").exists())
+        bundle = json.loads((self.state / "workers.json").read_text())
+        self.assertEqual(bundle["profile"], "codex")
+        self.assertEqual(bundle["select"][0]["path"], str(work.resolve()))
+        self.assertEqual(bundle["profiles"]["corporate"]["policy"]["context"]["max_tokens"], 12345)
+        settings = json.loads((self.home / ".claude/settings.json").read_text())
+        self.assertEqual(settings["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "300000")
+        self.run_setup("uninstall")
+        self.assertFalse((self.state / "workers.json").exists())
+        self.assertFalse(self.agent("glm").exists())
+
+    def test_absolute_xdg_override_and_relative_fallback(self):
+        self.install_orchestration()
+        spec = importlib.util.spec_from_file_location("xdg_workers", self.script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        xdg = self.home / "xdg"
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}):
+            self.assertEqual(module.Setup(self.home).override, self.home / ".config/agent-workbench/workers.yml")
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}), \
+                mock.patch.object(module.Path, "home", return_value=self.home):
+            setup = module.Setup(self.home)
+            self.assertEqual(setup.override, xdg / "agent-workbench/workers.yml")
+            self.write(setup.override, b"profile: codex")
+            self.assertEqual(module.effective_workers(setup.workers_bundle(), self.home)["profile"], "codex")
+        for value in ("", "relative"):
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": value}):
+                self.assertEqual(module.Setup(self.home).override, self.home / ".config/agent-workbench/workers.yml")
+
+    def test_cross_profile_tier_identity_conflict_without_writes(self):
+        self.install_orchestration({"profiles": {"other": {"tiers": {"haiku": {"effort": "high"}}}}})
+        before = self.snapshot()
+        result = self.run_setup("install", ok=False)
+        self.assertIn("haiku", result.stderr)
+        self.assertIn("rename", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_invalid_workers_refuse_without_writes(self):
+        self.install_orchestration()
+        override = self.home / ".config/agent-workbench/workers.yml"
+        invalid = [
+            "version: 1", "roles: {}", "sol_weekly_brake_percent: 100", "tiers: []",
+            "defaults: {timeout_s: false}", "policy: {context: {oops: 1}}",
+            "select: [{path: ~/work, profile: missing}]", "select: {}", "profile: missing",
+            "profiles: {unused: {tiers: {luna: {effort: false}}}}",
+            "profiles: {unused: {roles: {}}}", "tiers: {luna: {cli: codex}}",
+            "ladder: [{level: L1, tiers: [terra]}]", "ladder: []", "[broken",
+        ]
+        for text in invalid:
+            with self.subTest(text=text):
+                self.write(override, text.encode())
+                before = self.snapshot()
+                self.run_setup("install", ok=False)
+                self.assertEqual(self.snapshot(), before)
+
+    def test_resolved_workers_hash_ownership(self):
+        self.install_orchestration()
+        path = self.state / "workers.json"
+        self.write(path, b"personal")
+        self.assertIn("foreign or edited", self.run_setup("install", ok=False).stderr)
+        path.unlink()
+        self.run_setup("install")
+        original = path.read_bytes()
+        path.write_bytes(b"edited")
+        for command in ("install", "status", "uninstall"):
+            self.assertIn("foreign or edited", self.run_setup(command, ok=False).stderr)
+        path.write_bytes(original)
+        self.run_setup("uninstall")
+        self.assertFalse(path.exists())
 
     def test_missing_resource_and_duplicate_import_status(self):
         self.run_setup("install")

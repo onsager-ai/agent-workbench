@@ -9,6 +9,8 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import copy
+import math
 import os
 from pathlib import Path
 import re
@@ -24,14 +26,201 @@ VERSION = "1"
 SOURCE = "onsager-ai/agent-workbench"
 BEGIN = b"<!-- BEGIN agent-workbench -->"
 END = b"<!-- END agent-workbench -->"
+PERSONAL_BEGIN = b"<!-- BEGIN agent-workbench personal -->"
+PERSONAL_END = b"<!-- END agent-workbench personal -->"
+MARKERS = (BEGIN, END, PERSONAL_BEGIN, PERSONAL_END)
 IMPORT = b"@~/.agents/AGENTS.md"
 LIMIT = 10 * 1024 * 1024
 ROLE = re.compile(r"[a-z][a-z0-9-]*")
-LEVELS = {"luna": "L1", "haiku": "L1", "sol": "L2", "sonnet": "L2", "opus": "L3", "flash": "L1"}
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
+import yaml
 
 
 class Conflict(Exception):
     pass
+
+
+def merge_workers(base, overlay):
+    """Mappings merge recursively; lists replace; null deletes a tier."""
+    result = copy.deepcopy(base)
+    for key, value in overlay.items():
+        if key == "tiers" and isinstance(value, dict):
+            tiers = result.setdefault(key, {})
+            if not isinstance(tiers, dict):
+                raise Conflict("tiers must be a mapping")
+            for name, tier in value.items():
+                if tier is None:
+                    tiers[name] = None
+                elif isinstance(tier, dict) and isinstance(tiers.get(name), dict):
+                    tiers[name] = merge_workers(tiers[name], tier)
+                else:
+                    tiers[name] = copy.deepcopy(tier)
+        elif isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = merge_workers(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def keys(value, allowed, where):
+    if not isinstance(value, dict):
+        raise Conflict(f"{where} must be a mapping")
+    unknown = set(value) - set(allowed)
+    if unknown:
+        raise Conflict(f"unknown keys in {where}: {', '.join(map(str, unknown))}")
+
+
+def positive(value):
+    return type(value) in (int, float) and math.isfinite(value) and value > 0
+
+
+def validate_worker_shape(config, *, profile=False):
+    keys(config, ("defaults", "tiers", "ladder", "policy") if profile else
+         ("version", "defaults", "tiers", "ladder", "policy", "profiles", "profile", "select"), "workers")
+    if "defaults" in config:
+        keys(config["defaults"], ("effort", "timeout_s", "budget_usd"), "defaults")
+    if "tiers" in config:
+        keys(config["tiers"], config["tiers"], "tiers")
+        for name, tier in config["tiers"].items():
+            if not isinstance(name, str) or not ROLE.fullmatch(name):
+                raise Conflict(f"invalid tier name: {name}")
+            if tier is not None:
+                keys(tier, ("harness", "model", "effort", "timeout_s", "budget_usd", "claude_route", "weekly_brake_percent", "opt_in"), f"tier {name}")
+    if "policy" in config:
+        keys(config["policy"], ("max_auto_rework", "context"), "policy")
+        if "context" in config["policy"]:
+            keys(config["policy"]["context"], ("max_tokens", "gateway_window", "codex_window"), "policy.context")
+    if "ladder" in config:
+        if not isinstance(config["ladder"], list):
+            raise Conflict("ladder must be a list")
+        for level in config["ladder"]:
+            keys(level, ("level", "tiers", "approval", "start_for"), "ladder entry")
+
+
+def resolve_worker_config(config):
+    validate_worker_shape(config, profile=True)
+    defaults = config.get("defaults", {})
+    if not isinstance(defaults.get("effort"), str) or not defaults["effort"]:
+        raise Conflict("defaults.effort must be a nonempty string")
+    if type(defaults.get("timeout_s")) is not int or defaults["timeout_s"] <= 0:
+        raise Conflict("defaults.timeout_s must be a positive integer")
+    if defaults.get("budget_usd") is not None and not positive(defaults["budget_usd"]):
+        raise Conflict("defaults.budget_usd must be positive and finite or null")
+    result = copy.deepcopy(config)
+    tiers = {name: tier for name, tier in result.get("tiers", {}).items() if tier is not None}
+    result["tiers"] = tiers
+    for name, raw in tiers.items():
+        if not isinstance(raw, dict):
+            raise Conflict(f"tier {name} must be a mapping")
+        tier = {**defaults, "opt_in": False, **raw}
+        tiers[name] = tier
+        harness = tier.get("harness")
+        if harness not in ("codex", "claude") or not isinstance(tier.get("model"), str) or not tier["model"]:
+            raise Conflict(f"tier {name} needs a harness (codex|claude) and model string")
+        if not isinstance(tier.get("effort"), str) or not tier["effort"]:
+            raise Conflict(f"tier {name}: effort must be a nonempty string")
+        if type(tier.get("timeout_s")) is not int or tier["timeout_s"] <= 0:
+            raise Conflict(f"tier {name}: timeout_s must be a positive integer")
+        budget = tier.get("budget_usd")
+        if budget is not None and (harness != "claude" or not positive(budget)):
+            raise Conflict(f"tier {name}: budget_usd must be positive and finite or null, and Claude only")
+        if "claude_route" in tier and (harness != "codex" or (tier["claude_route"] is not None and
+                (not isinstance(tier["claude_route"], str) or not tier["claude_route"]))):
+            raise Conflict(f"tier {name}: claude_route is a Codex-only string or null")
+        if type(tier["opt_in"]) is not bool:
+            raise Conflict(f"tier {name}: opt_in must be boolean")
+        if "weekly_brake_percent" in tier and (not positive(tier["weekly_brake_percent"]) or tier["weekly_brake_percent"] > 100):
+            raise Conflict(f"tier {name}: weekly_brake_percent must be > 0 and <= 100")
+    seen_levels, seen_tiers = set(), set()
+    if not result.get("ladder"):
+        raise Conflict("ladder must be a nonempty list")
+    for level in result["ladder"]:
+        name = level.get("level")
+        if not isinstance(name, str) or not name or name in seen_levels:
+            raise Conflict("ladder level must be a unique nonempty string")
+        seen_levels.add(name)
+        names = level.get("tiers")
+        if not isinstance(names, list) or not names:
+            raise Conflict(f"level {name}: tiers must be a nonempty list")
+        for tier in names:
+            if not isinstance(tier, str) or tier not in tiers:
+                raise Conflict(f"level {name}: undefined tier {tier}")
+            if tier in seen_tiers:
+                raise Conflict(f"tier {tier} occurs in multiple ladder entries")
+            if tiers[tier]["opt_in"]:
+                raise Conflict(f"opt_in tier {tier} cannot appear in the ladder")
+            seen_tiers.add(tier)
+        if "approval" in level and level["approval"] != "required":
+            raise Conflict("ladder approval must be required or absent")
+        if "start_for" in level and (not isinstance(level["start_for"], list) or
+                any(not isinstance(kind, str) or not kind for kind in level["start_for"])):
+            raise Conflict("start_for must be a list of task-kind strings")
+    policy = result.get("policy", {})
+    if type(policy.get("max_auto_rework")) is not int or policy["max_auto_rework"] < 0:
+        raise Conflict("policy.max_auto_rework must be a nonnegative integer")
+    context = policy.get("context", {})
+    for key in ("max_tokens", "gateway_window", "codex_window"):
+        value = context.get(key)
+        if key != "max_tokens" and value is None:
+            continue
+        if type(value) is not int or value <= 0:
+            raise Conflict(f"policy.context.{key} must be a positive integer" + (" or null" if key != "max_tokens" else ""))
+    return result
+
+
+def worker_bundle(distributed, overlays=(), home=None):
+    def load(path):
+        try:
+            config = yaml.safe_load(read(path))
+        except yaml.YAMLError as exc:
+            raise Conflict(f"invalid YAML in {path}: {exc}") from exc
+        validate_worker_shape(config)
+        if "version" in config and (type(config["version"]) is not int or config["version"] != 2):
+            raise Conflict(f"{path}: version must be 2")
+        profiles = config.get("profiles", {})
+        keys(profiles, profiles, "profiles")
+        for name, profile in profiles.items():
+            if not isinstance(name, str) or not name:
+                raise Conflict("profile name must be a nonempty string")
+            validate_worker_shape(profile, profile=True)
+        return config
+    config = load(distributed)
+    for overlay in overlays:
+        if present(overlay):
+            config = merge_workers(config, load(overlay))
+    if config.get("version") != 2:
+        raise Conflict("workers version must be 2")
+    base = {key: value for key, value in config.items() if key in ("defaults", "tiers", "ladder", "policy")}
+    profiles = {name: resolve_worker_config(merge_workers(base, profile))
+                for name, profile in config.get("profiles", {}).items()}
+    default = config.get("profile")
+    if default is not None and (not isinstance(default, str) or default not in profiles):
+        raise Conflict(f"undefined default profile: {default}")
+    rules = config.get("select", [])
+    if not isinstance(rules, list):
+        raise Conflict("select must be a list")
+    resolved_rules = []
+    for rule in rules:
+        keys(rule, ("path", "profile"), "select entry")
+        if not isinstance(rule.get("profile"), str) or rule["profile"] not in profiles:
+            raise Conflict(f"select references undefined profile: {rule.get('profile')}")
+        path = rule.get("path")
+        if not isinstance(path, str) or not path:
+            raise Conflict("select.path must be a nonempty string")
+        if path == "~" or path.startswith("~/"):
+            path = str(home or Path.home()) + path[1:]
+        resolved_rules.append({"path": str(Path(path).expanduser().resolve()), "profile": rule["profile"]})
+    return {"base": resolve_worker_config(base), "profiles": profiles, "profile": default, "select": resolved_rules}
+
+
+def effective_workers(bundle, cwd):
+    cwd = Path(cwd).resolve()
+    profile = bundle["profile"]
+    for rule in bundle["select"]:
+        if cwd.is_relative_to(rule["path"]):
+            profile = rule["profile"]
+            break
+    return {**copy.deepcopy(bundle["profiles"][profile] if profile else bundle["base"]), "profile": profile}
 
 
 def digest(data):
@@ -75,15 +264,17 @@ def read(path):
     return path.read_bytes() if present(path) else b""
 
 
-def split_block(data):
-    if not data.count(BEGIN) and not data.count(END):
+def split_block(data, begin=BEGIN, finish=END):
+    if not data.count(begin) and not data.count(finish):
         return None, data
-    if data.count(BEGIN) != 1 or data.count(END) != 1:
+    if data.count(begin) != 1 or data.count(finish) != 1:
         raise Conflict("duplicate or unbalanced managed markers; repair markers manually")
-    start, end = data.index(BEGIN), data.index(END)
+    start, end = data.index(begin), data.index(finish)
     if end < start:
         raise Conflict("managed markers are reversed")
-    end += len(END)
+    if any(marker in data[start + len(begin):end] for marker in MARKERS):
+        raise Conflict("managed markers are nested or overlapping")
+    end += len(finish)
     if data[end:end + 1] == b"\n":
         end += 1
     return data[start:end], data[:start] + data[end:]
@@ -219,11 +410,16 @@ class Setup:
         orchestration = self.home / ".agents/skills/orchestrate-harnesses"
         self.claude_settings = self.home / ".claude/settings.json"
         self.codex_settings = self.home / ".codex/config.toml"
-        self.models = orchestration / "models.json"
+        self.models = orchestration / "workers.yml"
+        self.personal = self.home / ".agents/skills/workbench-personal"
+        self.personal_workers = self.personal / "workers.yml"
+        self.personal_instructions = self.personal / "AGENTS.md"
+        self.workers_path = self.root / "workers.json"
         self.worker = orchestration / "references/worker.md"
+        self.policy_hook = orchestration / "scripts/policy-hook"
         xdg = os.environ.get("XDG_CONFIG_HOME", "")
         config = Path(xdg) if self.home == Path.home() and xdg and os.path.isabs(xdg) else self.home / ".config"
-        self.override = config / "agent-workbench/models.json"
+        self.override = config / "agent-workbench/workers.yml"
 
     def launcher_bytes(self):
         return ("#!/usr/bin/env python3\n"
@@ -244,16 +440,21 @@ class Setup:
         output = (result.stdout + result.stderr).strip().replace("\n", "; ")
         return output or f"exited {result.returncode}"
 
-    def read_json(self, path):
-        base = self.home if path.is_relative_to(self.home) else path.parent
-        inspect(path, base)
-        try:
-            data = json.loads(read(path))
-            if not isinstance(data.get("roles", {}), dict):
-                raise ValueError("roles must be an object")
-            return data
-        except (ValueError, AttributeError) as exc:
-            raise Conflict(f"invalid model configuration: {path}") from exc
+    def workers_bundle(self):
+        inspect(self.models, self.home)
+        inspect(self.personal_workers, self.home)
+        if present(self.override):
+            base = self.home if self.override.is_relative_to(self.home) else self.override.parent
+            inspect(self.override, base)
+        if not present(self.models):
+            return None
+        return worker_bundle(self.models, (self.personal_workers, self.override), self.home)
+
+    def workers(self, cwd):
+        bundle = self.workers_bundle()
+        if bundle is None:
+            raise Conflict("missing workers.yml; distribute orchestrate-harnesses first")
+        print(json.dumps(effective_workers(bundle, cwd), indent=2))
 
     def warn_catalog(self, targets):
         magpie = shutil.which("magpie")
@@ -285,60 +486,47 @@ class Setup:
                 print(f"warning: {name} tier effort {effort!r} is not listed for {model!r} "
                       "by magpie models claude", file=sys.stderr)
 
-    def desired_agents(self):
-        """Render one Claude Code subagent per role routable from Claude Code."""
-        inspect(self.models, self.home)
+    def desired_agents(self, *, warn=True):
+        """Render the union of tiers routable from Claude across all profiles."""
+        bundle = self.workers_bundle()
         inspect(self.worker, self.home)
-        if not present(self.models) or not present(self.worker):
+        if bundle is None or not present(self.worker):
             return {}
-        roles = self.read_json(self.models).get("roles", {})
-        if present(self.override):
-            for name, fields in self.read_json(self.override).get("roles", {}).items():
-                if not isinstance(fields, dict):
-                    raise Conflict(f"invalid model override for role {name}: {self.override}")
-                roles[name] = {**roles.get(name, {}), **fields}
         body = read(self.worker).decode("utf-8")
-        agents = {}
-        targets = {}
-        for name, role in roles.items():
-            model = role.get("model") if role.get("cli") == "claude" else role.get("claude_model")
-            if model is None:
-                continue
-            effort = role.get("effort")
-            if not ROLE.fullmatch(name) or not isinstance(model, str) or not isinstance(effort, str):
-                raise Conflict(f"invalid model configuration for role {name}")
-            label = f"{LEVELS[name] + ' ' if name in LEVELS else ''}Worker"
-            via = "" if role.get("cli") == "claude" else " via configured gateway"
-            description = f"Agent Workbench {label} ({role['model']}{via})"
-            agents[name] = ("---\n" f"name: {name}\n" f"description: {json.dumps(description)}\n"
-                            f"model: {json.dumps(model)}\n" f"effort: {json.dumps(effort)}\n---\n"
-                            "<!-- Managed by agent-workbench; ownership is recorded in state.json. -->\n\n"
-                            + body).encode()
-            targets[name] = (model, effort)
-        self.warn_catalog(targets)
+        agents, targets, signatures = {}, {}, {}
+        for config in [bundle["base"], *bundle["profiles"].values()]:
+            for name, tier in config["tiers"].items():
+                model = tier["model"] if tier["harness"] == "claude" else tier.get("claude_route")
+                signature = (tier["model"], model, tier["effort"])
+                if name in signatures and signatures[name] != signature:
+                    raise Conflict(f"tier {name} has different model/route/effort across profiles; rename it")
+                signatures[name] = signature
+                if model is None:
+                    continue
+                effort = tier["effort"]
+                via = "" if tier["harness"] == "claude" else " via configured gateway"
+                description = f"Agent Workbench Worker ({tier['model']}{via})"
+                agents[name] = ("---\n" f"name: {name}\n" f"description: {json.dumps(description)}\n"
+                                f"model: {json.dumps(model)}\n" f"effort: {json.dumps(effort)}\n---\n"
+                                "<!-- Managed by agent-workbench; ownership is recorded in state.json. -->\n\n"
+                                + body).encode()
+                targets[name] = (model, effort)
+        if warn:
+            self.warn_catalog(targets)
         return agents
 
     def context_values(self):
-        if not present(self.models):
+        bundle = self.workers_bundle()
+        if bundle is None:
             return None
-        config = self.read_json(self.models)
-        if present(self.override):
-            config.update({k: v for k, v in self.read_json(self.override).items() if k != "roles"})
-        nullable = ("gateway_context_window", "codex_context_window")
-        for key in ("max_context_tokens", *nullable):
-            value = config.get(key)
-            if not (key in nullable and value is None) and (type(value) is not int or value <= 0):
-                raise Conflict(f"invalid model configuration: {key} must be a positive integer" +
-                               (" or null" if key in nullable else ""))
-        target = config["max_context_tokens"]
-        # Claude Code caps an absolute compaction window at each model's own window. A percentage
-        # would scale with the 200k it assumes for unrecognised gateway IDs (300k target -> 60k).
+        context = bundle["base"]["policy"]["context"]
+        target = context["max_tokens"]
         values = {"claude": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(target)},
                   "codex": {"model_auto_compact_token_limit": target}}
-        if config["gateway_context_window"] is not None:
-            values["claude"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(config["gateway_context_window"])
-        if config["codex_context_window"] is not None:
-            values["codex"]["model_context_window"] = config["codex_context_window"]
+        if context["gateway_window"] is not None:
+            values["claude"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context["gateway_window"])
+        if context["codex_window"] is not None:
+            values["codex"]["model_context_window"] = context["codex_window"]
         return values
 
     def native_config(self, kind):
@@ -439,8 +627,71 @@ class Setup:
                 plans[path] = ("file", self.native_edit(kind, data, changes), 0o600)
         return plans, record, report
 
+    def hook_plans(self, state, plans, *, uninstall=False, status=False):
+        """Own complete entries, never a matcher or another hook's command."""
+        owned = state["hooks"] if state else []
+        data, _ = self.native_config("claude")
+        if data is None:
+            if owned:
+                raise Conflict("owned Claude hooks are missing; restore settings.json")
+            data = b""
+        if self.claude_settings in plans:
+            data = plans[self.claude_settings][1]
+        parsed = json.loads(data) if data else {}
+        hooks = parsed.get("hooks", {})
+        if (not isinstance(hooks, dict) or not isinstance(hooks.get("PreToolUse", []), list)
+                or not isinstance(hooks.get("Stop", []), list)):
+            raise Conflict("invalid Claude hooks.PreToolUse or hooks.Stop configuration")
+        current = hooks.get("PreToolUse", [])
+        current_stop = hooks.get("Stop", [])
+        for entry in owned:
+            collection = current_stop if "matcher" not in entry else current
+            if collection.count(entry) > 1:
+                raise Conflict("owned Claude hook is duplicated; left unchanged")
+        desired = []
+        desired_stop = []
+        if not uninstall and present(self.models) and present(self.worker):
+            inspect(self.policy_hook, self.home)
+            if not self.policy_hook.is_file():
+                raise Conflict("missing canonical policy hook; distribute orchestrate-harnesses first")
+            command = shlex.join([str(self.policy_hook), "--workers", str(self.workers_path)])
+            desired = [{"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
+                       for matcher in ("Agent|Task", "Bash", "mcp__t3-code__delegate_task")]
+            desired_stop = [{"hooks": [{"type": "command", "command": command}]}]
+        report = {entry["matcher"]: "applied" if entry in current else "missing"
+                  for entry in owned if "matcher" in entry}
+        report.update({"Stop": "applied" if entry in current_stop else "missing"
+                       for entry in owned if "matcher" not in entry})
+        if status:
+            return owned, report
+        updated = list(current)
+        updated_stop = list(current_stop)
+        for entry in owned:
+            collection = updated_stop if "matcher" not in entry else updated
+            desired_entries = desired_stop if "matcher" not in entry else desired
+            if entry not in desired_entries and entry in collection:
+                collection.remove(entry)
+        record = []
+        for entry in desired:
+            if entry in owned or entry not in updated:
+                record.append(entry)
+            if entry not in updated:
+                updated.append(entry)
+        for entry in desired_stop:
+            if entry in owned or entry not in updated_stop:
+                record.append(entry)
+            if entry not in updated_stop:
+                updated_stop.append(entry)
+        if updated != current or updated_stop != current_stop:
+            parsed_hooks = parsed.setdefault("hooks", {})
+            parsed_hooks["PreToolUse"] = updated
+            parsed_hooks["Stop"] = updated_stop
+            plans[self.claude_settings] = (
+                "file", (json.dumps(parsed, indent=2, ensure_ascii=False) + "\n").encode(), 0o600)
+        return record, report
+
     def check_agents(self, state, desired=()):
-        owned = state.get("agents", {}) if state else {}
+        owned = state["agents"] if state else {}
         for name in sorted({*owned, *desired}):
             path = self.agent_path(name)
             inspect(path, self.home)
@@ -458,7 +709,10 @@ class Setup:
             return None
         try:
             state = json.loads(read(self.state_path))
-            if (state["schema"] != 1 or not isinstance(state["block_hash"], str)
+            if (state["schema"] != 2 or not isinstance(state["block_hash"], str)
+                    or not isinstance(state["native"], dict)
+                    or not isinstance(state["hooks"], list)
+                    or not isinstance(state["agents"], dict)
                     or state["target"] != self.target
                     or not isinstance(state["launcher_hash"], str)
                     or not isinstance(state["version"], str)
@@ -467,20 +721,42 @@ class Setup:
                     or not isinstance(state["import_added"], bool)
                     or state["import_suffix"] not in ("", IMPORT.decode() + "\n", "\n" + IMPORT.decode() + "\n")):
                 raise ValueError("invalid ownership metadata")
-            if "claude_import" in state:
-                imported = state["claude_import"]
-                if (not isinstance(imported, dict) or not isinstance(imported.get("owned"), bool)
-                        or not isinstance(imported.get("line"), str)):
-                    raise ValueError("invalid Claude import ownership metadata")
-                base64.b64decode(imported["line"], validate=True)
-            native = state.get("native", {})
+            personal = state["personal_block"]
+            if personal is not None and (not isinstance(personal, dict)
+                    or not isinstance(personal["text"], str)
+                    or digest(personal["text"].encode("utf-8")) != personal["hash"]):
+                raise ValueError("invalid personal block ownership metadata")
+            if (not isinstance(state["personal_files"], list)
+                    or any(name not in ("workers.yml", "AGENTS.md") for name in state["personal_files"])):
+                raise ValueError("invalid personal file metadata")
+            imported = state["claude_import"]
+            if (not isinstance(imported, dict) or not isinstance(imported.get("owned"), bool)
+                    or not isinstance(imported.get("line"), str)):
+                raise ValueError("invalid Claude import ownership metadata")
+            base64.b64decode(imported["line"], validate=True)
+            if state["workers_hash"] is not None and not isinstance(state["workers_hash"], str):
+                raise ValueError("invalid Worker ownership metadata")
+            native = state["native"]
             if not isinstance(native, dict) or any(kind not in ("claude", "codex") or not isinstance(entries, dict) for kind, entries in native.items()):
                 raise ValueError("invalid native ownership metadata")
-            allowed = {"claude": dict.fromkeys(("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_MAX_CONTEXT_TOKENS"), str), "codex": {"model_auto_compact_token_limit": int, "model_context_window": int}}
+            allowed = {"claude": dict.fromkeys(("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_MAX_CONTEXT_TOKENS"), str), "codex": {"model_auto_compact_token_limit": int, "model_context_window": int}}
             for kind, entries in native.items():
                 if any(key not in allowed[kind] or type(value) is not allowed[kind][key] for key, value in entries.items()):
                     raise ValueError("invalid native ownership metadata")
-            for name, entry in state.get("agents", {}).items():
+            hooks = state["hooks"]
+            if not isinstance(hooks, list):
+                raise ValueError("invalid hook ownership metadata")
+            for entry in hooks:
+                if (not isinstance(entry, dict) or set(entry) not in ({"matcher", "hooks"}, {"hooks"})
+                        or ("matcher" in entry and entry["matcher"] not in (
+                            "Agent|Task", "Bash", "mcp__t3-code__delegate_task"))
+                        or not isinstance(entry["hooks"], list) or len(entry["hooks"]) != 1
+                        or not isinstance(entry["hooks"][0], dict)
+                        or set(entry["hooks"][0]) != {"type", "command"}
+                        or entry["hooks"][0]["type"] != "command"
+                        or not isinstance(entry["hooks"][0]["command"], str)):
+                    raise ValueError("invalid hook ownership metadata")
+            for name, entry in state["agents"].items():
                 if not ROLE.fullmatch(name) or not isinstance(entry["hash"], str):
                     raise ValueError("invalid agent ownership metadata")
             return state
@@ -489,12 +765,8 @@ class Setup:
 
     @staticmethod
     def claude_import_record(state, current_line=None):
-        if "claude_import" in state:
-            saved = state["claude_import"]
-            return {"owned": saved["owned"], "line": base64.b64decode(saved["line"], validate=True)}
-        if state["import_added"]:
-            return {"owned": True, "line": IMPORT + b"\n"}
-        return {"owned": False, "line": current_line}
+        saved = state["claude_import"]
+        return {"owned": saved["owned"], "line": base64.b64decode(saved["line"], validate=True)}
 
     @staticmethod
     def encode_claude_import(owned, line):
@@ -535,11 +807,19 @@ class Setup:
                 raise Conflict("owned launcher is not executable; restore its executable mode")
         elif state:
             raise Conflict("owned launcher is missing; restore it before retrying")
-        block, private = split_block(read(self.shared))
+        data = read(self.shared)
+        block, private = split_block(data)
+        personal_block, private = split_block(private, PERSONAL_BEGIN, PERSONAL_END)
         if state:
             if block is None or digest(block) != state["block_hash"]:
                 raise Conflict("managed block drift; restore the public block recorded in state.json before retrying")
-        elif block is not None:
+            owned_personal = state["personal_block"]
+            if owned_personal is not None:
+                if personal_block is None or digest(personal_block) != owned_personal["hash"]:
+                    raise Conflict("personal managed block drift; restore the personal block recorded in state.json before retrying")
+            elif personal_block is not None:
+                raise Conflict("personal managed markers have no ownership record; left unchanged")
+        elif block is not None or personal_block is not None:
             raise Conflict("managed markers have no ownership record; left unchanged")
         claude = read(self.claude)
         lines = import_lines(claude, self.home, self.claude.parent, self.shared)
@@ -552,18 +832,32 @@ class Setup:
             if imported["owned"]:
                 if lines[0] != imported["line"]:
                     raise Conflict("managed Claude import missing or modified; left unchanged")
-            elif "claude_import" not in state and lines[0].strip() != IMPORT:
-                raise Conflict("managed Claude import missing or modified; left unchanged")
         self.check_agents(state)
+        inspect(self.workers_path, self.home)
+        owned_workers = state["workers_hash"] if state else None
+        if present(self.workers_path):
+            if not owned_workers or digest(read(self.workers_path)) != owned_workers:
+                raise Conflict(f"foreign or edited resolved Worker configuration: {self.workers_path}")
+        elif owned_workers:
+            raise Conflict(f"owned resolved Worker configuration is missing: {self.workers_path}")
         if not uninstall:
+            self.workers_bundle()
+            self.desired_agents(warn=False)
+
             inspect(self.script, self.home)
             inspect(self.template, self.home)
             if not self.script.is_file() or not self.template.is_file():
                 raise Conflict("missing canonical setup resources; distribute workbench-setup globally first")
             template = read(self.template)
             template.decode("utf-8")
-            if BEGIN in template or END in template:
+            if any(marker in template for marker in MARKERS):
                 raise Conflict("template must not contain managed markers")
+            inspect(self.personal, self.home, directory=True)
+            inspect(self.personal_instructions, self.home)
+            personal = read(self.personal_instructions)
+            personal.decode("utf-8")
+            if any(marker in personal for marker in MARKERS):
+                raise Conflict("personal instructions must not contain managed markers")
         return state, block, private
 
     @contextlib.contextmanager
@@ -601,6 +895,10 @@ class Setup:
             state, old_block, private = self.preflight()
             template = read(self.template)
             block = BEGIN + b"\n" + template.rstrip(b"\n") + b"\n" + END + b"\n"
+            personal_block = None
+            if present(self.personal_instructions):
+                personal_block = (PERSONAL_BEGIN + b"\n" + read(self.personal_instructions).rstrip(b"\n")
+                                  + b"\n" + PERSONAL_END + b"\n")
             if not state and present(self.codex):
                 codex_private = read(self.codex)
                 if codex_private != private:
@@ -623,13 +921,21 @@ class Setup:
                 claude += suffix.encode()
                 imported = {"owned": True, "line": IMPORT + b"\n"}
             native_plans, native_record, _ = self.native_plans(state, self.context_values())
+            hook_record, _ = self.hook_plans(state, native_plans)
             desired = self.desired_agents()
             self.check_agents(state, desired)
             for name in ("shared", "codex", "claude", "launcher"):
                 self.backup(name, getattr(self, name))
             for path in native_plans:
                 self.backup("claude_settings" if path == self.claude_settings else "codex_settings", path)
-            record = {"native": native_record, "schema": 1, "version": VERSION, "template_hash": digest(template),
+            bundle = self.workers_bundle()
+            workers_bytes = (json.dumps(bundle, indent=2) + "\n").encode() if bundle else None
+            record = {"workers_hash": digest(workers_bytes) if workers_bytes else None,
+                      "native": native_record, "hooks": hook_record,
+                      "schema": 2, "version": VERSION, "template_hash": digest(template),
+                      "personal_block": {"hash": digest(personal_block), "text": personal_block.decode("utf-8")} if personal_block is not None else None,
+                      "personal_files": (["workers.yml"] if bundle and present(self.personal_workers) else [])
+                                        + (["AGENTS.md"] if personal_block is not None else []),
                       "block_hash": digest(block), "block_text": block.decode("utf-8"), "target": self.target,
                       "launcher_hash": digest(self.launcher_bytes()), "import_added": bool(added),
                       "import_suffix": suffix,
@@ -638,7 +944,10 @@ class Setup:
                                 "claude": "import-line", "launcher": "file"},
                       "agents": {name: {"path": str(self.agent_path(name).relative_to(self.home)),
                                         "hash": digest(data)} for name, data in desired.items()}}
-            shared = read(self.shared).replace(old_block, block, 1) if old_block else block + private
+            shared = read(self.shared)
+            _, shared = split_block(shared, PERSONAL_BEGIN, PERSONAL_END)
+            replacement = block + (personal_block if personal_block is not None else b"")
+            shared = shared.replace(old_block, replacement, 1) if old_block else replacement + private
             state_bytes = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
             plans = {self.shared: ("file", shared, 0o600), self.codex: ("link", self.target, None),
                      self.claude: ("file", claude, 0o600),
@@ -646,7 +955,11 @@ class Setup:
                      self.state_path: ("file", state_bytes, 0o600)}
             agents = {self.agent_path(name): ("file", desired[name], 0o600) if name in desired
                       else ("absent", None, None)
-                      for name in {*(state.get("agents", {}) if state else ()), *desired}}
+                      for name in {*(state["agents"] if state else ()), *desired}}
+            if workers_bytes is not None:
+                agents[self.workers_path] = ("file", workers_bytes, 0o600)
+            elif state and state["workers_hash"]:
+                agents[self.workers_path] = ("absent", None, None)
             plans.update(agents)
             plans.update(native_plans)
             with transaction(plans):
@@ -676,13 +989,17 @@ class Setup:
             raise Conflict("not installed")
         template = read(self.template)
         _, _, native_status = self.native_plans(state, self.context_values(), status=True)
+        _, hook_status = self.hook_plans(state, {}, status=True)
         print(json.dumps({"installed_version": state["version"], "available_version": VERSION,
                           "installed_template_hash": state["template_hash"],
                           "available_template_hash": digest(template),
-                          "native_settings": native_status, "private_bytes": len(private), "shared": str(self.shared),
+                          "native_settings": native_status, "hooks": hook_status,
+                          "personal_package": {"present": present(self.personal),
+                                               "applied_files": state["personal_files"]},
+                          "private_bytes": len(private), "shared": str(self.shared),
                           "codex": str(self.codex), "claude": str(self.claude),
                           "launcher": str(self.launcher), "thermal": self.thermal_command("status"),
-                          "agents": {name: str(self.agent_path(name)) for name in sorted(state.get("agents", {}))}},
+                          "agents": {name: str(self.agent_path(name)) for name in sorted(state["agents"])}},
                          sort_keys=True))
         self.check_agents(state, self.desired_agents())
         if state["template_hash"] != digest(template) or state["version"] != VERSION:
@@ -705,10 +1022,13 @@ class Setup:
                 else:
                     claude = remove_exact_line(claude, imported["line"])
             native_plans, _, _ = self.native_plans(state, None, uninstall=True)
+            self.hook_plans(state, native_plans, uninstall=True)
             for path in native_plans:
                 self.backup("claude_settings" if path == self.claude_settings else "codex_settings", path)
             # Keep current personal bytes, never restore an old snapshot over them.
-            agents = {self.agent_path(name): ("absent", None, None) for name in state.get("agents", {})}
+            agents = {self.agent_path(name): ("absent", None, None) for name in state["agents"]}
+            if state["workers_hash"]:
+                agents[self.workers_path] = ("absent", None, None)
             plans = {**agents, self.shared: ("file", private, 0o600), self.codex: ("file", private, 0o600),
                      self.claude: ("file", claude, 0o600), self.launcher: ("absent", None, None),
                      self.state_path: ("absent", None, None)}
@@ -748,7 +1068,8 @@ class Setup:
             if native["version"] != 3 or not isinstance(skills, dict):
                 raise ValueError("unsupported lock")
             names = sorted(name for name, item in skills.items()
-                           if item.get("source") == SOURCE and item.get("sourceType") == "github")
+                           if name == "workbench-personal" or
+                           (item.get("source") == SOURCE and item.get("sourceType") == "github"))
             if "workbench-setup" not in names or any(not name or name.startswith("-")
                                                        or "/" in name for name in names):
                 raise ValueError("setup ownership is missing or names are invalid")
@@ -771,12 +1092,15 @@ class Setup:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", type=Path, default=Path.home(), help="selected home (default: current user's home)")
-    parser.add_argument("command", choices=("install", "update", "status", "uninstall"))
+    parser.add_argument("command", choices=("install", "update", "status", "uninstall", "workers"))
     parser.add_argument("--skills-cmd", help="explicit native skills CLI command, required for alternate-home updates")
+    parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="directory for Worker profile selection")
     args = parser.parse_args()
     try:
         setup = Setup(args.home)
-        if args.command == "update":
+        if args.command == "workers":
+            setup.workers(args.cwd)
+        elif args.command == "update":
             setup.update(args.skills_cmd)
         else:
             getattr(setup, args.command)()

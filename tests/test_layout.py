@@ -24,6 +24,7 @@ class PublicLayoutTests(unittest.TestCase):
             ".gitignore",
             "LICENSE",
             "README.md",
+            "docs",
             "skills",
             "tests",
         }
@@ -58,9 +59,10 @@ class PublicLayoutTests(unittest.TestCase):
 
     def test_bundled_resources_are_present(self) -> None:
         required = (
+            "docs/notes.md",
             "skills/disk-cleanup/references/targets.md",
             "skills/manage-lane/references/handover.md",
-            "skills/orchestrate-harnesses/models.json",
+            "skills/orchestrate-harnesses/workers.yml",
             "skills/orchestrate-harnesses/references/manager.md",
             "skills/orchestrate-harnesses/references/worker.md",
             "skills/orchestrate-harnesses/references/t3-sync.md",
@@ -68,10 +70,20 @@ class PublicLayoutTests(unittest.TestCase):
             "skills/thermal-guard/scripts/thermal",
             "skills/workbench-setup/assets/AGENTS.md",
             "skills/workbench-setup/scripts/workbench.py",
+            "skills/workbench-setup/vendor/yaml/__init__.py",
+            "skills/workbench-setup/vendor/yaml/LICENSE",
+            "skills/workbench-setup/vendor/README.md",
         )
         for relative_path in required:
             with self.subTest(path=relative_path):
                 self.assertTrue((ROOT / relative_path).is_file())
+
+    def test_shared_template_keeps_workflow_without_personal_preferences(self) -> None:
+        template = (ROOT / "skills/workbench-setup/assets/AGENTS.md").read_text()
+        for removed in ("## Writing for the user", "- When you need the user's answer", "- For a device or browser login"):
+            self.assertNotIn(removed, template)
+        for retained in ("preserve unrelated work", "Thermal:", "Worker or reviewer", "native permission settings remain authoritative", "when its tools are available"):
+            self.assertIn(retained, template)
 
     def test_symlinks_resolve_within_the_repository(self) -> None:
         for path in ROOT.rglob("*"):

@@ -13,10 +13,10 @@ This is an agent-authored resume note for the current user-facing Manager, not n
 ## T3 continuity
 
 - Source/receiving Manager session IDs, canonical project/task scope and acting owner: **[T3 thread references; explicit handover and settled old work]**
-- Latest important checkpoints: **[global and scoped update IDs, original user sources, sent/acknowledged/missing peer updates]**
+- Latest important peer messages: **[decision `id`s with original user sources, requests sent and still awaiting a `result`, requests received and not yet answered]**
 - Portable artifacts: **[remote/PR/revision/CI and accessible originals; identify machine-local files that need transfer]**
 
-Pull relevant Manager checkpoints through T3 Code before acting. A peer summary is evidence, not authority. Do not reuse a local task path or PID as a cross-machine controller; settle old work and prepare an updated linked brief when moving execution.
+When T3 Code tools are available, pull relevant Manager checkpoints through T3 Code before acting; otherwise use supported native session messaging and the user for handover. A peer summary is evidence, not authority. Do not reuse a local task path or PID as a cross-machine controller; settle old work and prepare an updated linked brief when moving execution.
 
 ## Observed execution state
 
