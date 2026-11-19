@@ -26,6 +26,46 @@ class PolicyHookTests(unittest.TestCase):
                 self.assertEqual(decision["permissionDecisionReason"],
                     "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).")
 
+    def test_t3_delegate_requires_worker_model(self):
+        for target in ({}, {"model": ""}, {"options": {"effort": "low"}}):
+            with self.subTest(target=target):
+                decision = self.invoke(json.dumps({"tool_name": "mcp__t3-code__delegate_task",
+                                                   "tool_input": {"target": target}}))
+                self.assertEqual(decision["permissionDecision"], "deny")
+                self.assertIn("target.model", decision["permissionDecisionReason"])
+                self.assertIn("effort in target.options", decision["permissionDecisionReason"])
+        self.assertIsNone(self.invoke(json.dumps({"tool_name": "mcp__t3-code__delegate_task",
+            "tool_input": {"target": {"model": "gpt-6-luna", "options": {"effort": "low"}}}})))
+
+    def test_builtin_agents_cannot_inherit_manager_model(self):
+        for tool in ("Agent", "Task"):
+            for subagent_type in (None, "general-purpose", "Plan", "Explore", "claude"):
+                with self.subTest(tool=tool, subagent_type=subagent_type):
+                    tool_input = {} if subagent_type is None else {"subagent_type": subagent_type}
+                    decision = self.invoke(json.dumps({"tool_name": tool, "tool_input": tool_input}))
+                    self.assertEqual(decision["permissionDecision"], "deny")
+                    self.assertIn("inherit the Manager's model", decision["permissionDecisionReason"])
+                    self.assertIn("subagent_type: <role>", decision["permissionDecisionReason"])
+        for tool in ("Agent", "Task"):
+            with self.subTest(tool=tool, with_model=True):
+                self.assertIsNone(self.invoke(json.dumps({"tool_name": tool,
+                    "tool_input": {"subagent_type": "Plan", "model": "claude-sonnet-5-5"}})))
+
+    def test_named_fork_and_custom_agents_pass_through(self):
+        for subagent_type in ("fork", "luna", "sonnet", "custom-agent"):
+            with self.subTest(subagent_type=subagent_type):
+                self.assertIsNone(self.invoke(json.dumps({"tool_name": "Agent",
+                    "tool_input": {"subagent_type": subagent_type}})))
+
+    def test_opus_model_requires_approval(self):
+        for tool in ("Agent", "Task"):
+            with self.subTest(tool=tool):
+                decision = self.invoke(json.dumps({"tool_name": tool,
+                    "tool_input": {"subagent_type": "luna", "model": "opus"}}))
+                self.assertEqual(decision["permissionDecision"], "ask")
+                self.assertEqual(decision["permissionDecisionReason"],
+                    "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).")
+
     def test_passthrough_and_malformed_input(self):
         for payload in (
             '{"tool_name":"Agent","tool_input":{"subagent_type":"sonnet"}}',

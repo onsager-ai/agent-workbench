@@ -465,7 +465,7 @@ class Setup:
                 raise Conflict("missing canonical policy hook; distribute orchestrate-harnesses first")
             command = shlex.quote(str(self.policy_hook))
             desired = [{"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
-                       for matcher in ("Agent|Task", "Bash")]
+                       for matcher in ("Agent|Task", "Bash", "mcp__t3-code__delegate_task")]
         report = {entry["matcher"]: "applied" if entry in current else "missing" for entry in owned}
         if status:
             return owned, report
@@ -531,7 +531,7 @@ class Setup:
                 raise ValueError("invalid hook ownership metadata")
             for entry in hooks:
                 if (not isinstance(entry, dict) or set(entry) != {"matcher", "hooks"}
-                        or entry["matcher"] not in ("Agent|Task", "Bash")
+                        or entry["matcher"] not in ("Agent|Task", "Bash", "mcp__t3-code__delegate_task")
                         or not isinstance(entry["hooks"], list) or len(entry["hooks"]) != 1
                         or not isinstance(entry["hooks"][0], dict)
                         or set(entry["hooks"][0]) != {"type", "command"}
