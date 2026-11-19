@@ -9,7 +9,7 @@ Use this skill in the current user-facing Manager session when continuing an exi
 
 ## Ownership
 
-The Manager keeps the user's intended outcome, existing authorization, unresolved requests and links to the relevant tasks. For delegated work, orchestrate-harnesses defines Worker briefs, native dispatch and lifecycle operations. The same Manager owns the engineering brief, Worker tier, rework and delivery decision; it keeps the current interactive model. Use that skill's role references and models.json for execution policy rather than defining another model, review or retry policy here.
+The Manager keeps the user's intended outcome, existing authorization, unresolved requests and links to the relevant tasks. For delegated work, orchestrate-harnesses defines Worker briefs, native dispatch and lifecycle operations. The same Manager owns the engineering brief, Worker tier, rework and delivery decision; it keeps the current interactive model. Use that skill's role references and workers.yml for execution policy rather than defining another model, review or retry policy here.
 
 A lane is a conversational grouping, not another controller or persistent queue. Reuse the existing issue/PR or task records; when multiple tasks matter, keep only their IDs, dependencies and next actions. A simple edit needs no orchestration record just because this skill was selected. Read applicable repository instructions and only the historical rule actually relevant to a cited hold.
 

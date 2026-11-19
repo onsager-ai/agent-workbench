@@ -47,7 +47,8 @@ class SetupTests(unittest.TestCase):
     def run_setup(self, command, *args, ok=True):
         self.assertNotEqual(self.home, Path.home())
         result = subprocess.run([sys.executable, str(self.script), "--home", str(self.home),
-                                 command, *args], capture_output=True, text=True)
+                                 command, *args], capture_output=True, text=True,
+                                env={**os.environ, "XDG_CONFIG_HOME": ""})
         self.assertEqual(result.returncode == 0, ok, result.stdout + result.stderr)
         return result
 
@@ -392,7 +393,7 @@ class SetupTests(unittest.TestCase):
         (self.home / ".claude").mkdir(exist_ok=True)
         (self.home / ".codex").mkdir(exist_ok=True)
         if override is not None:
-            self.write(self.home / ".config/agent-workbench/models.json", json.dumps(override).encode())
+            self.write(self.home / ".config/agent-workbench/workers.yml", json.dumps(override).encode())
 
     def agent(self, name):
         return self.home / ".claude/agents" / (name + ".md")
@@ -429,9 +430,9 @@ class SetupTests(unittest.TestCase):
         return agents, output.getvalue(), run
 
     def test_catalog_validation_warns_for_unknown_model_and_effort(self):
-        self.install_orchestration({"roles": {
-            "luna": {"claude_model": "unknown/model", "effort": "max"},
-            "terra": {"claude_model": "known/model", "effort": "xhigh"}}})
+        self.install_orchestration({"tiers": {
+            "luna": {"claude_route": "unknown/model", "effort": "max"},
+            "terra": {"claude_route": "known/model", "effort": "xhigh"}}})
         _, warnings, run = self.inspect_catalog(
             "  known/model  Known Model  low/medium/high/max\n")
         self.assertIn("luna tier model 'unknown/model' is absent", warnings)
@@ -485,12 +486,12 @@ class SetupTests(unittest.TestCase):
         self.assertIn("gpt-6-luna via configured gateway", text)
         self.assertFalse(self.agent("flash").exists())
         route = "other/gpt-6-luna"
-        self.write(self.home / ".config/agent-workbench/models.json",
-                   json.dumps({"roles": {"luna": {"claude_model": route}}}).encode())
+        self.write(self.home / ".config/agent-workbench/workers.yml",
+                   json.dumps({"tiers": {"luna": {"claude_route": route}}}).encode())
         self.run_setup("install")
         self.assertIn(f'model: "{route}"\n', self.agent("luna").read_text())
-        self.write(self.home / ".config/agent-workbench/models.json",
-                   json.dumps({"roles": {"luna": {"claude_model": None}}}).encode())
+        self.write(self.home / ".config/agent-workbench/workers.yml",
+                   json.dumps({"tiers": {"luna": {"claude_route": None}}}).encode())
         self.run_setup("install")
         self.assertFalse(self.agent("luna").exists())
         self.assertTrue(self.agent("opus").exists())
@@ -554,10 +555,10 @@ class SetupTests(unittest.TestCase):
                          ["Agent|Task", "Bash", "mcp__t3-code__delegate_task"])
         stop_entry = settings["hooks"]["Stop"][-1]
         self.assertEqual(stop_entry, {"hooks": [{"type": "command", "command":
-                                                  shlex.quote(str(self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"))}]})
+                                                  shlex.join([str(self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"), "--workers", str(self.state / "workers.json")])}]})
         hook = self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"
         for entry in entries[1:]:
-            self.assertEqual(entry["hooks"], [{"type": "command", "command": shlex.quote(str(hook))}])
+            self.assertEqual(entry["hooks"], [{"type": "command", "command": shlex.join([str(hook), "--workers", str(self.state / "workers.json")])}])
             self.assertTrue(os.access(hook, os.X_OK))
         state = json.loads((self.state / "state.json").read_bytes())
         self.assertEqual(state["hooks"], entries[1:] + [stop_entry])
@@ -648,7 +649,7 @@ class SetupTests(unittest.TestCase):
         self.install_orchestration()
         path = self.home / ".claude/settings.json"
         hook = self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"
-        foreign = {"matcher": "Bash", "hooks": [{"type": "command", "command": shlex.quote(str(hook))}]}
+        foreign = {"matcher": "Bash", "hooks": [{"type": "command", "command": shlex.join([str(hook), "--workers", str(self.state / "workers.json")])}]}
         self.write(path, json.dumps({"hooks": {"PreToolUse": [foreign]}}).encode())
         self.run_setup("install")
         saved = json.loads((self.state / "state.json").read_bytes())["hooks"]
@@ -678,7 +679,7 @@ class SetupTests(unittest.TestCase):
         self.assertFalse((self.state / "state.json").exists())
 
     def test_native_apply_rewrite_conflict_and_uninstall(self):
-        self.install_orchestration({"codex_context_window": 900000})
+        self.install_orchestration({"policy": {"context": {"codex_window": 900000}}})
         claude = self.home / ".claude/settings.json"
         codex = self.home / ".codex/config.toml"
         original = b'model = "magpie" # routing\nmodel_reasoning_effort = "high"\n\n[model_providers.magpie]\nname = "route"\n[projects."/tmp"]\ntrust_level = "trusted"\n'
@@ -745,12 +746,152 @@ class SetupTests(unittest.TestCase):
                     self.assertEqual(path.read_bytes(), data)
 
     def test_native_missing_directory_and_override_validation(self):
-        self.install_orchestration({"max_context_tokens": 500000, "gateway_context_window": None})
+        self.install_orchestration({"policy": {"context": {"max_tokens": 500000, "gateway_window": None}}})
         (self.home / ".codex").rmdir()
         self.run_setup("install")
         self.assertEqual(json.loads((self.home / ".claude/settings.json").read_bytes())["env"], {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "500000"})
         state = json.loads((self.state / "state.json").read_bytes())
         self.assertNotIn("codex", state["native"])
+
+    def test_profiles_merge_delete_select_and_workers_command(self):
+        self.install_orchestration()
+        override = self.home / ".config/agent-workbench/workers.yml"
+        work = self.home / "work"
+        work.mkdir()
+        alias = self.home / "alias"
+        alias.symlink_to(work, target_is_directory=True)
+        self.write(override, b'''defaults: {timeout_s: 900}
+profiles:
+  corporate:
+    tiers:
+      glm: {harness: claude, model: glm, effort: high}
+      terra: null
+    policy: {context: {max_tokens: 12345}}
+    ladder:
+      - {level: junior, tiers: [luna, glm]}
+      - {level: senior, tiers: [sonnet]}
+      - {level: expert, tiers: [sol], approval: required}
+profile: claude-only
+select:
+  - {path: ~/work, profile: corporate}
+  - {path: "~", profile: claude-only}
+''')
+        resolved = json.loads(self.run_setup("workers", "--cwd", str(alias / "nested")).stdout)
+        self.assertEqual(resolved["profile"], "corporate")
+        self.assertNotIn("terra", resolved["tiers"])
+        self.assertEqual(resolved["tiers"]["glm"]["effort"], "high")
+        self.assertEqual(resolved["tiers"]["glm"]["timeout_s"], 900)
+        self.assertEqual(resolved["policy"]["context"]["gateway_window"], 400000)
+        self.assertEqual([entry["level"] for entry in resolved["ladder"]], ["junior", "senior", "expert"])
+        default = json.loads(self.run_setup("workers", "--cwd", str(self.home.parent)).stdout)
+        self.assertEqual(default["profile"], "claude-only")
+        self.assertEqual(list(default["tiers"]), ["haiku", "sonnet", "opus"])
+        self.run_setup("install")
+        self.assertTrue(self.agent("glm").exists())
+        self.assertTrue(self.agent("terra").exists())  # Needed by the base config.
+        self.assertNotIn(" L1 ", self.agent("luna").read_text())
+        bundle = json.loads((self.state / "workers.json").read_text())
+        self.assertEqual(bundle["profile"], "claude-only")
+        self.assertEqual(bundle["select"][0]["path"], str(work.resolve()))
+        self.assertEqual(bundle["profiles"]["corporate"]["policy"]["context"]["max_tokens"], 12345)
+        settings = json.loads((self.home / ".claude/settings.json").read_text())
+        self.assertEqual(settings["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "300000")
+        self.run_setup("uninstall")
+        self.assertFalse((self.state / "workers.json").exists())
+        self.assertFalse(self.agent("glm").exists())
+
+    def test_absolute_xdg_override_and_relative_fallback(self):
+        self.install_orchestration()
+        spec = importlib.util.spec_from_file_location("xdg_workers", self.script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        xdg = self.home / "xdg"
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}):
+            self.assertEqual(module.Setup(self.home).override, self.home / ".config/agent-workbench/workers.yml")
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}), \
+                mock.patch.object(module.Path, "home", return_value=self.home):
+            setup = module.Setup(self.home)
+            self.assertEqual(setup.override, xdg / "agent-workbench/workers.yml")
+            self.write(setup.override, b"profile: claude-only")
+            self.assertEqual(module.effective_workers(setup.workers_bundle(), self.home)["profile"], "claude-only")
+        for value in ("", "relative"):
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": value}):
+                self.assertEqual(module.Setup(self.home).override, self.home / ".config/agent-workbench/workers.yml")
+
+    def test_cross_profile_tier_identity_conflict_without_writes(self):
+        self.install_orchestration({"profiles": {"other": {"tiers": {"luna": {"effort": "high"}}}}})
+        before = self.snapshot()
+        result = self.run_setup("install", ok=False)
+        self.assertIn("luna", result.stderr)
+        self.assertIn("rename", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_legacy_override_refuses_install_and_status(self):
+        self.install_orchestration()
+        self.run_setup("install")
+        legacy = self.home / ".config/agent-workbench/models.json"
+        self.write(legacy, b'{"roles":{"luna":{"timeout_s":900}}}')
+        before = self.snapshot()
+        for command in ("install", "status"):
+            result = self.run_setup(command, ok=False)
+            for key in ("models.json", "workers.yml", "roles -> tiers", "cli -> harness", "claude_model -> claude_route"):
+                self.assertIn(key, result.stderr)
+            self.assertEqual(self.snapshot(), before)
+        self.run_setup("uninstall")  # Legacy config must not prevent removal.
+
+    def test_invalid_workers_refuse_without_writes(self):
+        self.install_orchestration()
+        override = self.home / ".config/agent-workbench/workers.yml"
+        invalid = [
+            "version: 1", "roles: {}", "sol_weekly_brake_percent: 100", "tiers: []",
+            "defaults: {timeout_s: false}", "policy: {context: {oops: 1}}",
+            "select: [{path: ~/work, profile: missing}]", "select: {}", "profile: missing",
+            "profiles: {unused: {tiers: {luna: {effort: false}}}}",
+            "profiles: {unused: {roles: {}}}", "tiers: {luna: {cli: codex}}",
+            "ladder: [{level: L1, tiers: [terra]}]", "ladder: []", "[broken",
+        ]
+        for text in invalid:
+            with self.subTest(text=text):
+                self.write(override, text.encode())
+                before = self.snapshot()
+                self.run_setup("install", ok=False)
+                self.assertEqual(self.snapshot(), before)
+
+    def test_resolved_workers_hash_ownership(self):
+        self.install_orchestration()
+        path = self.state / "workers.json"
+        self.write(path, b"personal")
+        self.assertIn("foreign or edited", self.run_setup("install", ok=False).stderr)
+        path.unlink()
+        self.run_setup("install")
+        original = path.read_bytes()
+        path.write_bytes(b"edited")
+        for command in ("install", "status", "uninstall"):
+            self.assertIn("foreign or edited", self.run_setup(command, ok=False).stderr)
+        path.write_bytes(original)
+        self.run_setup("uninstall")
+        self.assertFalse(path.exists())
+
+    def test_owned_hook_command_upgrade(self):
+        self.install_orchestration()
+        self.run_setup("install")
+        state_path = self.state / "state.json"
+        settings_path = self.home / ".claude/settings.json"
+        state = json.loads(state_path.read_text())
+        settings = json.loads(settings_path.read_text())
+        old_command = shlex.quote(str(self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"))
+        for entry in state["hooks"]:
+            entry["hooks"][0]["command"] = old_command
+        settings["hooks"]["PreToolUse"] = state["hooks"][:3]
+        settings["hooks"]["Stop"] = state["hooks"][3:]
+        state_path.write_text(json.dumps(state))
+        settings_path.write_text(json.dumps(settings))
+        self.run_setup("install")
+        settings = json.loads(settings_path.read_text())
+        entries = settings["hooks"]["PreToolUse"] + settings["hooks"]["Stop"]
+        self.assertEqual(len(entries), 4)
+        for entry in entries:
+            self.assertEqual(shlex.split(entry["hooks"][0]["command"])[1:], ["--workers", str(self.state / "workers.json")])
 
     def test_missing_resource_and_duplicate_import_status(self):
         self.run_setup("install")

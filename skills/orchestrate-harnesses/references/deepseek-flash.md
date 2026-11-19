@@ -9,7 +9,7 @@
 Read the provider's current model catalog and set the exact client-visible ID in the user's partial model override when it differs from the default. For example:
 
 ~~~json
-{"roles": {"flash": {"model": "openrouter/deepseek/deepseek-v4.1-flash-1017"}}}
+{"tiers": {"flash": {"model": "openrouter/deepseek/deepseek-v4.1-flash-1017"}}}
 ~~~
 
 The provider ID is installation-specific. Keep credentials and gateway settings outside this package, and preserve other model overrides. Magpie's `magpie sync` refreshes its model catalog immediately; remote Magpie providers also advertise automatic refresh. Discovery alone is not evidence of a working agent tool loop. Verify a tool call and response through the intended harness before relying on it for implementation.
@@ -20,7 +20,7 @@ Codex may have no model metadata for this ID and fall back to a default context 
 
 Record accepted results, defects, corrective attempts, total elapsed time and actual usage/cost in the existing task or PR record. Include reasoning tokens and retries in comparisons. Count Flash attempts toward the same `max_auto_rework`; a failed attempt does not reset it.
 
-Use the configured effort as the starting point. High is the default: published comparisons show no quality gain at max, with longer runs and higher cost. Low reasoning can suit extraction or summaries. Apply only levels the route actually exposes. A large advertised context window does not override effective `max_context_tokens`, host resource rules or smaller native limits.
+Use the configured effort as the starting point. High is the default: published comparisons show no quality gain at max, with longer runs and higher cost. Low reasoning can suit extraction or summaries. Apply only levels the route actually exposes. A large advertised context window does not override effective `policy.context.max_tokens`, host resource rules or smaller native limits.
 
 Compare actual provider charges, including cache and long-context tiers. A Flash route can cost less than Sonnet or Opus while exceeding a discounted Haiku rate; the model name is not a price guarantee. A gateway/API fallback handles request failures, not incorrect reasoning, so the Manager still verifies the result.
 
