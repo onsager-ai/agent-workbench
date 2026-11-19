@@ -919,9 +919,18 @@ export class Setup {
 
   // Own complete entries, never a matcher or another hook's command.
   hookPlans(state, plans, { uninstall = false, status = false } = {}) {
-    const owned = state ? state.hooks : [];
-    const ownedPost = owned.filter((entry) => has(entry, "matcher") && POST_TOOL_MATCHERS.includes(entry.matcher));
-    const ownedOther = owned.filter((entry) => !ownedPost.includes(entry));
+    const owned = state ? [...state.hooks.map((entry) => ({ ...entry,
+      event: has(entry, "matcher") ? "PreToolUse" : "Stop",
+      key: entry.key ?? (has(entry, "matcher") ? `PreToolUse:${entry.matcher}` : "Stop"),
+    })), ...(state.post_hooks ?? []).map((entry) => ({ ...entry,
+      event: "PostToolUse", key: entry.key ?? `PostToolUse:${entry.matcher}`,
+    }))] : [];
+    const nativeEntry = (entry) => {
+      const { event, key, ...value } = entry;
+      return value;
+    };
+    const isOwned = (event, entry) => owned.some((item) =>
+      item.event === event && isDeepStrictEqual(nativeEntry(item), entry));
     let [data] = this.nativeConfig("claude");
     if (data === null) {
       if (owned.length) throw new Conflict("owned Claude hooks are missing; restore settings.json");
@@ -938,8 +947,9 @@ export class Setup {
     }
     const contains = (list, entry) => list.some((item) => isDeepStrictEqual(item, entry));
     for (const entry of owned) {
-      const collection = ownedPost.includes(entry) ? currentPost : !has(entry, "matcher") ? currentStop : current;
-      if (collection.filter((item) => isDeepStrictEqual(item, entry)).length > 1) {
+      const event = entry.event;
+      const collection = event === "PostToolUse" ? currentPost : event === "Stop" ? currentStop : current;
+      if (collection.filter((item) => isDeepStrictEqual(item, nativeEntry(entry))).length > 1) {
         throw new Conflict("owned Claude hook is duplicated; left unchanged");
       }
     }
@@ -957,13 +967,12 @@ export class Setup {
       desiredStop = [{ hooks: [{ type: "command", command }] }];
     }
     const report = {};
-    for (const entry of ownedOther) if (has(entry, "matcher")) {
-      report[entry.matcher] = contains(current, entry) ? "applied" : "missing";
+    for (const entry of owned) {
+      const event = entry.event;
+      const label = has(entry, "matcher") ? (event === "PostToolUse" ? `PostToolUse:${entry.matcher}` : entry.matcher) : "Stop";
+      const collection = event === "PostToolUse" ? currentPost : event === "Stop" ? currentStop : current;
+      report[label] = contains(collection, nativeEntry(entry)) ? "applied" : "missing";
     }
-    for (const entry of ownedPost) {
-      report[`PostToolUse:${entry.matcher}`] = contains(currentPost, entry) ? "applied" : "missing";
-    }
-    for (const entry of ownedOther) if (!has(entry, "matcher")) report.Stop = contains(currentStop, entry) ? "applied" : "missing";
     if (status) return [owned, report];
     const updated = [...current];
     const updatedPost = [...currentPost];
@@ -973,22 +982,23 @@ export class Setup {
       if (index !== -1) list.splice(index, 1);
     };
     for (const entry of owned) {
-      const isPost = ownedPost.includes(entry);
-      const collection = !has(entry, "matcher") ? updatedStop : isPost ? updatedPost : updated;
-      const wanted = !has(entry, "matcher") ? desiredStop : isPost ? desiredPost : desired;
-      if (!contains(wanted, entry)) remove(collection, entry);
+      const event = entry.event;
+      const collection = event === "PostToolUse" ? updatedPost : event === "Stop" ? updatedStop : updated;
+      const wanted = event === "PostToolUse" ? desiredPost : event === "Stop" ? desiredStop : desired;
+      const item = nativeEntry(entry);
+      if (!contains(wanted, item)) remove(collection, item);
     }
     const record = [];
     for (const entry of desired) {
-      if (contains(ownedOther, entry) || !contains(updated, entry)) record.push(entry);
+      if (isOwned("PreToolUse", entry) || !contains(updated, entry)) record.push({ ...entry, event: "PreToolUse" });
       if (!contains(updated, entry)) updated.push(entry);
     }
     for (const entry of desiredPost) {
-      if (contains(ownedPost, entry) || !contains(updatedPost, entry)) record.push(entry);
+      if (isOwned("PostToolUse", entry) || !contains(updatedPost, entry)) record.push({ ...entry, event: "PostToolUse" });
       if (!contains(updatedPost, entry)) updatedPost.push(entry);
     }
     for (const entry of desiredStop) {
-      if (contains(ownedOther, entry) || !contains(updatedStop, entry)) record.push(entry);
+      if (isOwned("Stop", entry) || !contains(updatedStop, entry)) record.push({ ...entry, event: "Stop" });
       if (!contains(updatedStop, entry)) updatedStop.push(entry);
     }
     if (!isDeepStrictEqual(updated, current) || !isDeepStrictEqual(updatedPost, currentPost) ||
@@ -1199,6 +1209,7 @@ export class Setup {
       const importText = IMPORT.toString();
       if (need(state, "schema") !== 2 || typeof need(state, "block_hash") !== "string"
           || !isDict(need(state, "native")) || !Array.isArray(need(state, "hooks"))
+          || (has(state, "post_hooks") && !Array.isArray(state.post_hooks))
           || !isDict(need(state, "agents")) || need(state, "target") !== this.target
           || typeof need(state, "launcher_hash") !== "string" || typeof need(state, "version") !== "string"
           || typeof need(state, "template_hash") !== "string"
@@ -1232,17 +1243,28 @@ export class Setup {
           }
         }
       }
-      for (const entry of state.hooks) {
-        const names = isDict(entry) ? Object.keys(entry).sort().join(",") : "";
-        const inner = isDict(entry) ? entry.hooks : null;
-        if (!["hooks,matcher", "hooks"].includes(names)
-            || (has(entry, "matcher") && ![...HOOK_MATCHERS, ...POST_TOOL_MATCHERS].includes(entry.matcher))
-            || !Array.isArray(inner) || inner.length !== 1 || !isDict(inner[0])
-            || Object.keys(inner[0]).sort().join(",") !== "command,type"
-            || inner[0].type !== "command" || typeof inner[0].command !== "string") {
-          throw invalid("invalid hook ownership metadata");
+      const hookKeys = new Set();
+      const validateHookEntries = (entries, event, allowed, allowLegacyBareKey = false) => {
+        for (const entry of entries) {
+          const names = isDict(entry) ? Object.keys(entry).filter((name) => name !== "key").sort().join(",") : "";
+          const inner = isDict(entry) ? entry.hooks : null;
+          const expectedKey = has(entry, "matcher") ? `${event}:${entry.matcher}` : event;
+          const key = has(entry, "key") ? entry.key : expectedKey;
+          const allowedNames = names === "hooks,matcher" || names === "hooks" ||
+            (allowLegacyBareKey && (names === "hooks,key,matcher" || names === "hooks,key"));
+          const validStoredKey = !has(entry, "key") || entry.key === expectedKey ||
+            (allowLegacyBareKey && has(entry, "matcher") && entry.key === entry.matcher);
+          if (!allowedNames || !validStoredKey || hookKeys.has(key) ||
+              (has(entry, "matcher") && !allowed.includes(entry.matcher)) || !Array.isArray(inner) ||
+              inner.length !== 1 || !isDict(inner[0]) || Object.keys(inner[0]).sort().join(",") !== "command,type" ||
+              inner[0].type !== "command" || typeof inner[0].command !== "string") {
+            throw invalid("invalid hook ownership metadata");
+          }
+          hookKeys.add(key);
         }
-      }
+      };
+      validateHookEntries(state.hooks, "PreToolUse", HOOK_MATCHERS, true);
+      validateHookEntries(state.post_hooks ?? [], "PostToolUse", POST_TOOL_MATCHERS);
       if (has(state, "codex_hooks") && !Array.isArray(state.codex_hooks)) throw invalid("invalid Codex hook ownership metadata");
       for (const entry of state.codex_hooks ?? []) {
         const names = isDict(entry) ? Object.keys(entry).sort().join(",") : "";
@@ -1469,7 +1491,14 @@ export class Setup {
       const launcher = this.launcherBytes();
       const record = {
         workers_hash: workersBytes ? digest(workersBytes) : null,
-        native: nativeRecord, hooks: hookRecord, codex_hooks: codexHookRecord, codex_trust: codexTrustRecord,
+        native: nativeRecord,
+        hooks: hookRecord.filter((entry) => entry.event !== "PostToolUse").map(({ event, ...entry }) => ({
+          ...entry, key: has(entry, "matcher") ? `${event}:${entry.matcher}` : event,
+        })),
+        post_hooks: hookRecord.filter((entry) => entry.event === "PostToolUse").map(({ event, ...entry }) => ({
+          ...entry, key: `PostToolUse:${entry.matcher}`,
+        })),
+        codex_hooks: codexHookRecord, codex_trust: codexTrustRecord,
         schema: 2, version: VERSION, template_hash: digest(template),
         personal_block: personalBlock !== null ? { hash: digest(personalBlock), text: personalBlock.toString("utf8") } : null,
         personal_files: [...(bundle && present(this.personalWorkers) ? ["workers.yml"] : []),

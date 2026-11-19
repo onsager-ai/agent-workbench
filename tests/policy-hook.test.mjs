@@ -127,6 +127,8 @@ describe("policy hook", () => {
     bundle.profile = "codex";
     fs.writeFileSync(workers, JSON.stringify(bundle));
     assert.equal(invokePost("luna", "onsager/codex/gpt-6-luna", ["onsager/codex/gpt-6-luna"]), null);
+    assert.match(invokePost("luna", "codex/gpt-6-luna", ["onsager/codex/gpt-6-luna"]).additionalContext,
+      /expected onsager\/codex\/gpt-6-luna/);
     assert.match(invokePost("luna", "onsager/codex/gpt-6-luna", ["group/auto-claude-sonnet-5-5"]).additionalContext,
       /claude-sonnet-5-5/);
     assert.equal(invokePost("unknown", "model"), null);

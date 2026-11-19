@@ -835,11 +835,17 @@ describe("workbench setup", () => {
       assert.deepEqual(entry.hooks, [{ type: "command", command: f.hookCommand }]);
       fs.accessSync(f.hook, fs.constants.X_OK);
     }
-    assert.deepEqual(f.stateJson().hooks, [...entries.slice(1), settings.hooks.PostToolUse[0], stopEntry]);
+    assert.deepEqual(f.stateJson().hooks, [
+      ...entries.slice(1).map((entry) => ({ ...entry, key: `PreToolUse:${entry.matcher}` })),
+      { ...stopEntry, key: "Stop" },
+    ]);
+    assert.deepEqual(f.stateJson().post_hooks, [{
+      ...settings.hooks.PostToolUse[0], key: "PostToolUse:Agent|Task",
+    }]);
     assert.deepEqual(JSON.parse(f.run("status").stdout).hooks, {
       "Agent|Task": "applied", Bash: "applied",
-      "PostToolUse:Agent|Task": "applied",
-      "mcp__t3-code__delegate_task": "applied", "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
+      "PostToolUse:Agent|Task": "applied", "mcp__t3-code__delegate_task": "applied",
+      "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
     });
     const postEntry = settings.hooks.PostToolUse[0];
     settings.hooks.PostToolUse = [];

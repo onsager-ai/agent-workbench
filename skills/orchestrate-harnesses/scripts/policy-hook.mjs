@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { effectiveWorkers } from "../../workbench-setup/scripts/workbench.mjs";
 
 const APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).";
 const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task branch, origin/main, " +
@@ -468,15 +469,7 @@ function postToolModelWarning(workers, event) {
     if (typeof response.agentType !== "string" || typeof event.transcript_path !== "string") return null;
     if (workers === null) return null;
     const bundle = JSON.parse(fs.readFileSync(workers, "utf8"));
-    let profile = bundle.profile;
-    const cwd = resolvePath(event.cwd || process.cwd());
-    for (const rule of bundle.select) {
-      if (isRelativeTo(cwd, rule.path)) {
-        profile = rule.profile;
-        break;
-      }
-    }
-    const config = profile ? bundle.profiles[profile] : bundle.base;
+    const config = effectiveWorkers(bundle, event.cwd || process.cwd());
     const tier = config.tiers[response.agentType];
     if (!tier) return null;
     const expected = tier.harness === "codex" ? tier.claude_route : tier.model;
