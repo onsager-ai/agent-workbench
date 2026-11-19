@@ -37,7 +37,7 @@ class WorkerConfigurationTests(unittest.TestCase):
         codex = self.bundle["profiles"]["codex"]
         self.assertEqual(set(codex["tiers"]), {"haiku", "sonnet", "opus", "luna", "sol", "terra"})
         self.assertEqual([e["tiers"] for e in codex["ladder"]], [["luna", "haiku"], ["sol", "sonnet"], ["opus"]])
-        for name, model in (("luna", "gpt-6-luna"), ("sol", "gpt-6.1-sol"), ("terra", "gpt-6.1-terra")):
+        for name, model in (("luna", "gpt-6-luna"), ("sol", "gpt-6.2-sol"), ("terra", "gpt-6.1-terra")):
             self.assertEqual(codex["tiers"][name]["harness"], "codex")
             self.assertEqual(codex["tiers"][name]["model"], model)
             self.assertIsNone(codex["tiers"][name]["claude_route"])

@@ -536,7 +536,7 @@ class SetupTests(unittest.TestCase):
         self.install_orchestration({"profile": "codex", "profiles": {"codex": {"tiers": {
             "luna": {"claude_route": "gateway/gpt-6-luna"},
             "terra": {"claude_route": "gateway/gpt-6.1-terra"},
-            "sol": {"claude_route": "gateway/gpt-6.1-sol"}}}}})
+            "sol": {"claude_route": "gateway/gpt-6.2-sol"}}}}})
         _, warnings, _ = self.inspect_catalog(
             "  Routing groups\n"
             "  auto/claude-haiku-5-5       Claude Haiku 5.5 · Wokey  low/medium\n"
@@ -544,7 +544,7 @@ class SetupTests(unittest.TestCase):
             "  claude/claude-opus-5-5      Claude Opus 5.5  low/medium/high\n"
             "  gateway/gpt-6-luna    GPT-6 Luna  medium/high/max\n"
             "  gateway/gpt-6.1-terra GPT-6.1 Terra  medium/high\n"
-            "  gateway/gpt-6.1-sol   GPT-6.1 Sol  medium/high\n")
+            "  gateway/gpt-6.2-sol   GPT-6.2 Sol  medium/high\n")
         self.assertNotIn("is absent", warnings)
         self.assertNotIn("is not listed", warnings)
 

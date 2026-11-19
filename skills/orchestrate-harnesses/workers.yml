@@ -32,7 +32,7 @@ profiles:
     # Also set policy.context.gateway_window for that gateway.
     tiers:
       luna: {harness: codex, model: gpt-6-luna, claude_route: null}
-      sol: {harness: codex, model: gpt-6.1-sol, claude_route: null}
+      sol: {harness: codex, model: gpt-6.2-sol, claude_route: null}
       terra: {harness: codex, model: gpt-6.1-terra, claude_route: null, opt_in: true}
       # Example override: sol: {weekly_brake_percent: 100}
     ladder:
