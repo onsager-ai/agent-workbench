@@ -16,13 +16,13 @@ If T3 tools are unavailable, use native session messaging where supported and th
 Publish changes that affect another Manager's decisions: user requirements and sources, settled choices, task ownership/handover, blockers, accepted results and verified branch/revision/CI evidence. Routine tool output, full transcripts and secrets do not belong in peer messages. Every message to another Manager, over T3 or native messaging, starts with one header line followed by self-contained plain text:
 
 ~~~text
-WB_MSG from=<environmentId>/<threadId> kind=request|result|decision id=<thread8>:<n> re=<id-or-none>
+WB_MSG from=<environmentId>/<threadId> kind=request|result|decision id=<last8>:<n> re=<id-or-none>
 <What you need, what you found, or what was decided. For a decision, name the user source.>
 ~~~
 
 - `from` is the sender's full T3 `environmentId` and `threadId`, so the receiver can pass them straight to `t3_thread_send`. Outside T3, use the native address, such as `from=native:claude-code:<name>`.
 - `kind=request` asks the receiver to do or find something and send a `result` back. `kind=result` answers a request; set `re` to the request's `id`. `kind=decision` shares a decision, blocker or handover and needs no answer; set `re` to the decision it replaces, if any.
-- `id` is the first eight characters of the sender's `threadId` and that thread's own message sequence starting at 1, for example `id=a52dd2ee:4`.
+- `id` is the last eight characters of the sender's `threadId` and that thread's own message sequence starting at 1, for example `id=89effeb3:4`. Use the last characters, because many thread IDs share a prefix such as `mcp:launch:`.
 
 Split unrelated topics into separate messages. Relaying a message does not create a new decision or authority. Include original user text or an accessible source when authorization matters; a missing local file on another machine is not usable evidence. When handing over, preserve the latest known decisions with their original `id`s and user sources.
 
