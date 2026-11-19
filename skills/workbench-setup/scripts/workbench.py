@@ -9,6 +9,8 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import copy
+import math
 import os
 from pathlib import Path
 import re
@@ -27,11 +29,193 @@ END = b"<!-- END agent-workbench -->"
 IMPORT = b"@~/.agents/AGENTS.md"
 LIMIT = 10 * 1024 * 1024
 ROLE = re.compile(r"[a-z][a-z0-9-]*")
-LEVELS = {"luna": "L1", "haiku": "L1", "sol": "L2", "sonnet": "L2", "opus": "L3", "flash": "L1"}
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
+import yaml
 
 
 class Conflict(Exception):
     pass
+
+
+def merge_workers(base, overlay):
+    """Mappings merge recursively; lists replace; null deletes a tier."""
+    result = copy.deepcopy(base)
+    for key, value in overlay.items():
+        if key == "tiers" and isinstance(value, dict):
+            tiers = result.setdefault(key, {})
+            if not isinstance(tiers, dict):
+                raise Conflict("tiers must be a mapping")
+            for name, tier in value.items():
+                if tier is None:
+                    tiers.pop(name, None)
+                elif isinstance(tier, dict) and isinstance(tiers.get(name), dict):
+                    tiers[name] = merge_workers(tiers[name], tier)
+                else:
+                    tiers[name] = copy.deepcopy(tier)
+        elif isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = merge_workers(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def keys(value, allowed, where):
+    if not isinstance(value, dict):
+        raise Conflict(f"{where} must be a mapping")
+    unknown = set(value) - set(allowed)
+    if unknown:
+        raise Conflict(f"unknown keys in {where}: {', '.join(map(str, unknown))}")
+
+
+def positive(value):
+    return type(value) in (int, float) and math.isfinite(value) and value > 0
+
+
+def validate_worker_shape(config, *, profile=False):
+    keys(config, ("defaults", "tiers", "ladder", "policy") if profile else
+         ("version", "defaults", "tiers", "ladder", "policy", "profiles", "profile", "select"), "workers")
+    if "defaults" in config:
+        keys(config["defaults"], ("effort", "timeout_s", "budget_usd"), "defaults")
+    if "tiers" in config:
+        keys(config["tiers"], config["tiers"], "tiers")
+        for name, tier in config["tiers"].items():
+            if not isinstance(name, str) or not ROLE.fullmatch(name):
+                raise Conflict(f"invalid tier name: {name}")
+            if tier is not None:
+                keys(tier, ("harness", "model", "effort", "timeout_s", "budget_usd", "claude_route", "weekly_brake_percent", "opt_in"), f"tier {name}")
+    if "policy" in config:
+        keys(config["policy"], ("max_auto_rework", "context"), "policy")
+        if "context" in config["policy"]:
+            keys(config["policy"]["context"], ("max_tokens", "gateway_window", "codex_window"), "policy.context")
+    if "ladder" in config:
+        if not isinstance(config["ladder"], list):
+            raise Conflict("ladder must be a list")
+        for level in config["ladder"]:
+            keys(level, ("level", "tiers", "approval", "start_for"), "ladder entry")
+
+
+def resolve_worker_config(config):
+    validate_worker_shape(config, profile=True)
+    defaults = config.get("defaults", {})
+    if not isinstance(defaults.get("effort"), str) or not defaults["effort"]:
+        raise Conflict("defaults.effort must be a nonempty string")
+    if type(defaults.get("timeout_s")) is not int or defaults["timeout_s"] <= 0:
+        raise Conflict("defaults.timeout_s must be a positive integer")
+    if defaults.get("budget_usd") is not None and not positive(defaults["budget_usd"]):
+        raise Conflict("defaults.budget_usd must be positive and finite or null")
+    result = copy.deepcopy(config)
+    tiers = result.get("tiers", {})
+    for name, raw in tiers.items():
+        if not isinstance(raw, dict):
+            raise Conflict(f"tier {name} must be a mapping")
+        tier = {**defaults, "opt_in": False, **raw}
+        tiers[name] = tier
+        harness = tier.get("harness")
+        if harness not in ("codex", "claude") or not isinstance(tier.get("model"), str) or not tier["model"]:
+            raise Conflict(f"tier {name} needs a harness (codex|claude) and model string")
+        if not isinstance(tier.get("effort"), str) or not tier["effort"]:
+            raise Conflict(f"tier {name}: effort must be a nonempty string")
+        if type(tier.get("timeout_s")) is not int or tier["timeout_s"] <= 0:
+            raise Conflict(f"tier {name}: timeout_s must be a positive integer")
+        budget = tier.get("budget_usd")
+        if budget is not None and (harness != "claude" or not positive(budget)):
+            raise Conflict(f"tier {name}: budget_usd must be positive and finite or null, and Claude only")
+        if "claude_route" in tier and (harness != "codex" or (tier["claude_route"] is not None and
+                (not isinstance(tier["claude_route"], str) or not tier["claude_route"]))):
+            raise Conflict(f"tier {name}: claude_route is a Codex-only string or null")
+        if type(tier["opt_in"]) is not bool:
+            raise Conflict(f"tier {name}: opt_in must be boolean")
+        if "weekly_brake_percent" in tier and (not positive(tier["weekly_brake_percent"]) or tier["weekly_brake_percent"] > 100):
+            raise Conflict(f"tier {name}: weekly_brake_percent must be > 0 and <= 100")
+    seen_levels, seen_tiers = set(), set()
+    if not result.get("ladder"):
+        raise Conflict("ladder must be a nonempty list")
+    for level in result["ladder"]:
+        name = level.get("level")
+        if not isinstance(name, str) or not name or name in seen_levels:
+            raise Conflict("ladder level must be a unique nonempty string")
+        seen_levels.add(name)
+        names = level.get("tiers")
+        if not isinstance(names, list) or not names:
+            raise Conflict(f"level {name}: tiers must be a nonempty list")
+        for tier in names:
+            if not isinstance(tier, str) or tier not in tiers:
+                raise Conflict(f"level {name}: undefined tier {tier}")
+            if tier in seen_tiers:
+                raise Conflict(f"tier {tier} occurs in multiple ladder entries")
+            if tiers[tier]["opt_in"]:
+                raise Conflict(f"opt_in tier {tier} cannot appear in the ladder")
+            seen_tiers.add(tier)
+        if "approval" in level and level["approval"] != "required":
+            raise Conflict("ladder approval must be required or absent")
+        if "start_for" in level and (not isinstance(level["start_for"], list) or
+                any(not isinstance(kind, str) or not kind for kind in level["start_for"])):
+            raise Conflict("start_for must be a list of task-kind strings")
+    policy = result.get("policy", {})
+    if type(policy.get("max_auto_rework")) is not int or policy["max_auto_rework"] < 0:
+        raise Conflict("policy.max_auto_rework must be a nonnegative integer")
+    context = policy.get("context", {})
+    for key in ("max_tokens", "gateway_window", "codex_window"):
+        value = context.get(key)
+        if key != "max_tokens" and value is None:
+            continue
+        if type(value) is not int or value <= 0:
+            raise Conflict(f"policy.context.{key} must be a positive integer" + (" or null" if key != "max_tokens" else ""))
+    return result
+
+
+def worker_bundle(distributed, override=None, home=None):
+    def load(path):
+        try:
+            config = yaml.safe_load(read(path))
+        except yaml.YAMLError as exc:
+            raise Conflict(f"invalid YAML in {path}: {exc}") from exc
+        validate_worker_shape(config)
+        if "version" in config and (type(config["version"]) is not int or config["version"] != 2):
+            raise Conflict(f"{path}: version must be 2")
+        profiles = config.get("profiles", {})
+        keys(profiles, profiles, "profiles")
+        for name, profile in profiles.items():
+            if not isinstance(name, str) or not name:
+                raise Conflict("profile name must be a nonempty string")
+            validate_worker_shape(profile, profile=True)
+        return config
+    config = load(distributed)
+    if override and present(override):
+        config = merge_workers(config, load(override))
+    if config.get("version") != 2:
+        raise Conflict("workers version must be 2")
+    base = {key: value for key, value in config.items() if key in ("defaults", "tiers", "ladder", "policy")}
+    profiles = {name: resolve_worker_config(merge_workers(base, profile))
+                for name, profile in config.get("profiles", {}).items()}
+    default = config.get("profile")
+    if default is not None and (not isinstance(default, str) or default not in profiles):
+        raise Conflict(f"undefined default profile: {default}")
+    rules = config.get("select", [])
+    if not isinstance(rules, list):
+        raise Conflict("select must be a list")
+    resolved_rules = []
+    for rule in rules:
+        keys(rule, ("path", "profile"), "select entry")
+        if not isinstance(rule.get("profile"), str) or rule["profile"] not in profiles:
+            raise Conflict(f"select references undefined profile: {rule.get('profile')}")
+        path = rule.get("path")
+        if not isinstance(path, str) or not path:
+            raise Conflict("select.path must be a nonempty string")
+        if path == "~" or path.startswith("~/"):
+            path = str(home or Path.home()) + path[1:]
+        resolved_rules.append({"path": str(Path(path).expanduser().resolve()), "profile": rule["profile"]})
+    return {"base": resolve_worker_config(base), "profiles": profiles, "profile": default, "select": resolved_rules}
+
+
+def effective_workers(bundle, cwd):
+    cwd = Path(cwd).resolve()
+    profile = bundle["profile"]
+    for rule in bundle["select"]:
+        if cwd.is_relative_to(rule["path"]):
+            profile = rule["profile"]
+            break
+    return {**copy.deepcopy(bundle["profiles"][profile] if profile else bundle["base"]), "profile": profile}
 
 
 def digest(data):
@@ -219,12 +403,14 @@ class Setup:
         orchestration = self.home / ".agents/skills/orchestrate-harnesses"
         self.claude_settings = self.home / ".claude/settings.json"
         self.codex_settings = self.home / ".codex/config.toml"
-        self.models = orchestration / "models.json"
+        self.models = orchestration / "workers.yml"
+        self.workers_path = self.root / "workers.json"
         self.worker = orchestration / "references/worker.md"
         self.policy_hook = orchestration / "scripts/policy-hook"
         xdg = os.environ.get("XDG_CONFIG_HOME", "")
         config = Path(xdg) if self.home == Path.home() and xdg and os.path.isabs(xdg) else self.home / ".config"
-        self.override = config / "agent-workbench/models.json"
+        self.override = config / "agent-workbench/workers.yml"
+        self.legacy_override = config / "agent-workbench/models.json"
 
     def launcher_bytes(self):
         return ("#!/usr/bin/env python3\n"
@@ -245,16 +431,26 @@ class Setup:
         output = (result.stdout + result.stderr).strip().replace("\n", "; ")
         return output or f"exited {result.returncode}"
 
-    def read_json(self, path):
-        base = self.home if path.is_relative_to(self.home) else path.parent
-        inspect(path, base)
-        try:
-            data = json.loads(read(path))
-            if not isinstance(data.get("roles", {}), dict):
-                raise ValueError("roles must be an object")
-            return data
-        except (ValueError, AttributeError) as exc:
-            raise Conflict(f"invalid model configuration: {path}") from exc
+    def workers_bundle(self):
+        if present(self.legacy_override):
+            raise Conflict(f"legacy override {self.legacy_override}; migrate to {self.override}: "
+                           "roles -> tiers, cli -> harness, claude_model -> claude_route, "
+                           "max_auto_rework -> policy.max_auto_rework, "
+                           "sol_weekly_brake_percent -> tiers.sol.weekly_brake_percent, "
+                           "max_context_tokens -> policy.context.max_tokens, "
+                           "gateway_context_window -> policy.context.gateway_window, "
+                           "codex_context_window -> policy.context.codex_window; version: 2")
+        for path in (self.models, self.override):
+            inspect(path, self.home if path.is_relative_to(self.home) else path.parent)
+        if not present(self.models):
+            return None
+        return worker_bundle(self.models, self.override, self.home)
+
+    def workers(self, cwd):
+        bundle = self.workers_bundle()
+        if bundle is None:
+            raise Conflict("missing workers.yml; distribute orchestrate-harnesses first")
+        print(json.dumps(effective_workers(bundle, cwd), indent=2))
 
     def warn_catalog(self, targets):
         magpie = shutil.which("magpie")
@@ -287,59 +483,45 @@ class Setup:
                       "by magpie models claude", file=sys.stderr)
 
     def desired_agents(self):
-        """Render one Claude Code subagent per role routable from Claude Code."""
-        inspect(self.models, self.home)
+        """Render the union of tiers routable from Claude across all profiles."""
+        bundle = self.workers_bundle()
         inspect(self.worker, self.home)
-        if not present(self.models) or not present(self.worker):
+        if bundle is None or not present(self.worker):
             return {}
-        roles = self.read_json(self.models).get("roles", {})
-        if present(self.override):
-            for name, fields in self.read_json(self.override).get("roles", {}).items():
-                if not isinstance(fields, dict):
-                    raise Conflict(f"invalid model override for role {name}: {self.override}")
-                roles[name] = {**roles.get(name, {}), **fields}
         body = read(self.worker).decode("utf-8")
-        agents = {}
-        targets = {}
-        for name, role in roles.items():
-            model = role.get("model") if role.get("cli") == "claude" else role.get("claude_model")
-            if model is None:
-                continue
-            effort = role.get("effort")
-            if not ROLE.fullmatch(name) or not isinstance(model, str) or not isinstance(effort, str):
-                raise Conflict(f"invalid model configuration for role {name}")
-            label = f"{LEVELS[name] + ' ' if name in LEVELS else ''}Worker"
-            via = "" if role.get("cli") == "claude" else " via configured gateway"
-            description = f"Agent Workbench {label} ({role['model']}{via})"
-            agents[name] = ("---\n" f"name: {name}\n" f"description: {json.dumps(description)}\n"
-                            f"model: {json.dumps(model)}\n" f"effort: {json.dumps(effort)}\n---\n"
-                            "<!-- Managed by agent-workbench; ownership is recorded in state.json. -->\n\n"
-                            + body).encode()
-            targets[name] = (model, effort)
+        agents, targets, signatures = {}, {}, {}
+        for config in [bundle["base"], *bundle["profiles"].values()]:
+            for name, tier in config["tiers"].items():
+                model = tier["model"] if tier["harness"] == "claude" else tier.get("claude_route")
+                signature = (tier["model"], model, tier["effort"])
+                if name in signatures and signatures[name] != signature:
+                    raise Conflict(f"tier {name} has different model/route/effort across profiles; rename it")
+                signatures[name] = signature
+                if model is None:
+                    continue
+                effort = tier["effort"]
+                via = "" if tier["harness"] == "claude" else " via configured gateway"
+                description = f"Agent Workbench Worker ({tier['model']}{via})"
+                agents[name] = ("---\n" f"name: {name}\n" f"description: {json.dumps(description)}\n"
+                                f"model: {json.dumps(model)}\n" f"effort: {json.dumps(effort)}\n---\n"
+                                "<!-- Managed by agent-workbench; ownership is recorded in state.json. -->\n\n"
+                                + body).encode()
+                targets[name] = (model, effort)
         self.warn_catalog(targets)
         return agents
 
     def context_values(self):
-        if not present(self.models):
+        bundle = self.workers_bundle()
+        if bundle is None:
             return None
-        config = self.read_json(self.models)
-        if present(self.override):
-            config.update({k: v for k, v in self.read_json(self.override).items() if k != "roles"})
-        nullable = ("gateway_context_window", "codex_context_window")
-        for key in ("max_context_tokens", *nullable):
-            value = config.get(key)
-            if not (key in nullable and value is None) and (type(value) is not int or value <= 0):
-                raise Conflict(f"invalid model configuration: {key} must be a positive integer" +
-                               (" or null" if key in nullable else ""))
-        target = config["max_context_tokens"]
-        # Claude Code caps an absolute compaction window at each model's own window. A percentage
-        # would scale with the 200k it assumes for unrecognised gateway IDs (300k target -> 60k).
+        context = bundle["base"]["policy"]["context"]
+        target = context["max_tokens"]
         values = {"claude": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(target)},
                   "codex": {"model_auto_compact_token_limit": target}}
-        if config["gateway_context_window"] is not None:
-            values["claude"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(config["gateway_context_window"])
-        if config["codex_context_window"] is not None:
-            values["codex"]["model_context_window"] = config["codex_context_window"]
+        if context["gateway_window"] is not None:
+            values["claude"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context["gateway_window"])
+        if context["codex_window"] is not None:
+            values["codex"]["model_context_window"] = context["codex_window"]
         return values
 
     def native_config(self, kind):
@@ -853,12 +1035,15 @@ class Setup:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", type=Path, default=Path.home(), help="selected home (default: current user's home)")
-    parser.add_argument("command", choices=("install", "update", "status", "uninstall"))
+    parser.add_argument("command", choices=("install", "update", "status", "uninstall", "workers"))
     parser.add_argument("--skills-cmd", help="explicit native skills CLI command, required for alternate-home updates")
+    parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="directory for Worker profile selection")
     args = parser.parse_args()
     try:
         setup = Setup(args.home)
-        if args.command == "update":
+        if args.command == "workers":
+            setup.workers(args.cwd)
+        elif args.command == "update":
             setup.update(args.skills_cmd)
         else:
             getattr(setup, args.command)()
