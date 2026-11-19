@@ -23,7 +23,13 @@ Seven portable skills for Codex and Claude Code. Core skills are manage-lane, or
 
 ## Requirements and workflow
 
-The skills CLI requires Node.js 22.20 or newer. The optional global-instruction installer requires Python 3.11+ on Linux or macOS. Engineering work uses the installed/authenticated native harness; T3 Code tools are optional and used when available; distributing skills does not install those tools or provide credentials.
+| Requirement | Needed for |
+| --- | --- |
+| Node.js 22.20 or newer | Everything: the skills CLI (`npx`), the optional setup installer and the Claude policy hook |
+| Linux or macOS | The optional setup installer |
+| User systemd and a supported package-temperature sensor (optional) | thermal-guard's background logger |
+
+Engineering work uses the installed/authenticated native harness; T3 Code tools are optional and used when available; distributing skills does not install those tools or provide credentials.
 
 The current interactive session is the **Manager**, using the model the user picks. Prefer the harness's strongest model for lanes with hard tradeoffs and a cheaper one for routine lanes. It talks with the user, delegates substantial work, manages amendments and verifies delivery. Prefer the harness's **built-in subagents as Workers** for same-harness implementation, investigation and review. The Manager owns delegation; Workers do not create nested agents. Managers in the same harness on the same machine message each other natively; when its tools are available, T3 Code coordinates them across harnesses and machines through sourced checkpoints and explicit ownership handover. Otherwise use native session messaging where supported and the user for handover. See [native Worker workflow](skills/orchestrate-harnesses/SKILL.md#native-worker-workflow) and [T3 synchronization](skills/orchestrate-harnesses/references/t3-sync.md).
 
@@ -33,7 +39,7 @@ Agent Workbench covers user/machine instructions and Manager/Worker scope, distr
 
 Workers use a configurable ladder. The default is **Haiku medium → Sonnet medium → Opus medium**. The optional `codex` profile uses **Luna medium / Haiku medium → Sol medium / Sonnet medium → Opus medium**, with Terra opt-in outside the ladder. A Claude Manager runs Codex tiers through sandboxed `codex exec` unless a user override supplies a gateway route. Each tier's `timeout_s` (7200 s by default) is a ceiling; the Manager sizes each dispatch's timeout to the task. Escalation needs evidence; moving to the next listed tier needs a recorded reason; L3 (Opus) needs the user's approval for each task. Model IDs, efforts, timeouts, optional monetary caps, rework policy and context targets live in [workers.yml](skills/orchestrate-harnesses/workers.yml), with partial per-user overrides described in [local model configuration](skills/orchestrate-harnesses/SKILL.md#local-model-configuration). No fixed amount ceiling is imposed; `budget_usd: null` adds no monetary cap. When the `magpie` CLI is installed, see [Magpie guidance](skills/orchestrate-harnesses/references/magpie.md) for quota-aware tier choices, catalog warnings and usage reporting.
 
-Worker configuration is YAML, loaded with vendored PyYAML without pip or network access. Put partial overrides in `~/.config/agent-workbench/workers.yml` (or the absolute `$XDG_CONFIG_HOME` equivalent). Mappings merge, lists replace, and null tiers are deleted. Run `agent-workbench workers --cwd PATH` to inspect the chosen profile and resolved configuration, then `agent-workbench install` to apply agent and hook changes.
+Worker configuration is YAML, loaded with the vendored `yaml` package without `npm install` or network access. Put partial overrides in `~/.config/agent-workbench/workers.yml` (or the absolute `$XDG_CONFIG_HOME` equivalent). Mappings merge, lists replace, and null tiers are deleted. Run `agent-workbench workers --cwd PATH` to inspect the chosen profile and resolved configuration, then `agent-workbench install` to apply agent and hook changes.
 
 For a corporate setup, add a profile and select it for your work directory:
 
@@ -75,14 +81,16 @@ Use it only when explicitly chosen for a bounded task, such as CI log triage, re
 
 Check the route's model metadata and effective context window: an unknown ID can use a default window or compact early. Apply only effort levels the route exposes and retain effective `policy.context.max_tokens`, host rules and smaller native limits. Record accepted results, defects, corrective attempts, elapsed time and actual usage/cost, including reasoning tokens and retries, in the task or PR record. Custom-tier attempts count toward the same `max_auto_rework`. Compare actual charges, including cache and long-context tiers; a model name is not a price guarantee. Provider request fallback does not correct reasoning, so the Manager still verifies results. Workbench does not automatically launch an agent when CI fails; log triage is assigned by a Manager.
 
-Workbench has no custom orchestration runtime, task database or process supervisor. Native runs use their tool IDs, briefs and existing task/PR evidence; they do not create another Python-managed task record.
+Workbench has no custom orchestration runtime, task database or process supervisor. Native runs use their tool IDs, briefs and existing task/PR evidence; they do not create another task record.
 
-The remaining Python files have narrow purposes:
+The remaining Node files have narrow purposes:
 
 | Files | Purpose |
 | --- | --- |
-| `skills/workbench-setup/scripts/workbench.py` | Optional install/update/status/uninstall of shared global instructions, launcher and private backups |
-| `tests/test_*.py` | CI checks for package layout, model defaults and installer behavior; no orchestration service |
+| `skills/workbench-setup/scripts/workbench.mjs` | Optional install/update/status/uninstall of shared global instructions, launcher and private backups |
+| `skills/workbench-setup/scripts/workbench.py` | Four-line shim that hands off to `workbench.mjs`, so launchers installed before the Node port can still update; may be removed in a later release |
+| `skills/orchestrate-harnesses/scripts/policy-hook` | Claude hook entry point (`policy-hook.mjs` holds the logic) |
+| `tests/*.test.mjs` | `node --test` checks for package layout, model defaults, the hook and installer behavior; no orchestration service |
 
 Setup applies the configured compaction target to owned Claude and Codex config keys when their config directories exist, preserving existing provider routing. Compaction is advisory, not a hard request-token cap; restart running sessions to pick up changes. Setup preserves personal text outside its managed block.
 
@@ -126,12 +134,12 @@ The package's `AGENTS.md` is applied immediately after the public block, inside 
 
 ## Apply shared global instructions
 
-The optional setup installer supports Linux and macOS with Python 3.11+. Distribution and native updates also require Node.js 22.20+ and npx. When a supported Linux package-temperature sensor and user systemd are available, setup installs thermal-guard's launcher and background logger; otherwise the thermal rule does not apply. No separate npm package, compiled binary, or shell configuration is installed.
+The optional setup installer supports Linux and macOS and needs only Node.js 22.20+ (see the requirements table above). When a supported Linux package-temperature sensor and user systemd are available, setup installs thermal-guard's launcher and background logger; otherwise the thermal rule does not apply. No separate npm package, compiled binary, or shell configuration is installed.
 
 After distributing the skills globally, apply their public instruction template:
 
 ~~~sh
-python3 ~/.agents/skills/workbench-setup/scripts/workbench.py install
+node ~/.agents/skills/workbench-setup/scripts/workbench.mjs install
 ~/.local/bin/agent-workbench status
 ~~~
 
@@ -167,7 +175,7 @@ Update reads native version-3 skills lock ownership (`~/.agents/.skill-lock.json
 
 Setup refuses foreign links or same-name commands, masking Codex overrides, duplicate/broken markers, and edits inside either managed instruction block. Resolve the reported conflict before retrying. State and backups are private to your user. Backups are historical snapshots; uninstall keeps current private text and restores Codex to a regular file containing it, removes the owned Claude import and launcher, and retains backups. It never replaces later personal edits with stale backup content. For historical recovery, inspect those backups yourself and restore only the intended text. Interrupted or partially failed operations should be inspected with `status` before retrying.
 
-For disposable fixtures, copy the skill beneath a selected home's `.agents/skills/workbench-setup`, then use `python3 .../scripts/workbench.py --home PATH install`. An alternate-home `update` requires an explicit `--skills-cmd` command and never defaults to the real user's global npx update.
+For disposable fixtures, copy the skill beneath a selected home's `.agents/skills/workbench-setup`, then use `node .../scripts/workbench.mjs --home PATH install`. An alternate-home `update` requires an explicit `--skills-cmd` command and never defaults to the real user's global npx update.
 
 ## Project-local install
 
@@ -181,7 +189,7 @@ The --copy option installs independent copies in the project. This is useful whe
 
 ## Set up a new machine
 
-Install Node.js 22.20 or newer, then run the global install command above. To keep skills current later, run the global update command. For optional global instructions, install Python 3.11+ and run the explicit setup step. For engineering work, enable the native harness subagent tools and T3 Code capabilities you intend to use and authenticate through their supported setup. This repository does not manage credentials or agent authentication.
+Install Node.js 22.20 or newer, then run the global install command above. To keep skills current later, run the global update command. For optional global instructions, run the explicit setup step. For engineering work, enable the native harness subagent tools and T3 Code capabilities you intend to use and authenticate through their supported setup. This repository does not manage credentials or agent authentication.
 
 ## License
 

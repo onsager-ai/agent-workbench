@@ -1,0 +1,1146 @@
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { after, describe, test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
+
+import { Setup, effectiveWorkers, shellQuote, shellSplit } from "../skills/workbench-setup/scripts/workbench.mjs";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const SKILL = path.join(ROOT, "skills/workbench-setup");
+const ORCHESTRATION = path.join(ROOT, "skills/orchestrate-harnesses");
+const BEGIN = Buffer.from("<!-- BEGIN agent-workbench -->");
+const END = Buffer.from("<!-- END agent-workbench -->");
+const IMPORT = Buffer.from("@~/.agents/AGENTS.md");
+const NL = Buffer.from("\n");
+const temporaries = [];
+
+after(() => temporaries.forEach((directory) => {
+  fs.chmodSync(directory, 0o700);
+  fs.rmSync(directory, { recursive: true, force: true });
+}));
+
+const cat = (...parts) => Buffer.concat(parts.map((part) => (typeof part === "string" ? Buffer.from(part) : part)));
+// Byte-safe replace (all occurrences, or the first only).
+const sub = (data, from, to, once = false) => {
+  const text = data.toString("latin1");
+  const search = Buffer.from(from).toString("latin1");
+  const replacement = Buffer.from(to).toString("latin1");
+  return Buffer.from(once ? text.replace(search, () => replacement) : text.replaceAll(search, replacement), "latin1");
+};
+const count = (data, needle) => data.toString("latin1").split(Buffer.from(needle).toString("latin1")).length - 1;
+
+class Fixture {
+  constructor() {
+    this.temporary = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "workbench-setup-")));
+    temporaries.push(this.temporary);
+    this.configureHome(path.join(this.temporary, "selected"));
+  }
+
+  configureHome(home) {
+    this.home = home;
+    this.skill = path.join(home, ".agents/skills/workbench-setup");
+    fs.cpSync(SKILL, this.skill, { recursive: true });
+    this.script = path.join(this.skill, "scripts/workbench.mjs");
+    this.shared = path.join(home, ".agents/AGENTS.md");
+    this.codex = path.join(home, ".codex/AGENTS.md");
+    this.claude = path.join(home, ".claude/CLAUDE.md");
+    this.launcher = path.join(home, ".local/bin/agent-workbench");
+    this.state = path.join(home, ".local/state/agent-workbench");
+  }
+
+  write(file, data) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, data);
+  }
+
+  run(command, args = [], ok = true) {
+    assert.notEqual(this.home, os.homedir());
+    const result = spawnSync(process.execPath, [this.script, "--home", this.home, command, ...args],
+      { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: "" } });
+    assert.equal(result.status === 0, ok, result.stdout + result.stderr);
+    return result;
+  }
+
+  // Only the selected disposable home is traversed; symlinks are never followed.
+  snapshot() {
+    const entries = {};
+    const walk = (directory) => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const file = path.join(directory, entry.name);
+        const relative = path.relative(this.home, file);
+        if (entry.isSymbolicLink()) entries[relative] = ["link", fs.readlinkSync(file)];
+        else if (entry.isDirectory()) walk(file);
+        else if (entry.isFile()) {
+          const info = fs.statSync(file, { bigint: true });
+          entries[relative] = ["file", fs.readFileSync(file).toString("hex"), info.ino, info.mtimeNs];
+        }
+      }
+    };
+    walk(this.home);
+    return entries;
+  }
+
+  private() {
+    const data = fs.readFileSync(this.shared);
+    return cat(data.subarray(0, data.indexOf(BEGIN)), data.subarray(data.indexOf(END) + END.length + 1));
+  }
+
+  nativeLock() {
+    const lock = { version: 3, skills: {
+      "workbench-setup": { source: "onsager-ai/agent-workbench", sourceType: "github" },
+      "disk-cleanup": { source: "onsager-ai/agent-workbench", sourceType: "github" },
+      unrelated: { source: "another/project", sourceType: "github" },
+    } };
+    this.write(path.join(this.home, ".agents/.skill-lock.json"), JSON.stringify(lock));
+  }
+
+  fakeCommand(body) {
+    const file = path.join(this.home, "fake-skills.mjs");
+    this.write(file, body);
+    return [process.execPath, file].map(shellQuote).join(" ");
+  }
+
+  json(file) {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  }
+
+  stateJson() {
+    return this.json(path.join(this.state, "state.json"));
+  }
+
+  installOrchestration(override) {
+    fs.cpSync(ORCHESTRATION, path.join(this.home, ".agents/skills/orchestrate-harnesses"), { recursive: true });
+    fs.mkdirSync(path.join(this.home, ".claude"), { recursive: true });
+    fs.mkdirSync(path.join(this.home, ".codex"), { recursive: true });
+    if (override !== undefined) this.write(this.overridePath, JSON.stringify(override));
+  }
+
+  get overridePath() {
+    return path.join(this.home, ".config/agent-workbench/workers.yml");
+  }
+
+  agent(name) {
+    return path.join(this.home, ".claude/agents", name + ".md");
+  }
+
+  get hook() {
+    return path.join(this.home, ".agents/skills/orchestrate-harnesses/scripts/policy-hook");
+  }
+
+  get hookCommand() {
+    return [this.hook, "--workers", path.join(this.state, "workers.json")].map(shellQuote).join(" ");
+  }
+
+  personalFile(name = "AGENTS.md") {
+    return path.join(this.home, ".agents/skills/workbench-personal", name);
+  }
+}
+
+const exists = (file) => fs.existsSync(file) || fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined;
+const isLink = (file) => fs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink() ?? false;
+const mode = (file) => fs.statSync(file).mode & 0o777;
+const read = (file) => fs.readFileSync(file);
+const hex = (data) => crypto.createHash("sha256").update(data).digest("hex");
+
+describe("workbench setup", () => {
+  test("fresh install, status and launcher", () => {
+    const f = new Fixture();
+    f.run("install");
+    assert.equal(f.private().length, 0);
+    assert.ok(isLink(f.codex));
+    assert.deepEqual(read(f.codex), read(f.shared));
+    assert.deepEqual(read(f.claude), cat(IMPORT, NL));
+    const env = { ...process.env, PATH: `${path.dirname(process.execPath)}:${process.env.PATH}` };
+    const result = spawnSync(f.launcher, ["status"], { encoding: "utf8", env });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).private_bytes, 0);
+    assert.deepEqual(JSON.parse(result.stdout).personal_package, { present: false, applied_files: [] });
+    assert.equal(mode(f.state), 0o700);
+    for (const name of fs.readdirSync(path.join(f.state, "backups"))) assert.equal(mode(path.join(f.state, "backups", name)), 0o600);
+    assert.match(read(f.launcher).toString(), /^#!\/bin\/sh\n/);
+    assert.equal(mode(f.launcher), 0o700);
+  });
+
+  test("first install keeps existing bytes and is idempotent", () => {
+    const f = new Fixture();
+    const personal = cat("private π rules", Buffer.from([0x80]));
+    f.write(f.shared, "existing shared\n");
+    f.write(f.codex, personal);
+    f.write(f.claude, "existing Claude text");
+    f.run("install");
+    assert.deepEqual(f.private(), cat("existing shared\n", personal));
+    assert.deepEqual(read(f.claude), cat("existing Claude text\n", IMPORT, NL));
+    const before = f.snapshot();
+    assert.match(f.run("install").stdout, /no-op/);
+    assert.deepEqual(f.snapshot(), before);
+    const backup = f.json(path.join(f.state, "backups/codex.json"));
+    assert.deepEqual(Buffer.from(backup.base64, "base64"), personal);
+  });
+
+  test("personal instructions install, idempotence and uninstall", () => {
+    const f = new Fixture();
+    const personal = f.personalFile();
+    f.write(personal, "Personal π rules\n");
+    f.write(f.shared, cat("private after", Buffer.from([0x80])));
+    f.run("install");
+    const expected = cat("<!-- BEGIN agent-workbench personal -->\n", read(personal), "<!-- END agent-workbench personal -->\n");
+    assert.ok(read(f.shared).includes(cat(END, NL, expected)));
+    fs.writeFileSync(f.shared, cat("private before\n", read(f.shared)));
+    const before = f.snapshot();
+    assert.match(f.run("install").stdout, /no-op/);
+    assert.deepEqual(f.snapshot(), before);
+    const status = JSON.parse(f.run("status").stdout);
+    assert.deepEqual(status.personal_package, { present: true, applied_files: ["AGENTS.md"] });
+    assert.equal(status.private_bytes, cat("private before\nprivate after", Buffer.from([0x80])).length);
+    f.run("uninstall");
+    assert.deepEqual(read(f.shared), cat("private before\nprivate after", Buffer.from([0x80])));
+    assert.deepEqual(read(f.codex), read(f.shared));
+  });
+
+  test("personal block removed with file or package", () => {
+    for (const removePackage of [false, true]) {
+      const f = new Fixture();
+      const personal = f.personalFile();
+      f.write(personal, "personal rules");
+      f.run("install");
+      if (removePackage) fs.rmSync(path.dirname(personal), { recursive: true });
+      else fs.unlinkSync(personal);
+      f.run("install");
+      assert.ok(!read(f.shared).includes("agent-workbench personal"));
+      assert.equal(f.stateJson().personal_block, null);
+    }
+  });
+
+  test("personal instruction update preserves private positions", () => {
+    const f = new Fixture();
+    f.run("install");
+    fs.writeFileSync(f.shared, cat(Buffer.from([0x62, 0x80, 0x0a]), read(f.shared), Buffer.from([0x61, 0x81])));
+    const personal = f.personalFile();
+    f.write(personal, "first rules\n");
+    f.run("install");
+    fs.writeFileSync(personal, "new rules\n");
+    f.run("install");
+    const data = read(f.shared);
+    assert.ok(data.subarray(0, 3 + BEGIN.length).equals(cat(Buffer.from([0x62, 0x80, 0x0a]), BEGIN)));
+    assert.ok(data.subarray(data.length - 2).equals(Buffer.from([0x61, 0x81])));
+    assert.ok(data.includes(cat(END, "\n<!-- BEGIN agent-workbench personal -->\nnew rules\n")));
+    assert.ok(!data.includes("first rules"));
+  });
+
+  test("personal instruction symlink refused", () => {
+    const f = new Fixture();
+    const personal = f.personalFile();
+    f.write(path.join(f.home, "foreign-instructions"), "rules");
+    fs.mkdirSync(path.dirname(personal), { recursive: true });
+    fs.symlinkSync(path.join(f.home, "foreign-instructions"), personal);
+    const before = f.snapshot();
+    assert.match(f.run("install", [], false).stderr, /symlink/);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  test("personal managed markers and edits conflict", () => {
+    const f = new Fixture();
+    const personal = f.personalFile();
+    f.write(personal, "personal rules\n");
+    f.run("install");
+    const original = read(f.shared);
+    const variants = [
+      sub(original, "personal rules", "edited rules"),
+      cat(original, "<!-- BEGIN agent-workbench personal -->\n"),
+      sub(original, "<!-- END agent-workbench personal -->", ""),
+      sub(sub(original, cat(END, NL), ""), "personal rules", cat(END, "\npersonal rules")),
+    ];
+    for (const data of variants) {
+      fs.writeFileSync(f.shared, data);
+      for (const command of ["install", "status", "uninstall"]) {
+        const before = f.snapshot();
+        f.run(command, [], false);
+        assert.deepEqual(f.snapshot(), before);
+      }
+    }
+    fs.writeFileSync(f.shared, original);
+    fs.writeFileSync(personal, BEGIN);
+    assert.match(f.run("install", [], false).stderr, /managed markers/);
+  });
+
+  test("preexisting import is not owned or duplicated", () => {
+    const f = new Fixture();
+    const data = cat("private\n", IMPORT, NL);
+    f.write(f.claude, data);
+    f.run("install");
+    f.run("install");
+    f.run("uninstall");
+    assert.deepEqual(read(f.claude), data);
+  });
+
+  test("preexisting equivalent import forms are reused", () => {
+    const forms = ["@~/.agents/AGENTS.md", "@../.agents/AGENTS.md", "@./../.agents/AGENTS.md", null];
+    forms.forEach((form, index) => {
+      const f = new Fixture();
+      f.configureHome(path.join(f.temporary, `equivalent-${index}`));
+      const importLine = form ?? "@" + f.shared;
+      const original = Buffer.from(`Claude café before\n${importLine}\nAfter 雪`);
+      f.write(f.claude, original);
+      f.run("install");
+      assert.deepEqual(read(f.claude), original);
+      assert.equal(f.stateJson().claude_import.owned, false);
+      const beforeReinstall = read(f.claude);
+      assert.match(f.run("install").stdout, /no-op/);
+      assert.deepEqual(read(f.claude), beforeReinstall);
+      f.run("status");
+      f.run("uninstall");
+      assert.deepEqual(read(f.claude), original);
+    });
+  });
+
+  test("mixed equivalent import duplicates refuse without writes", () => {
+    const cases = [["@~/.agents/AGENTS.md", "@../.agents/AGENTS.md"], ["@../.agents/AGENTS.md", null]];
+    cases.forEach(([first, second], index) => {
+      const f = new Fixture();
+      f.configureHome(path.join(f.temporary, `duplicate-${index}`));
+      const absolute = "@" + f.shared;
+      f.write(f.claude, `Before é\n${first}\n${second ?? absolute}\nAfter`);
+      const before = f.snapshot();
+      assert.match(f.run("install", [], false).stderr, /duplicate Claude imports/);
+      assert.deepEqual(f.snapshot(), before);
+      assert.ok(!exists(path.join(f.state, "state.json")));
+    });
+  });
+
+  test("foreign import is preserved and owned import is appended once", () => {
+    const f = new Fixture();
+    const original = Buffer.from("Personal café\n@../other/AGENTS.md\nAfter 雪");
+    f.write(f.claude, original);
+    f.run("install");
+    const expected = cat(original, NL, IMPORT, NL);
+    assert.deepEqual(read(f.claude), expected);
+    f.run("install");
+    assert.deepEqual(read(f.claude), expected);
+    assert.equal(count(read(f.claude), IMPORT), 1);
+    f.run("uninstall");
+    assert.deepEqual(read(f.claude), original);
+  });
+
+  test("personal Claude edit survives owned import uninstall", () => {
+    const f = new Fixture();
+    f.run("install");
+    fs.writeFileSync(f.claude, cat(read(f.claude), "personal edit π\n"));
+    f.run("uninstall");
+    assert.deepEqual(read(f.claude), Buffer.from("personal edit π\n"));
+  });
+
+  test("foreign link refuses without writes", () => {
+    const f = new Fixture();
+    const target = path.join(f.home, "foreign");
+    f.write(target, "foreign");
+    fs.mkdirSync(path.dirname(f.codex));
+    fs.symlinkSync(target, f.codex);
+    const before = f.snapshot();
+    f.run("install", [], false);
+    assert.deepEqual(f.snapshot(), before);
+    assert.ok(!exists(f.state));
+  });
+
+  test("foreign command refuses without writes", () => {
+    const f = new Fixture();
+    f.write(f.launcher, "foreign command");
+    const before = f.snapshot();
+    f.run("install", [], false);
+    assert.deepEqual(f.snapshot(), before);
+    assert.ok(!exists(f.state));
+  });
+
+  test("symlink parent refuses", () => {
+    const f = new Fixture();
+    const directory = path.join(f.home, "elsewhere");
+    fs.mkdirSync(directory);
+    fs.symlinkSync(directory, path.join(f.home, ".claude"), "dir");
+    const before = f.snapshot();
+    f.run("install", [], false);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  test("override masking is reported", () => {
+    const f = new Fixture();
+    f.run("install");
+    f.write(path.join(f.home, ".codex/AGENTS.override.md"), "override");
+    const before = f.snapshot();
+    assert.match(f.run("status", [], false).stderr, /masks/);
+    f.run("install", [], false);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  test("invalid markers refuse without writes", () => {
+    for (const data of [BEGIN, END, cat(END, BEGIN), cat(BEGIN, BEGIN, END)]) {
+      const f = new Fixture();
+      f.write(f.shared, data);
+      const before = f.snapshot();
+      f.run("install", [], false);
+      assert.deepEqual(f.snapshot(), before);
+    }
+  });
+
+  test("manual managed drift refuses install and uninstall", () => {
+    const f = new Fixture();
+    f.run("install");
+    const original = read(f.shared);
+    const drifted = sub(original, cat(BEGIN, NL), cat(BEGIN, "\nmanual drift\n"), true);
+    assert.notDeepEqual(original, drifted);
+    fs.writeFileSync(f.shared, drifted);
+    const before = f.snapshot();
+    for (const command of ["status", "install", "uninstall"]) assert.match(f.run(command, [], false).stderr, /drift/);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  test("lock contention", () => {
+    const f = new Fixture();
+    f.run("install");
+    const lock = path.join(f.state, "lock.d");
+    fs.mkdirSync(lock);
+    fs.writeFileSync(path.join(lock, "pid"), String(process.pid));
+    assert.match(f.run("install", [], false).stderr, /holds the lock/);
+    assert.ok(exists(lock));
+  });
+
+  test("stale lock from a dead process is replaced", () => {
+    const f = new Fixture();
+    f.run("install");
+    const dead = spawnSync(process.execPath, ["-e", ""]);
+    assert.equal(dead.status, 0);
+    const lock = path.join(f.state, "lock.d");
+    fs.mkdirSync(lock);
+    fs.writeFileSync(path.join(lock, "pid"), String(dead.pid));
+    assert.match(f.run("install").stdout, /no-op/);
+    assert.ok(!exists(lock));
+    assert.deepEqual(fs.readdirSync(f.state).filter((name) => name.startsWith("lock.d")), []);
+  });
+
+  test("a lock without a pid is held until it is old", () => {
+    const f = new Fixture();
+    f.run("install");
+    const lock = path.join(f.state, "lock.d");
+    fs.mkdirSync(lock);
+    assert.match(f.run("install", [], false).stderr, /holds the lock/);
+    const old = new Date(Date.now() - 60000);
+    fs.utimesSync(lock, old, old);
+    assert.match(f.run("install").stdout, /no-op/);
+  });
+
+  test("parent directories keep default modes and only the state directory is private", () => {
+    const f = new Fixture();
+    f.run("install");
+    const expected = 0o777 & ~process.umask();
+    assert.equal(mode(path.dirname(f.state)), expected);
+    assert.equal(mode(f.state), 0o700);
+    assert.equal(mode(path.join(f.state, "backups")), 0o700);
+  });
+
+  test("shell splitting uses ASCII whitespace only", () => {
+    assert.deepEqual(shellSplit("a\u00a0b  c\t'd e'\n\"f g\""), ["a\u00a0b", "c", "d e", "f g"]);
+  });
+
+  test("update failure preserves instruction bytes", () => {
+    const f = new Fixture();
+    f.run("install");
+    f.nativeLock();
+    const command = f.fakeCommand("process.exit(7);\n");
+    const before = f.snapshot();
+    assert.match(f.run("update", ["--skills-cmd", command], false).stderr, /unchanged/);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  test("alternate home never defaults to real npx", () => {
+    const f = new Fixture();
+    f.run("install");
+    f.nativeLock();
+    const before = f.snapshot();
+    assert.match(f.run("update", [], false).stderr, /real-user npx was not invoked/);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  test("update only repo skills then fresh updated code", () => {
+    const f = new Fixture();
+    f.run("install");
+    f.nativeLock();
+    const log = path.join(f.home, "calls.json");
+    const marker = path.join(f.home, "fresh-process");
+    const template = path.join(f.skill, "assets/AGENTS.md");
+    // The updated script writes a marker only when entered as the new process.
+    const command = f.fakeCommand(
+      'import fs from "node:fs";\n' +
+      `fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\n` +
+      `fs.writeFileSync(${JSON.stringify(template)}, "new public template\\n");\n` +
+      `let s = fs.readFileSync(${JSON.stringify(f.script)}, "utf8");\n` +
+      `s = s.replace("process.exitCode = main();", ${JSON.stringify(`fs.writeFileSync(${JSON.stringify(marker)}, "fresh"); process.exitCode = main();`)});\n` +
+      `fs.writeFileSync(${JSON.stringify(f.script)}, s);\n`);
+    f.run("update", ["--skills-cmd", command]);
+    assert.deepEqual(f.json(log), ["update", "disk-cleanup", "workbench-setup", "-g", "-y"]);
+    assert.equal(read(marker).toString(), "fresh");
+    assert.ok(read(f.shared).includes("new public template"));
+  });
+
+  test("update includes personal package from any source", () => {
+    const f = new Fixture();
+    f.run("install");
+    f.nativeLock();
+    const lockPath = path.join(f.home, ".agents/.skill-lock.json");
+    const lock = f.json(lockPath);
+    lock.skills["workbench-personal"] = { source: "private/personal", sourceType: "git" };
+    fs.writeFileSync(lockPath, JSON.stringify(lock));
+    const log = path.join(f.home, "calls.json");
+    const personal = f.personalFile();
+    const command = f.fakeCommand(
+      'import fs from "node:fs";\nimport path from "node:path";\n' +
+      `fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\n` +
+      `fs.mkdirSync(path.dirname(${JSON.stringify(personal)}), { recursive: true });\n` +
+      `fs.writeFileSync(${JSON.stringify(personal)}, "updated personal rules");\n`);
+    f.run("update", ["--skills-cmd", command]);
+    assert.deepEqual(f.json(log), ["update", "disk-cleanup", "workbench-personal", "workbench-setup", "-g", "-y"]);
+    assert.ok(read(f.shared).includes("updated personal rules"));
+  });
+
+  test("template update preserves private positions and bytes", () => {
+    const f = new Fixture();
+    f.run("install");
+    fs.writeFileSync(f.shared, cat(Buffer.from([0x70, 0x80]), read(f.shared), "suffix"));
+    f.write(path.join(f.skill, "assets/AGENTS.md"), "updated public\n");
+    f.run("status", [], false);
+    f.run("install");
+    const data = read(f.shared);
+    assert.ok(data.subarray(0, 2 + BEGIN.length).equals(cat(Buffer.from([0x70, 0x80]), BEGIN)));
+    assert.ok(data.subarray(data.length - 6).equals(Buffer.from("suffix")));
+    assert.deepEqual(f.private(), cat(Buffer.from([0x70, 0x80]), "suffix"));
+  });
+
+  test("uninstall preserves new private and Claude edits", () => {
+    const f = new Fixture();
+    f.write(f.codex, "original without newline");
+    f.write(f.claude, "prior Claude");
+    f.run("install");
+    fs.writeFileSync(f.shared, cat(read(f.shared), "\nnew private edits", Buffer.from([0x80])));
+    fs.writeFileSync(f.claude, cat(read(f.claude), "later Claude\n"));
+    const expected = f.private();
+    f.run("uninstall");
+    assert.ok(!isLink(f.codex));
+    assert.deepEqual(read(f.codex), expected);
+    assert.deepEqual(read(f.shared), expected);
+    assert.ok(read(f.claude).includes("later Claude\n"));
+    assert.ok(!read(f.claude).includes(IMPORT));
+    assert.ok(!exists(f.launcher));
+    assert.ok(exists(path.join(f.state, "backups/codex.json")));
+    f.run("uninstall");
+  });
+
+  test("uninstall foreign replaced link is preserved", () => {
+    const f = new Fixture();
+    f.run("install");
+    fs.unlinkSync(f.codex);
+    fs.symlinkSync("different", f.codex);
+    const before = f.snapshot();
+    f.run("uninstall", [], false);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  test("uninstall replaced command is preserved", () => {
+    const f = new Fixture();
+    f.run("install");
+    fs.writeFileSync(f.launcher, "new foreign command");
+    const before = f.snapshot();
+    f.run("uninstall", [], false);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  test("reinstall after uninstall does not duplicate personal text", () => {
+    const f = new Fixture();
+    f.write(f.codex, "personal");
+    f.write(f.claude, "Claude without newline");
+    f.run("install");
+    f.run("uninstall");
+    assert.deepEqual(read(f.claude), Buffer.from("Claude without newline"));
+    f.run("install");
+    assert.deepEqual(f.private(), Buffer.from("personal"));
+  });
+
+  test("invalid state refuses without changes", () => {
+    const f = new Fixture();
+    f.run("install");
+    f.write(path.join(f.state, "state.json"), '{"schema": 99}');
+    const before = f.snapshot();
+    assert.match(f.run("install", [], false).stderr, /invalid setup state/);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  test("update missing ownership refuses before command", () => {
+    const f = new Fixture();
+    f.run("install");
+    f.write(path.join(f.home, ".agents/.skill-lock.json"), '{"version": 3, "skills": {}}');
+    const marker = path.join(f.home, "should-not-run");
+    const command = f.fakeCommand(`import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(marker)}, "");\n`);
+    const before = f.snapshot();
+    f.run("update", ["--skills-cmd", command], false);
+    assert.ok(!exists(marker));
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  test("write failure rolls back current entries", { skip: process.getuid() === 0 && "root ignores directory permissions" }, () => {
+    const f = new Fixture();
+    f.write(f.codex, "prior Codex");
+    f.write(f.claude, "prior Claude");
+    // CLAUDE.md is replaced after the shared file and Codex link; a read-only directory makes that write fail.
+    fs.chmodSync(path.dirname(f.claude), 0o500);
+    try {
+      assert.throws(() => new Setup(f.home).install());
+    } finally {
+      fs.chmodSync(path.dirname(f.claude), 0o700);
+    }
+    assert.ok(!exists(f.shared));
+    assert.ok(!isLink(f.codex));
+    assert.deepEqual(read(f.codex), Buffer.from("prior Codex"));
+    assert.deepEqual(read(f.claude), Buffer.from("prior Claude"));
+    assert.ok(!exists(f.launcher));
+    assert.ok(!exists(path.join(f.state, "state.json")));
+  });
+
+  test("pre-Node Python launcher is owned and migrated", () => {
+    const f = new Fixture();
+    f.run("install");
+    const old = Buffer.from("#!/usr/bin/env python3\n# Managed by agent-workbench; ownership is recorded in state.json.\n" +
+      `import os, sys\nscript = '${f.skill}/scripts/workbench.py'\nhome = '${f.home}'\n` +
+      "os.execv(sys.executable, [sys.executable, script, '--home', home, *sys.argv[1:]])\n");
+    fs.writeFileSync(f.launcher, old, { mode: 0o700 });
+    const statePath = path.join(f.state, "state.json");
+    const state = f.json(statePath);
+    state.launcher_hash = hex(old);
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+    f.run("status");
+    assert.match(f.run("install").stdout, /^installed/);
+    assert.match(read(f.launcher).toString(), /^#!\/bin\/sh\n/);
+    assert.notEqual(f.stateJson().launcher_hash, hex(old));
+    assert.match(f.run("install").stdout, /no-op/);
+    // A launcher that differs from the recorded bytes is still foreign.
+    fs.writeFileSync(f.launcher, cat(old, "# edited\n"));
+    f.run("install", [], false);
+  });
+
+  test("python shim hands off to the Node script", { skip: spawnSync("python3", ["--version"]).error !== undefined && "python3 unavailable" }, () => {
+    const f = new Fixture();
+    const result = spawnSync("python3", [path.join(f.skill, "scripts/workbench.py"), "--home", f.home, "install"], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /installed/);
+    assert.ok(exists(f.launcher));
+  });
+
+  test("personal worker layering and validation", () => {
+    const f = new Fixture();
+    f.installOrchestration({ defaults: { timeout_s: 900 } });
+    const personal = f.personalFile("workers.yml");
+    f.write(personal, "defaults: {timeout_s: 800, effort: high}\n");
+    const workers = JSON.parse(f.run("workers").stdout);
+    assert.equal(workers.defaults.timeout_s, 900);
+    assert.equal(workers.defaults.effort, "high");
+    f.run("install");
+    assert.deepEqual(JSON.parse(f.run("status").stdout).personal_package, { present: true, applied_files: ["workers.yml"] });
+    fs.unlinkSync(f.overridePath);
+    assert.equal(JSON.parse(f.run("workers").stdout).defaults.timeout_s, 800);
+    f.write(personal, "defaults: {unknown: true}\n");
+    const before = f.snapshot();
+    assert.match(f.run("install", [], false).stderr, /unknown keys/);
+    assert.deepEqual(f.snapshot(), before);
+    fs.unlinkSync(personal);
+    fs.symlinkSync(path.join(f.home, "foreign-workers"), personal);
+    assert.match(f.run("workers", [], false).stderr, /symlink/);
+  });
+
+  test("agents are generated for Claude roles by default", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    const names = (directory) => fs.readdirSync(directory).map((name) => path.basename(name, ".md")).sort();
+    assert.deepEqual(names(path.dirname(f.agent("x"))), ["haiku", "opus", "sonnet"]);
+    const text = fs.readFileSync(f.agent("haiku"), "utf8");
+    const worker = fs.readFileSync(path.join(ORCHESTRATION, "references/worker.md"), "utf8");
+    assert.ok(text.startsWith("---\nname: haiku\n"));
+    assert.ok(text.includes('model: "claude-haiku-5-5"\neffort: "medium"\n---\n'));
+    assert.ok(text.includes("Managed by agent-workbench"));
+    assert.ok(text.endsWith(worker));
+    assert.deepEqual(Object.keys(f.stateJson().agents).sort(), ["haiku", "opus", "sonnet"]);
+    assert.ok("haiku" in JSON.parse(f.run("status").stdout).agents);
+    assert.match(f.run("install").stdout, /no-op/);
+  });
+
+  // Run desiredAgents in-process against a fake `magpie` on PATH, capturing stderr warnings.
+  function inspectCatalog(f, { stdout = "", runnable = true, installed = true } = {}) {
+    const bin = path.join(f.temporary, "bin");
+    fs.rmSync(bin, { recursive: true, force: true });
+    fs.mkdirSync(bin);
+    const calls = path.join(f.temporary, "magpie-calls");
+    const output = path.join(f.temporary, "magpie-output");
+    fs.writeFileSync(output, stdout);
+    if (installed) {
+      const body = runnable ? `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\ncat '${output}'\n` : "#!/nonexistent/interpreter\n";
+      fs.writeFileSync(path.join(bin, "magpie"), body, { mode: 0o755 });
+    }
+    const originalPath = process.env.PATH;
+    const originalError = console.error;
+    const warnings = [];
+    process.env.PATH = `${bin}:/usr/bin:/bin`;
+    console.error = (...args) => warnings.push(args.join(" "));
+    try {
+      new Setup(f.home).desiredAgents();
+    } finally {
+      process.env.PATH = originalPath;
+      console.error = originalError;
+    }
+    const invocations = exists(calls) ? fs.readFileSync(calls, "utf8").split("\n").filter(Boolean) : [];
+    return { warnings: warnings.join("\n"), invocations };
+  }
+
+  test("catalog validation warns for unknown model and effort", () => {
+    const f = new Fixture();
+    f.installOrchestration({ profile: "codex", profiles: { codex: { tiers: {
+      luna: { claude_route: "unknown/model", effort: "max" },
+      terra: { claude_route: "known/model", effort: "xhigh" } } } } });
+    const { warnings, invocations } = inspectCatalog(f, { stdout: "  known/model  Known Model  low/medium/high/max\n" });
+    assert.match(warnings, /luna tier model 'unknown\/model' is absent/);
+    assert.match(warnings, /terra tier effort 'xhigh' is not listed/);
+    assert.deepEqual(invocations, ["models claude"]);
+  });
+
+  test("catalog validation matches routing-prefixed entries", () => {
+    const f = new Fixture();
+    f.installOrchestration({ profile: "codex", profiles: { codex: { tiers: {
+      luna: { claude_route: "gateway/gpt-6-luna" },
+      terra: { claude_route: "gateway/gpt-6.1-terra" },
+      sol: { claude_route: "gateway/gpt-6.2-sol" } } } } });
+    const { warnings } = inspectCatalog(f, { stdout:
+      "  Routing groups\n" +
+      "  auto/claude-haiku-5-5       Claude Haiku 5.5 · Wokey  low/medium\n" +
+      "  hub/wokey/claude-sonnet-5-5 Claude Sonnet 5.5 · Wokey  medium/high\n" +
+      "  claude/claude-opus-5-5      Claude Opus 5.5  low/medium/high\n" +
+      "  gateway/gpt-6-luna    GPT-6 Luna  medium/high/max\n" +
+      "  gateway/gpt-6.1-terra GPT-6.1 Terra  medium/high\n" +
+      "  gateway/gpt-6.2-sol   GPT-6.2 Sol  medium/high\n" });
+    assert.ok(!warnings.includes("is absent"));
+    assert.ok(!warnings.includes("is not listed"));
+  });
+
+  test("catalog validation skips when magpie is absent", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const { warnings, invocations } = inspectCatalog(f, { installed: false });
+    assert.equal(warnings, "");
+    assert.deepEqual(invocations, []);
+  });
+
+  test("catalog validation failure is non-fatal", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const { warnings } = inspectCatalog(f, { runnable: false });
+    assert.match(warnings, /magpie catalog unavailable; tier validation skipped/);
+  });
+
+  test("no agents without orchestration skill", () => {
+    const f = new Fixture();
+    const result = f.run("install");
+    assert.match(result.stdout, /not installed/);
+    assert.ok(!exists(path.dirname(f.agent("x"))));
+  });
+
+  test("codex profile routes only with override", () => {
+    const f = new Fixture();
+    f.installOrchestration({ profile: "codex" });
+    f.run("install");
+    const names = () => fs.readdirSync(path.dirname(f.agent("x"))).map((name) => path.basename(name, ".md")).sort();
+    assert.deepEqual(names(), ["haiku", "opus", "sonnet"]);
+    const route = "gateway/gpt-6-luna";
+    f.write(f.overridePath, JSON.stringify({ profile: "codex", profiles: { codex: { tiers: { luna: { claude_route: route } } } } }));
+    f.run("install");
+    const text = fs.readFileSync(f.agent("luna"), "utf8");
+    assert.ok(text.includes(`model: "${route}"\neffort: "medium"\n`));
+    assert.ok(text.includes("gpt-6-luna via configured gateway"));
+    f.write(f.overridePath, JSON.stringify({ profile: "codex" }));
+    f.run("install");
+    assert.ok(!exists(f.agent("luna")));
+    assert.ok(exists(f.agent("opus")));
+    assert.ok(!("luna" in f.stateJson().agents));
+  });
+
+  test("foreign agent file conflicts and is preserved", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.write(f.agent("haiku"), "mine\n");
+    f.write(f.agent("custom"), "custom\n");
+    assert.match(f.run("install", [], false).stderr, /foreign Claude agent/);
+    assert.deepEqual(read(f.agent("haiku")), Buffer.from("mine\n"));
+    assert.ok(!exists(f.launcher));
+    fs.unlinkSync(f.agent("haiku"));
+    f.run("install");
+    assert.deepEqual(read(f.agent("custom")), Buffer.from("custom\n"));
+    f.run("uninstall");
+    assert.deepEqual(read(f.agent("custom")), Buffer.from("custom\n"));
+  });
+
+  test("edited owned agent conflicts", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    const edited = cat(read(f.agent("opus")), "personal\n");
+    fs.writeFileSync(f.agent("opus"), edited);
+    for (const command of ["install", "status", "uninstall"]) assert.match(f.run(command, [], false).stderr, /edited/);
+    assert.deepEqual(read(f.agent("opus")), edited);
+    assert.ok(exists(f.launcher));
+  });
+
+  test("uninstall removes owned agents", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    f.write(f.agent("custom"), "custom\n");
+    f.run("uninstall");
+    assert.deepEqual(fs.readdirSync(path.dirname(f.agent("x"))), ["custom.md"]);
+  });
+
+  test("policy hooks install, status and uninstall preserve foreign entries", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const settingsPath = path.join(f.home, ".claude/settings.json");
+    const foreign = { matcher: "Bash", hooks: [{ type: "command", command: "personal-hook" }] };
+    f.write(settingsPath, JSON.stringify({ model: "personal", hooks: { PreToolUse: [foreign], Stop: [{ hooks: [] }] }, env: { OTHER: "yes" } }));
+    f.run("install");
+    let settings = f.json(settingsPath);
+    assert.deepEqual(Object.keys(settings), ["model", "hooks", "env"]);
+    const entries = settings.hooks.PreToolUse;
+    assert.deepEqual(entries[0], foreign);
+    assert.deepEqual(entries.slice(1).map((entry) => entry.matcher),
+      ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"]);
+    const stopEntry = settings.hooks.Stop.at(-1);
+    assert.deepEqual(stopEntry, { hooks: [{ type: "command", command: f.hookCommand }] });
+    for (const entry of entries.slice(1)) {
+      assert.deepEqual(entry.hooks, [{ type: "command", command: f.hookCommand }]);
+      fs.accessSync(f.hook, fs.constants.X_OK);
+    }
+    assert.deepEqual(f.stateJson().hooks, [...entries.slice(1), stopEntry]);
+    assert.deepEqual(JSON.parse(f.run("status").stdout).hooks, {
+      "Agent|Task": "applied", Bash: "applied",
+      "mcp__t3-code__delegate_task": "applied", "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
+    });
+    const before = f.snapshot();
+    assert.match(f.run("install").stdout, /no-op/);
+    assert.deepEqual(f.snapshot(), before);
+    f.run("uninstall");
+    settings = f.json(settingsPath);
+    assert.deepEqual(settings.hooks, { PreToolUse: [foreign], Stop: [{ hooks: [] }] });
+    assert.equal(settings.model, "personal");
+    assert.deepEqual(settings.env, { OTHER: "yes" });
+  });
+
+  test("policy hook command is run through its shebang with Node only", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const result = spawnSync(f.hook, ["--workers", path.join(f.state, "workers.json")], {
+      input: JSON.stringify({ tool_name: "Read", tool_input: {} }), encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  });
+
+  test("policy hooks edited owned entry is kept and canonical reapplied", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    const settingsPath = path.join(f.home, ".claude/settings.json");
+    const settings = f.json(settingsPath);
+    const canonical = settings.hooks.PreToolUse[0];
+    const edited = JSON.parse(JSON.stringify(canonical));
+    edited.hooks[0].command = "edited-hook";
+    settings.hooks.PreToolUse[0] = edited;
+    fs.writeFileSync(settingsPath, JSON.stringify(settings));
+    assert.deepEqual(JSON.parse(f.run("status").stdout).hooks, {
+      "Agent|Task": "missing", Bash: "applied", "mcp__t3-code__delegate_task": "applied",
+      "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
+    });
+    f.run("install");
+    const reapplied = f.json(settingsPath).hooks.PreToolUse;
+    assert.ok(reapplied.some((entry) => isDeepStrictEqual(entry, edited)));
+    assert.ok(reapplied.some((entry) => isDeepStrictEqual(entry, canonical)));
+    f.run("uninstall");
+    assert.deepEqual(f.json(settingsPath).hooks.PreToolUse, [edited]);
+  });
+
+  test("policy hooks duplicated owned entry conflicts", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    const settingsPath = path.join(f.home, ".claude/settings.json");
+    const settings = f.json(settingsPath);
+    settings.hooks.PreToolUse.push(settings.hooks.PreToolUse[0]);
+    fs.writeFileSync(settingsPath, JSON.stringify(settings));
+    const data = read(settingsPath);
+    assert.match(f.run("install", [], false).stderr, /duplicated/);
+    assert.deepEqual(read(settingsPath), data);
+  });
+
+  test("preexisting identical policy hook is not owned", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const settingsPath = path.join(f.home, ".claude/settings.json");
+    const foreign = { matcher: "Bash", hooks: [{ type: "command", command: f.hookCommand }] };
+    f.write(settingsPath, JSON.stringify({ hooks: { PreToolUse: [foreign] } }));
+    f.run("install");
+    const saved = f.stateJson().hooks;
+    assert.deepEqual(saved.filter((entry) => "matcher" in entry).map((entry) => entry.matcher),
+      ["Agent|Task", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"]);
+    assert.equal(saved.filter((entry) => !("matcher" in entry)).length, 1);
+    f.run("uninstall");
+    const hooks = f.json(settingsPath).hooks;
+    assert.deepEqual(hooks.PreToolUse, [foreign]);
+    assert.deepEqual(hooks.Stop, []);
+  });
+
+  test("policy hooks removed when orchestration is removed", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    fs.rmSync(path.join(f.home, ".agents/skills/orchestrate-harnesses"), { recursive: true });
+    f.run("install");
+    assert.deepEqual(f.stateJson().hooks, []);
+    assert.deepEqual(f.json(path.join(f.home, ".claude/settings.json")).hooks.PreToolUse, []);
+  });
+
+  test("policy hooks invalid configuration conflicts without writes", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const settingsPath = path.join(f.home, ".claude/settings.json");
+    const data = Buffer.from('{"hooks":{"PreToolUse":{}}}');
+    f.write(settingsPath, data);
+    assert.match(f.run("install", [], false).stderr, /invalid Claude hooks/);
+    assert.deepEqual(read(settingsPath), data);
+    assert.ok(!exists(path.join(f.state, "state.json")));
+  });
+
+  test("null settings sections are reported as invalid configuration", () => {
+    const cases = [
+      ['{"hooks": null}', /invalid Claude hooks/],
+      ['{"hooks": {"PreToolUse": null}}', /invalid Claude hooks/],
+      ['{"hooks": {"Stop": null}}', /invalid Claude hooks/],
+      ['{"env": null}', /invalid claude configuration/],
+    ];
+    cases.forEach(([data, message], index) => {
+      const f = new Fixture();
+      f.configureHome(path.join(f.temporary, `null-${index}`));
+      f.installOrchestration();
+      const file = path.join(f.home, ".claude/settings.json");
+      f.write(file, data);
+      assert.match(f.run("install", [], false).stderr, message);
+      assert.deepEqual(read(file), Buffer.from(data));
+      assert.ok(!exists(path.join(f.state, "state.json")));
+    });
+  });
+
+  test("native apply, rewrite, conflict and uninstall", () => {
+    const f = new Fixture();
+    f.installOrchestration({ policy: { context: { codex_window: 900000, gateway_window: 400000 } } });
+    const claude = path.join(f.home, ".claude/settings.json");
+    const codex = path.join(f.home, ".codex/config.toml");
+    const original = Buffer.from('model = "magpie" # routing\nmodel_reasoning_effort = "high"\n\n[model_providers.magpie]\nname = "route"\n[projects."/tmp"]\ntrust_level = "trusted"\n');
+    f.write(claude, '{"model":"magpie", "modelPicker":true, "env":{"OTHER":"x"}}');
+    f.write(codex, original);
+    f.run("install");
+    let settings = f.json(claude);
+    assert.deepEqual(settings.env, { OTHER: "x", CLAUDE_CODE_AUTO_COMPACT_WINDOW: "300000", CLAUDE_CODE_MAX_CONTEXT_TOKENS: "400000" });
+    assert.equal(settings.model, "magpie");
+    const expected = sub(original, "[model_providers.magpie]",
+      "model_auto_compact_token_limit = 300000\nmodel_context_window = 900000\n[model_providers.magpie]");
+    assert.deepEqual(read(codex), expected);
+    const before = f.snapshot();
+    assert.match(f.run("install").stdout, /no-op/);
+    assert.deepEqual(f.snapshot(), before);
+    delete settings.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+    fs.writeFileSync(claude, JSON.stringify(settings));
+    fs.writeFileSync(codex, original);
+    let status = JSON.parse(f.run("status").stdout).native_settings;
+    assert.equal(status.claude.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "missing");
+    f.run("install");
+    assert.deepEqual(read(codex), expected);
+    settings = f.json(claude);
+    settings.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "420000";
+    fs.writeFileSync(claude, JSON.stringify(settings));
+    status = JSON.parse(f.run("status").stdout).native_settings;
+    assert.equal(status.claude.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "conflict");
+    assert.match(f.run("install", [], false).stderr, /edited/);
+    f.run("uninstall");
+    assert.equal(f.json(claude).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "420000");
+    assert.deepEqual(read(codex), original);
+  });
+
+  test("native preexisting values and invalid files", () => {
+    const cases = [
+      ["claude", '{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"300000"}}', true],
+      ["claude", '{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"310000"}}', false],
+      ["claude", "{invalid", false],
+      ["codex", "model_auto_compact_token_limit = 300000\n", true],
+      ["codex", "model_auto_compact_token_limit = 1\n", false],
+      ["codex", "[broken", false],
+    ];
+    cases.forEach(([kind, data, succeeds], index) => {
+      const f = new Fixture();
+      f.configureHome(path.join(f.temporary, `native-${index}`));
+      f.installOrchestration();
+      const file = path.join(f.home, kind === "claude" ? ".claude/settings.json" : ".codex/config.toml");
+      f.write(file, data);
+      f.run("install", [], succeeds);
+      if (succeeds) {
+        f.run("uninstall");
+        assert.ok(!read(file).includes(kind === "claude" ? "CLAUDE_CODE_AUTO_COMPACT_WINDOW" : "model_auto_compact_token_limit"));
+      } else {
+        assert.deepEqual(read(file), Buffer.from(data));
+      }
+    });
+  });
+
+  test("native missing directory and override validation", () => {
+    const f = new Fixture();
+    f.installOrchestration({ policy: { context: { max_tokens: 500000, gateway_window: null } } });
+    fs.rmdirSync(path.join(f.home, ".codex"));
+    f.run("install");
+    assert.deepEqual(f.json(path.join(f.home, ".claude/settings.json")).env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "500000" });
+    assert.ok(!("codex" in f.stateJson().native));
+  });
+
+  test("profiles merge, delete, select and workers command", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const work = path.join(f.home, "work");
+    fs.mkdirSync(work);
+    const alias = path.join(f.home, "alias");
+    fs.symlinkSync(work, alias, "dir");
+    f.write(f.overridePath, `defaults: {timeout_s: 900}
+profiles:
+  corporate:
+    tiers:
+      glm: {harness: claude, model: glm, effort: high}
+      sonnet: null
+    policy: {context: {max_tokens: 12345}}
+    ladder:
+      - {level: junior, tiers: [haiku]}
+      - {level: senior, tiers: [opus]}
+      - {level: expert, tiers: [glm], approval: required}
+profile: codex
+select:
+  - {path: ~/work, profile: corporate}
+  - {path: "~", profile: codex}
+`);
+    const resolved = JSON.parse(f.run("workers", ["--cwd", path.join(alias, "nested")]).stdout);
+    assert.equal(resolved.profile, "corporate");
+    assert.ok(!("sonnet" in resolved.tiers));
+    assert.equal(resolved.tiers.glm.effort, "high");
+    assert.equal(resolved.tiers.glm.timeout_s, 900);
+    assert.equal(resolved.policy.context.gateway_window, null);
+    assert.deepEqual(resolved.ladder.map((entry) => entry.level), ["junior", "senior", "expert"]);
+    const fallback = JSON.parse(f.run("workers", ["--cwd", path.dirname(f.home)]).stdout);
+    assert.equal(fallback.profile, "codex");
+    assert.deepEqual(Object.keys(fallback.tiers).sort(), ["haiku", "luna", "opus", "sol", "sonnet", "terra"]);
+    f.run("install");
+    assert.ok(exists(f.agent("glm")));
+    assert.ok(!exists(f.agent("terra")));
+    assert.ok(!exists(f.agent("luna")));
+    const bundle = f.json(path.join(f.state, "workers.json"));
+    assert.equal(bundle.profile, "codex");
+    assert.equal(bundle.select[0].path, fs.realpathSync(work));
+    assert.equal(bundle.profiles.corporate.policy.context.max_tokens, 12345);
+    assert.equal(f.json(path.join(f.home, ".claude/settings.json")).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "300000");
+    f.run("uninstall");
+    assert.ok(!exists(path.join(f.state, "workers.json")));
+    assert.ok(!exists(f.agent("glm")));
+  });
+
+  test("absolute XDG override and relative fallback", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const xdg = path.join(f.home, "xdg");
+    const environment = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+    const restore = () => Object.entries(environment).forEach(([key, value]) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    });
+    try {
+      process.env.XDG_CONFIG_HOME = xdg;
+      assert.equal(new Setup(f.home).override, f.overridePath);
+      process.env.HOME = f.home;
+      const setup = new Setup(f.home);
+      assert.equal(setup.override, path.join(xdg, "agent-workbench/workers.yml"));
+      f.write(setup.override, "profile: codex");
+      assert.equal(effectiveWorkers(setup.workersBundle(), f.home).profile, "codex");
+      process.env.HOME = environment.HOME;
+      for (const value of ["", "relative"]) {
+        process.env.XDG_CONFIG_HOME = value;
+        assert.equal(new Setup(f.home).override, f.overridePath);
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  test("cross-profile tier identity conflict without writes", () => {
+    const f = new Fixture();
+    f.installOrchestration({ profiles: { other: { tiers: { haiku: { effort: "high" } } } } });
+    const before = f.snapshot();
+    const result = f.run("install", [], false);
+    assert.match(result.stderr, /haiku/);
+    assert.match(result.stderr, /rename/);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  test("invalid workers refuse without writes", () => {
+    const invalid = [
+      "version: 1", "roles: {}", "sol_weekly_brake_percent: 100", "tiers: []",
+      "defaults: {timeout_s: false}", "policy: {context: {oops: 1}}",
+      "select: [{path: ~/work, profile: missing}]", "select: {}", "profile: missing",
+      "profiles: {unused: {tiers: {luna: {effort: false}}}}",
+      "profiles: {unused: {roles: {}}}", "tiers: {luna: {cli: codex}}",
+      "ladder: [{level: L1, tiers: [terra]}]", "ladder: []", "[broken",
+      "defaults: {timeout_s: 7200.0}", "version: 2.0", "policy: {max_auto_rework: 1.0}",
+      "tiers: {no: null}", "tiers: {on: {harness: claude, model: x}}", "tiers: {null: null}",
+      "profiles: {1: {tiers: {}}}", "profiles: null", "select: null",
+    ];
+    for (const text of invalid) {
+      const f = new Fixture();
+      f.installOrchestration();
+      f.write(f.overridePath, text);
+      const before = f.snapshot();
+      f.run("install", [], false);
+      assert.deepEqual(f.snapshot(), before, text);
+    }
+  });
+
+  test("resolved workers hash ownership", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const file = path.join(f.state, "workers.json");
+    f.write(file, "personal");
+    assert.match(f.run("install", [], false).stderr, /foreign or edited/);
+    fs.unlinkSync(file);
+    f.run("install");
+    const original = read(file);
+    fs.writeFileSync(file, "edited");
+    for (const command of ["install", "status", "uninstall"]) assert.match(f.run(command, [], false).stderr, /foreign or edited/);
+    fs.writeFileSync(file, original);
+    f.run("uninstall");
+    assert.ok(!exists(file));
+  });
+
+  test("missing resource and duplicate import status", () => {
+    const f = new Fixture();
+    f.run("install");
+    const template = path.join(f.skill, "assets/AGENTS.md");
+    fs.unlinkSync(template);
+    assert.match(f.run("status", [], false).stderr, /missing canonical/);
+    f.write(template, "public\n");
+    fs.writeFileSync(f.claude, cat(read(f.claude), IMPORT, NL));
+    assert.match(f.run("status", [], false).stderr, /duplicate/);
+  });
+});
