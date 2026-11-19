@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/agent-workbench-lockup-dark.svg">
+    <img src="assets/brand/agent-workbench-lockup-light.svg" alt="Agent Workbench" width="360">
+  </picture>
+</p>
+
 # Agent Workbench Skills
 
 Seven portable skills for Codex and Claude Code. Core skills are manage-lane, orchestrate-harnesses, prompt-for-decisions, thermal-guard and workbench-setup; disk-cleanup and review-storybook are optional:
