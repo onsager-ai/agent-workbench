@@ -201,9 +201,20 @@ describe("policy hook", () => {
     }
   });
 
+  test("named agents cannot override their model", () => {
+    for (const tool of ["Agent", "Task"]) {
+      for (const [subagentType, model] of [["luna", "sonnet"], ["sol", "sonnet"], ["haiku", "opus"], ["custom-agent", "haiku"]]) {
+        const decision = invoke(JSON.stringify({ tool_name: tool, tool_input: { subagent_type: subagentType, model } }));
+        assert.equal(decision.permissionDecision, "deny", subagentType);
+        assert.match(decision.permissionDecisionReason, /Drop model and let subagent_type select the tier/);
+      }
+    }
+    assert.equal(invoke(JSON.stringify({ tool_name: "Agent", tool_input: { subagent_type: "fork", model: "sonnet" } })), null);
+  });
+
   test("opus model requires approval", () => {
     for (const tool of ["Agent", "Task"]) {
-      const decision = invoke(JSON.stringify({ tool_name: tool, tool_input: { subagent_type: "haiku", model: "opus" } }));
+      const decision = invoke(JSON.stringify({ tool_name: tool, tool_input: { subagent_type: "Plan", model: "opus" } }));
       assert.equal(decision.permissionDecision, "ask");
       assert.equal(decision.permissionDecisionReason,
         "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).");
