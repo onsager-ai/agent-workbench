@@ -4,7 +4,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { effectiveWorkers } from "../../workbench-setup/scripts/workbench.mjs";
 
 const APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).";
 const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task branch, origin/main, " +
@@ -469,7 +468,7 @@ function postToolModelWarning(workers, event) {
     if (typeof response.agentType !== "string" || typeof event.transcript_path !== "string") return null;
     if (workers === null) return null;
     const bundle = JSON.parse(fs.readFileSync(workers, "utf8"));
-    const config = effectiveWorkers(bundle, event.cwd || process.cwd());
+    const { config } = selectWorkerProfile(bundle, event);
     const tier = config.tiers[response.agentType];
     if (!tier) return null;
     const expected = tier.harness === "codex" ? tier.claude_route : tier.model;
@@ -518,19 +517,19 @@ function isRelativeTo(child, parent) {
   return child === base || child.startsWith(base === "/" ? "/" : base + "/");
 }
 
+function selectWorkerProfile(bundle, event) {
+  const cwd = resolvePath(event.cwd || process.cwd());
+  const rule = bundle.select.find((entry) => isRelativeTo(cwd, entry.path));
+  const profile = rule?.profile ?? bundle.profile;
+  const config = profile ? bundle.profiles[profile] : bundle.base;
+  return { config, profile, cwd };
+}
+
 function dispatchApproval(file, event, tier) {
   try {
     if (file === null) throw new Error("missing workers path");
     const bundle = JSON.parse(fs.readFileSync(file, "utf8"));
-    const cwd = resolvePath(event.cwd || process.cwd());
-    let profile = bundle.profile;
-    for (const rule of bundle.select) {
-      if (isRelativeTo(cwd, rule.path)) {
-        profile = rule.profile;
-        break;
-      }
-    }
-    const config = profile ? bundle.profiles[profile] : bundle.base;
+    const { config, profile, cwd } = selectWorkerProfile(bundle, event);
     const known = new Set([bundle.base, ...Object.values(bundle.profiles)].flatMap((item) => Object.keys(item.tiers)));
     if (!known.has(tier) || config.tiers[tier]?.opt_in) return null;
     for (const level of config.ladder) {

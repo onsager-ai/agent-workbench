@@ -109,24 +109,24 @@ describe("policy hook", () => {
 
   test("PostToolUse reports requested-model overrides and transcript mismatches", () => {
     const transcript = path.join(directory, "manager.jsonl");
-    const subagents = path.join(directory, "subagents");
-    fs.mkdirSync(subagents);
+    const subagents = path.join(directory, "manager", "subagents");
+    fs.mkdirSync(subagents, { recursive: true });
     const workerTranscript = path.join(subagents, "agent-worker-1.jsonl");
     const invokePost = (agentType, resolvedModel, models = [resolvedModel]) => {
       fs.writeFileSync(workerTranscript, models.map((model) => JSON.stringify({
         type: "assistant", message: { model },
       })).join("\n") + "\n");
       return invoke(JSON.stringify({
-        hook_event_name: "PostToolUse", tool_name: "Agent", transcript_path: transcript,
+        hook_event_name: "PostToolUse", tool_name: "Agent", transcript_path: transcript, cwd: directory,
         tool_response: { status: "completed", agentId: "worker-1", agentType, resolvedModel },
       }));
     };
     assert.equal(invokePost("haiku", "claude-haiku-5-5", ["group/auto-claude-haiku-5-5"]), null);
     assert.match(invokePost("haiku", "claude-sonnet-5-5").additionalContext, /expected claude-haiku-5-5/);
     bundle.profiles.codex.tiers.luna.claude_route = "onsager/codex/gpt-6-luna";
-    bundle.profile = "codex";
+    bundle.select = [{ path: directory, profile: "codex" }];
     fs.writeFileSync(workers, JSON.stringify(bundle));
-    assert.equal(invokePost("luna", "onsager/codex/gpt-6-luna", ["onsager/codex/gpt-6-luna"]), null);
+    assert.equal(invokePost("luna", "onsager/codex/gpt-6-luna", ["codex/gpt-6-luna"]), null);
     assert.match(invokePost("luna", "codex/gpt-6-luna", ["onsager/codex/gpt-6-luna"]).additionalContext,
       /expected onsager\/codex\/gpt-6-luna/);
     assert.match(invokePost("luna", "onsager/codex/gpt-6-luna", ["group/auto-claude-sonnet-5-5"]).additionalContext,
