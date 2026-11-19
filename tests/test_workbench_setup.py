@@ -89,7 +89,7 @@ class SetupTests(unittest.TestCase):
         for path in (self.state / "backups").iterdir():
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
-    def test_migration_exact_bytes_and_idempotency(self):
+    def test_first_install_keeps_existing_bytes_and_is_idempotent(self):
         personal = "private π rules".encode() + b"\x80"
         self.write(self.shared, b"existing shared\n")
         self.write(self.codex, personal)
@@ -174,30 +174,6 @@ class SetupTests(unittest.TestCase):
         self.claude.write_bytes(self.claude.read_bytes() + b"personal edit \xcf\x80\n")
         self.run_setup("uninstall")
         self.assertEqual(self.claude.read_bytes(), b"personal edit \xcf\x80\n")
-
-    def test_legacy_reused_import_remains_non_owned(self):
-        original = b"Prior caf\xc3\xa9\n" + IMPORT + b"\nAfter"
-        self.write(self.claude, original)
-        self.run_setup("install")
-        state_path = self.state / "state.json"
-        state = json.loads(state_path.read_bytes())
-        self.assertFalse(state["import_added"])
-        state.pop("claude_import")
-        state_path.write_text(json.dumps(state) + "\n")
-        self.run_setup("status")
-        self.run_setup("uninstall")
-        self.assertEqual(self.claude.read_bytes(), original)
-
-    def test_legacy_added_import_remains_owned(self):
-        self.run_setup("install")
-        state_path = self.state / "state.json"
-        state = json.loads(state_path.read_bytes())
-        self.assertTrue(state["import_added"])
-        state.pop("claude_import")
-        state_path.write_text(json.dumps(state) + "\n")
-        self.run_setup("status")
-        self.run_setup("uninstall")
-        self.assertEqual(self.claude.read_bytes(), b"")
 
     def test_foreign_link_refuses_without_writes(self):
         target = self.home / "foreign"
@@ -527,19 +503,6 @@ class SetupTests(unittest.TestCase):
         self.run_setup("uninstall")
         self.assertEqual([p.name for p in self.agent("x").parent.iterdir()], ["custom.md"])
 
-    def test_state_without_agent_records_still_loads(self):
-        self.run_setup("install")
-        path = self.state / "state.json"
-        state = json.loads(path.read_bytes())
-        del state["agents"]
-        path.write_text(json.dumps(state))
-        self.run_setup("status")
-        self.install_orchestration()
-        self.run_setup("install")
-        self.assertTrue(self.agent("sonnet").exists())
-        self.run_setup("uninstall")
-        self.assertFalse(self.agent("sonnet").exists())
-
     def test_policy_hooks_install_status_uninstall_preserves_foreign_entries(self):
         self.install_orchestration()
         path = self.home / ".claude/settings.json"
@@ -573,47 +536,6 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(settings["hooks"], {"PreToolUse": [foreign], "Stop": [{"hooks": []}]})
         self.assertEqual(settings["model"], "personal")
         self.assertEqual(settings["env"], {"OTHER": "yes"})
-
-    def test_policy_hooks_without_orchestration_and_legacy_state(self):
-        self.run_setup("install")
-        self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"], {})
-        state_path = self.state / "state.json"
-        state = json.loads(state_path.read_bytes())
-        del state["hooks"]
-        state_path.write_text(json.dumps(state))
-        self.install_orchestration()
-        self.run_setup("install")
-        state = json.loads(state_path.read_bytes())
-        self.assertEqual(len(state["hooks"]), 4)
-        self.assertEqual([entry.get("matcher", "Stop") for entry in state["hooks"]],
-                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "Stop"])
-        self.run_setup("uninstall")
-        settings = json.loads((self.home / ".claude/settings.json").read_bytes())
-        self.assertEqual(settings["hooks"]["PreToolUse"], [])
-        self.assertEqual(settings["hooks"]["Stop"], [])
-
-    def test_policy_hooks_upgrade_two_owned_entries_to_three(self):
-        self.install_orchestration()
-        self.run_setup("install")
-        path = self.home / ".claude/settings.json"
-        state_path = self.state / "state.json"
-        settings = json.loads(path.read_bytes())
-        settings["hooks"]["PreToolUse"] = settings["hooks"]["PreToolUse"][:2]
-        del settings["hooks"]["Stop"]
-        path.write_text(json.dumps(settings))
-        state = json.loads(state_path.read_bytes())
-        state["hooks"] = state["hooks"][:2]
-        state_path.write_text(json.dumps(state))
-
-        self.run_setup("install")
-
-        entries = json.loads(path.read_bytes())["hooks"]["PreToolUse"]
-        self.assertEqual([entry["matcher"] for entry in entries],
-                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task"])
-        saved = json.loads(state_path.read_bytes())["hooks"]
-        self.assertEqual([entry.get("matcher", "Stop") for entry in saved],
-                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "Stop"])
-        self.assertEqual(len(json.loads(path.read_bytes())["hooks"]["Stop"]), 1)
 
     def test_policy_hooks_edited_owned_entry_is_kept_and_canonical_reapplied(self):
         self.install_orchestration()
@@ -709,20 +631,6 @@ class SetupTests(unittest.TestCase):
         self.run_setup("uninstall")
         self.assertEqual(json.loads(claude.read_bytes())["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "420000")
         self.assertEqual(codex.read_bytes(), original)
-
-    def test_native_migrates_owned_autocompact_percentage(self):
-        self.install_orchestration()
-        claude = self.home / ".claude/settings.json"
-        self.write(claude, b'{"env":{"OTHER":"x"}}')
-        self.run_setup("install")
-        state_path = self.state / "state.json"
-        state = json.loads(state_path.read_bytes())
-        state["native"]["claude"] = {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "30"}
-        state_path.write_text(json.dumps(state))
-        claude.write_text(json.dumps({"env": {"OTHER": "x", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "30"}}))
-        self.run_setup("install")
-        self.assertEqual(json.loads(claude.read_bytes())["env"], {"OTHER": "x", "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000", "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000"})
-        self.assertEqual(json.loads(state_path.read_bytes())["native"]["claude"], {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000", "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000"})
 
     def test_native_preexisting_values_and_invalid_files(self):
         for index, (kind, data, succeeds) in enumerate((
@@ -826,19 +734,6 @@ select:
         self.assertIn("rename", result.stderr)
         self.assertEqual(self.snapshot(), before)
 
-    def test_legacy_override_refuses_install_and_status(self):
-        self.install_orchestration()
-        self.run_setup("install")
-        legacy = self.home / ".config/agent-workbench/models.json"
-        self.write(legacy, b'{"roles":{"luna":{"timeout_s":900}}}')
-        before = self.snapshot()
-        for command in ("install", "status"):
-            result = self.run_setup(command, ok=False)
-            for key in ("models.json", "workers.yml", "roles -> tiers", "cli -> harness", "claude_model -> claude_route"):
-                self.assertIn(key, result.stderr)
-            self.assertEqual(self.snapshot(), before)
-        self.run_setup("uninstall")  # Legacy config must not prevent removal.
-
     def test_invalid_workers_refuse_without_writes(self):
         self.install_orchestration()
         override = self.home / ".config/agent-workbench/workers.yml"
@@ -871,27 +766,6 @@ select:
         path.write_bytes(original)
         self.run_setup("uninstall")
         self.assertFalse(path.exists())
-
-    def test_owned_hook_command_upgrade(self):
-        self.install_orchestration()
-        self.run_setup("install")
-        state_path = self.state / "state.json"
-        settings_path = self.home / ".claude/settings.json"
-        state = json.loads(state_path.read_text())
-        settings = json.loads(settings_path.read_text())
-        old_command = shlex.quote(str(self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"))
-        for entry in state["hooks"]:
-            entry["hooks"][0]["command"] = old_command
-        settings["hooks"]["PreToolUse"] = state["hooks"][:3]
-        settings["hooks"]["Stop"] = state["hooks"][3:]
-        state_path.write_text(json.dumps(state))
-        settings_path.write_text(json.dumps(settings))
-        self.run_setup("install")
-        settings = json.loads(settings_path.read_text())
-        entries = settings["hooks"]["PreToolUse"] + settings["hooks"]["Stop"]
-        self.assertEqual(len(entries), 4)
-        for entry in entries:
-            self.assertEqual(shlex.split(entry["hooks"][0]["command"])[1:], ["--workers", str(self.state / "workers.json")])
 
     def test_missing_resource_and_duplicate_import_status(self):
         self.run_setup("install")

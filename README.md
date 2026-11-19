@@ -50,8 +50,6 @@ Managers apply these settings through actual native tool capabilities. A configu
 
 The **DeepSeek Flash** Worker is opt-in, outside the ladder, for CI log triage, repository exploration, small edits and independent diff review when the user asks for it. Its `flash` role runs in the Codex harness through the configured model provider. Configure the client-visible model ID for your provider and record accepted results, correction time and actual cost. See [Flash routing guidance](skills/orchestrate-harnesses/references/deepseek-flash.md). Workbench does not automatically launch an agent when CI fails; log triage is a task assigned by a Manager.
 
-Workbench has no custom orchestration runtime, task database or process supervisor. The standalone Python controller, permission probe, old-role/session compatibility code and JSON dispatch/response contracts have been removed. Existing private historical records are left alone. Native runs use their tool IDs, briefs and existing task/PR evidence; they do not create another Python-managed task record.
-
 The remaining Python files have narrow purposes:
 
 | Files | Purpose |
@@ -59,7 +57,7 @@ The remaining Python files have narrow purposes:
 | `skills/workbench-setup/scripts/workbench.py` | Optional install/update/status/uninstall of shared global instructions, launcher and private backups |
 | `tests/test_*.py` | CI checks for package layout, model defaults and installer behavior; no orchestration service |
 
-Setup applies the configured compaction target to owned Claude and Codex config keys when their config directories exist, preserving Magpie routing. Compaction is advisory, not a hard request-token cap; restart running sessions to pick up changes. Setup preserves personal text outside its managed block. Reconcile old private Gateway/controller rules and obsolete model overrides explicitly; workbench does not silently rewrite them.
+Setup applies the configured compaction target to owned Claude and Codex config keys when their config directories exist, preserving Magpie routing. Compaction is advisory, not a hard request-token cap; restart running sessions to pick up changes. Setup preserves personal text outside its managed block.
 
 ## Install globally
 
@@ -99,7 +97,7 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 | `~/.claude/settings.json` → `hooks.PreToolUse` | Owned hooks for Opus approval and GitHub polling policy (when `orchestrate-harnesses` is installed) |
 | `~/.local/state/agent-workbench/` | Ownership, hashes, exclusive lock, private backups |
 
-The exact public markers are `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->`. Put personal rules outside that block in `~/.agents/AGENTS.md`. On first installation, existing Codex regular-file bytes migrate outside the block unchanged. When migrating old orchestration rules, inspect personal text for Gateway/fixed-Manager requirements and reconcile those explicitly; setup preserves private text and does not resolve semantic conflicts for you. Existing Claude text stays in place. Neither npx distribution nor this setup changes project instructions, other agent settings, credentials, model configuration, or native permissions.
+The exact public markers are `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->`. Put personal rules outside that block in `~/.agents/AGENTS.md`. On first installation, existing Codex regular-file bytes are kept outside the block unchanged. Existing Claude text stays in place. Neither npx distribution nor this setup changes project instructions, other agent settings, credentials, model configuration, or native permissions.
 
 The generated agents let a Claude Manager dispatch each tier as `subagent_type: luna`, `haiku`, and so on. A tier is generated when its role has `harness: claude` or a non-null `claude_route`. By default luna, terra and sol route through Magpie as `onsager/codex/<model>`; flash has no route. Gateway prefixes are installation-specific, so set a different ID, or `null` to run a tier as a Codex Worker, in your partial model override (`{"tiers": {"luna": {"claude_route": "<gateway model ID>"}}}`). Rerun `agent-workbench install` after editing the override. Generated files are owned by hash: setup refuses to overwrite a foreign or edited file, leaves other files in `~/.claude/agents` alone, and `uninstall` removes only unmodified owned files.
 

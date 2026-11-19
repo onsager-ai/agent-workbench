@@ -411,7 +411,6 @@ class Setup:
         xdg = os.environ.get("XDG_CONFIG_HOME", "")
         config = Path(xdg) if self.home == Path.home() and xdg and os.path.isabs(xdg) else self.home / ".config"
         self.override = config / "agent-workbench/workers.yml"
-        self.legacy_override = config / "agent-workbench/models.json"
 
     def launcher_bytes(self):
         return ("#!/usr/bin/env python3\n"
@@ -433,14 +432,6 @@ class Setup:
         return output or f"exited {result.returncode}"
 
     def workers_bundle(self):
-        if present(self.legacy_override):
-            raise Conflict(f"legacy override {self.legacy_override}; migrate to {self.override}: "
-                           "roles -> tiers, cli -> harness, claude_model -> claude_route, "
-                           "max_auto_rework -> policy.max_auto_rework, "
-                           "sol_weekly_brake_percent -> tiers.sol.weekly_brake_percent, "
-                           "max_context_tokens -> policy.context.max_tokens, "
-                           "gateway_context_window -> policy.context.gateway_window, "
-                           "codex_context_window -> policy.context.codex_window; version: 2")
         inspect(self.models, self.home)
         if present(self.override):
             base = self.home if self.override.is_relative_to(self.home) else self.override.parent
@@ -628,7 +619,7 @@ class Setup:
 
     def hook_plans(self, state, plans, *, uninstall=False, status=False):
         """Own complete entries, never a matcher or another hook's command."""
-        owned = state.get("hooks", []) if state else []
+        owned = state["hooks"] if state else []
         data, _ = self.native_config("claude")
         if data is None:
             if owned:
@@ -690,7 +681,7 @@ class Setup:
         return record, report
 
     def check_agents(self, state, desired=()):
-        owned = state.get("agents", {}) if state else {}
+        owned = state["agents"] if state else {}
         for name in sorted({*owned, *desired}):
             path = self.agent_path(name)
             inspect(path, self.home)
@@ -709,6 +700,9 @@ class Setup:
         try:
             state = json.loads(read(self.state_path))
             if (state["schema"] != 1 or not isinstance(state["block_hash"], str)
+                    or not isinstance(state["native"], dict)
+                    or not isinstance(state["hooks"], list)
+                    or not isinstance(state["agents"], dict)
                     or state["target"] != self.target
                     or not isinstance(state["launcher_hash"], str)
                     or not isinstance(state["version"], str)
@@ -717,22 +711,21 @@ class Setup:
                     or not isinstance(state["import_added"], bool)
                     or state["import_suffix"] not in ("", IMPORT.decode() + "\n", "\n" + IMPORT.decode() + "\n")):
                 raise ValueError("invalid ownership metadata")
-            if "claude_import" in state:
-                imported = state["claude_import"]
-                if (not isinstance(imported, dict) or not isinstance(imported.get("owned"), bool)
-                        or not isinstance(imported.get("line"), str)):
-                    raise ValueError("invalid Claude import ownership metadata")
-                base64.b64decode(imported["line"], validate=True)
-            if state.get("workers_hash") is not None and not isinstance(state["workers_hash"], str):
+            imported = state["claude_import"]
+            if (not isinstance(imported, dict) or not isinstance(imported.get("owned"), bool)
+                    or not isinstance(imported.get("line"), str)):
+                raise ValueError("invalid Claude import ownership metadata")
+            base64.b64decode(imported["line"], validate=True)
+            if state["workers_hash"] is not None and not isinstance(state["workers_hash"], str):
                 raise ValueError("invalid Worker ownership metadata")
-            native = state.get("native", {})
+            native = state["native"]
             if not isinstance(native, dict) or any(kind not in ("claude", "codex") or not isinstance(entries, dict) for kind, entries in native.items()):
                 raise ValueError("invalid native ownership metadata")
-            allowed = {"claude": dict.fromkeys(("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_MAX_CONTEXT_TOKENS"), str), "codex": {"model_auto_compact_token_limit": int, "model_context_window": int}}
+            allowed = {"claude": dict.fromkeys(("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_MAX_CONTEXT_TOKENS"), str), "codex": {"model_auto_compact_token_limit": int, "model_context_window": int}}
             for kind, entries in native.items():
                 if any(key not in allowed[kind] or type(value) is not allowed[kind][key] for key, value in entries.items()):
                     raise ValueError("invalid native ownership metadata")
-            hooks = state.get("hooks", [])
+            hooks = state["hooks"]
             if not isinstance(hooks, list):
                 raise ValueError("invalid hook ownership metadata")
             for entry in hooks:
@@ -745,7 +738,7 @@ class Setup:
                         or entry["hooks"][0]["type"] != "command"
                         or not isinstance(entry["hooks"][0]["command"], str)):
                     raise ValueError("invalid hook ownership metadata")
-            for name, entry in state.get("agents", {}).items():
+            for name, entry in state["agents"].items():
                 if not ROLE.fullmatch(name) or not isinstance(entry["hash"], str):
                     raise ValueError("invalid agent ownership metadata")
             return state
@@ -754,12 +747,8 @@ class Setup:
 
     @staticmethod
     def claude_import_record(state, current_line=None):
-        if "claude_import" in state:
-            saved = state["claude_import"]
-            return {"owned": saved["owned"], "line": base64.b64decode(saved["line"], validate=True)}
-        if state["import_added"]:
-            return {"owned": True, "line": IMPORT + b"\n"}
-        return {"owned": False, "line": current_line}
+        saved = state["claude_import"]
+        return {"owned": saved["owned"], "line": base64.b64decode(saved["line"], validate=True)}
 
     @staticmethod
     def encode_claude_import(owned, line):
@@ -817,11 +806,9 @@ class Setup:
             if imported["owned"]:
                 if lines[0] != imported["line"]:
                     raise Conflict("managed Claude import missing or modified; left unchanged")
-            elif "claude_import" not in state and lines[0].strip() != IMPORT:
-                raise Conflict("managed Claude import missing or modified; left unchanged")
         self.check_agents(state)
         inspect(self.workers_path, self.home)
-        owned_workers = state.get("workers_hash") if state else None
+        owned_workers = state["workers_hash"] if state else None
         if present(self.workers_path):
             if not owned_workers or digest(read(self.workers_path)) != owned_workers:
                 raise Conflict(f"foreign or edited resolved Worker configuration: {self.workers_path}")
@@ -926,10 +913,10 @@ class Setup:
                      self.state_path: ("file", state_bytes, 0o600)}
             agents = {self.agent_path(name): ("file", desired[name], 0o600) if name in desired
                       else ("absent", None, None)
-                      for name in {*(state.get("agents", {}) if state else ()), *desired}}
+                      for name in {*(state["agents"] if state else ()), *desired}}
             if workers_bytes is not None:
                 agents[self.workers_path] = ("file", workers_bytes, 0o600)
-            elif state and state.get("workers_hash"):
+            elif state and state["workers_hash"]:
                 agents[self.workers_path] = ("absent", None, None)
             plans.update(agents)
             plans.update(native_plans)
@@ -968,7 +955,7 @@ class Setup:
                           "private_bytes": len(private), "shared": str(self.shared),
                           "codex": str(self.codex), "claude": str(self.claude),
                           "launcher": str(self.launcher), "thermal": self.thermal_command("status"),
-                          "agents": {name: str(self.agent_path(name)) for name in sorted(state.get("agents", {}))}},
+                          "agents": {name: str(self.agent_path(name)) for name in sorted(state["agents"])}},
                          sort_keys=True))
         self.check_agents(state, self.desired_agents())
         if state["template_hash"] != digest(template) or state["version"] != VERSION:
@@ -995,8 +982,8 @@ class Setup:
             for path in native_plans:
                 self.backup("claude_settings" if path == self.claude_settings else "codex_settings", path)
             # Keep current personal bytes, never restore an old snapshot over them.
-            agents = {self.agent_path(name): ("absent", None, None) for name in state.get("agents", {})}
-            if state.get("workers_hash"):
+            agents = {self.agent_path(name): ("absent", None, None) for name in state["agents"]}
+            if state["workers_hash"]:
                 agents[self.workers_path] = ("absent", None, None)
             plans = {**agents, self.shared: ("file", private, 0o600), self.codex: ("file", private, 0o600),
                      self.claude: ("file", claude, 0o600), self.launcher: ("absent", None, None),
