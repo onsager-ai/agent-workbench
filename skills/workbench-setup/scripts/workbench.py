@@ -26,6 +26,9 @@ VERSION = "1"
 SOURCE = "onsager-ai/agent-workbench"
 BEGIN = b"<!-- BEGIN agent-workbench -->"
 END = b"<!-- END agent-workbench -->"
+PERSONAL_BEGIN = b"<!-- BEGIN agent-workbench personal -->"
+PERSONAL_END = b"<!-- END agent-workbench personal -->"
+MARKERS = (BEGIN, END, PERSONAL_BEGIN, PERSONAL_END)
 IMPORT = b"@~/.agents/AGENTS.md"
 LIMIT = 10 * 1024 * 1024
 ROLE = re.compile(r"[a-z][a-z0-9-]*")
@@ -261,15 +264,17 @@ def read(path):
     return path.read_bytes() if present(path) else b""
 
 
-def split_block(data):
-    if not data.count(BEGIN) and not data.count(END):
+def split_block(data, begin=BEGIN, finish=END):
+    if not data.count(begin) and not data.count(finish):
         return None, data
-    if data.count(BEGIN) != 1 or data.count(END) != 1:
+    if data.count(begin) != 1 or data.count(finish) != 1:
         raise Conflict("duplicate or unbalanced managed markers; repair markers manually")
-    start, end = data.index(BEGIN), data.index(END)
+    start, end = data.index(begin), data.index(finish)
     if end < start:
         raise Conflict("managed markers are reversed")
-    end += len(END)
+    if any(marker in data[start + len(begin):end] for marker in MARKERS):
+        raise Conflict("managed markers are nested or overlapping")
+    end += len(finish)
     if data[end:end + 1] == b"\n":
         end += 1
     return data[start:end], data[:start] + data[end:]
@@ -408,6 +413,7 @@ class Setup:
         self.models = orchestration / "workers.yml"
         self.personal = self.home / ".agents/skills/workbench-personal"
         self.personal_workers = self.personal / "workers.yml"
+        self.personal_instructions = self.personal / "AGENTS.md"
         self.workers_path = self.root / "workers.json"
         self.worker = orchestration / "references/worker.md"
         self.policy_hook = orchestration / "scripts/policy-hook"
@@ -703,7 +709,7 @@ class Setup:
             return None
         try:
             state = json.loads(read(self.state_path))
-            if (state["schema"] != 1 or not isinstance(state["block_hash"], str)
+            if (state["schema"] != 2 or not isinstance(state["block_hash"], str)
                     or not isinstance(state["native"], dict)
                     or not isinstance(state["hooks"], list)
                     or not isinstance(state["agents"], dict)
@@ -715,6 +721,14 @@ class Setup:
                     or not isinstance(state["import_added"], bool)
                     or state["import_suffix"] not in ("", IMPORT.decode() + "\n", "\n" + IMPORT.decode() + "\n")):
                 raise ValueError("invalid ownership metadata")
+            personal = state["personal_block"]
+            if personal is not None and (not isinstance(personal, dict)
+                    or not isinstance(personal["text"], str)
+                    or digest(personal["text"].encode("utf-8")) != personal["hash"]):
+                raise ValueError("invalid personal block ownership metadata")
+            if (not isinstance(state["personal_files"], list)
+                    or any(name not in ("workers.yml", "AGENTS.md") for name in state["personal_files"])):
+                raise ValueError("invalid personal file metadata")
             imported = state["claude_import"]
             if (not isinstance(imported, dict) or not isinstance(imported.get("owned"), bool)
                     or not isinstance(imported.get("line"), str)):
@@ -793,11 +807,19 @@ class Setup:
                 raise Conflict("owned launcher is not executable; restore its executable mode")
         elif state:
             raise Conflict("owned launcher is missing; restore it before retrying")
-        block, private = split_block(read(self.shared))
+        data = read(self.shared)
+        block, private = split_block(data)
+        personal_block, private = split_block(private, PERSONAL_BEGIN, PERSONAL_END)
         if state:
             if block is None or digest(block) != state["block_hash"]:
                 raise Conflict("managed block drift; restore the public block recorded in state.json before retrying")
-        elif block is not None:
+            owned_personal = state["personal_block"]
+            if owned_personal is not None:
+                if personal_block is None or digest(personal_block) != owned_personal["hash"]:
+                    raise Conflict("personal managed block drift; restore the personal block recorded in state.json before retrying")
+            elif personal_block is not None:
+                raise Conflict("personal managed markers have no ownership record; left unchanged")
+        elif block is not None or personal_block is not None:
             raise Conflict("managed markers have no ownership record; left unchanged")
         claude = read(self.claude)
         lines = import_lines(claude, self.home, self.claude.parent, self.shared)
@@ -828,8 +850,14 @@ class Setup:
                 raise Conflict("missing canonical setup resources; distribute workbench-setup globally first")
             template = read(self.template)
             template.decode("utf-8")
-            if BEGIN in template or END in template:
+            if any(marker in template for marker in MARKERS):
                 raise Conflict("template must not contain managed markers")
+            inspect(self.personal, self.home, directory=True)
+            inspect(self.personal_instructions, self.home)
+            personal = read(self.personal_instructions)
+            personal.decode("utf-8")
+            if any(marker in personal for marker in MARKERS):
+                raise Conflict("personal instructions must not contain managed markers")
         return state, block, private
 
     @contextlib.contextmanager
@@ -867,6 +895,10 @@ class Setup:
             state, old_block, private = self.preflight()
             template = read(self.template)
             block = BEGIN + b"\n" + template.rstrip(b"\n") + b"\n" + END + b"\n"
+            personal_block = None
+            if present(self.personal_instructions):
+                personal_block = (PERSONAL_BEGIN + b"\n" + read(self.personal_instructions).rstrip(b"\n")
+                                  + b"\n" + PERSONAL_END + b"\n")
             if not state and present(self.codex):
                 codex_private = read(self.codex)
                 if codex_private != private:
@@ -900,7 +932,10 @@ class Setup:
             workers_bytes = (json.dumps(bundle, indent=2) + "\n").encode() if bundle else None
             record = {"workers_hash": digest(workers_bytes) if workers_bytes else None,
                       "native": native_record, "hooks": hook_record,
-                      "schema": 1, "version": VERSION, "template_hash": digest(template),
+                      "schema": 2, "version": VERSION, "template_hash": digest(template),
+                      "personal_block": {"hash": digest(personal_block), "text": personal_block.decode("utf-8")} if personal_block is not None else None,
+                      "personal_files": (["workers.yml"] if bundle and present(self.personal_workers) else [])
+                                        + (["AGENTS.md"] if personal_block is not None else []),
                       "block_hash": digest(block), "block_text": block.decode("utf-8"), "target": self.target,
                       "launcher_hash": digest(self.launcher_bytes()), "import_added": bool(added),
                       "import_suffix": suffix,
@@ -909,7 +944,10 @@ class Setup:
                                 "claude": "import-line", "launcher": "file"},
                       "agents": {name: {"path": str(self.agent_path(name).relative_to(self.home)),
                                         "hash": digest(data)} for name, data in desired.items()}}
-            shared = read(self.shared).replace(old_block, block, 1) if old_block else block + private
+            shared = read(self.shared)
+            _, shared = split_block(shared, PERSONAL_BEGIN, PERSONAL_END)
+            replacement = block + (personal_block if personal_block is not None else b"")
+            shared = shared.replace(old_block, replacement, 1) if old_block else replacement + private
             state_bytes = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
             plans = {self.shared: ("file", shared, 0o600), self.codex: ("link", self.target, None),
                      self.claude: ("file", claude, 0o600),
@@ -956,6 +994,8 @@ class Setup:
                           "installed_template_hash": state["template_hash"],
                           "available_template_hash": digest(template),
                           "native_settings": native_status, "hooks": hook_status,
+                          "personal_package": {"present": present(self.personal),
+                                               "applied_files": state["personal_files"]},
                           "private_bytes": len(private), "shared": str(self.shared),
                           "codex": str(self.codex), "claude": str(self.claude),
                           "launcher": str(self.launcher), "thermal": self.thermal_command("status"),
@@ -1028,7 +1068,8 @@ class Setup:
             if native["version"] != 3 or not isinstance(skills, dict):
                 raise ValueError("unsupported lock")
             names = sorted(name for name, item in skills.items()
-                           if item.get("source") == SOURCE and item.get("sourceType") == "github")
+                           if name == "workbench-personal" or
+                           (item.get("source") == SOURCE and item.get("sourceType") == "github"))
             if "workbench-setup" not in names or any(not name or name.startswith("-")
                                                        or "/" in name for name in names):
                 raise ValueError("setup ownership is missing or names are invalid")

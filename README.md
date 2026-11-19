@@ -91,6 +91,28 @@ npx skills update -g -y
 
 These commands manage skills only. User-scope AGENTS.md and CLAUDE.md, credentials and personal configuration remain separate and private; the npx skills installer does not create or modify them. Applying global instructions requires the explicit setup step below.
 
+## Personal configuration across machines
+
+Create your own repo with `skills/workbench-personal/SKILL.md` and optional `workers.yml` and `AGENTS.md` in that directory. The skill needs name and description frontmatter:
+
+~~~yaml
+---
+name: workbench-personal
+description: Personal Worker overrides and instructions.
+---
+~~~
+
+Install it once per machine, then apply it:
+
+~~~sh
+npx skills add <you>/<repo> -g -a codex -a claude-code -y
+agent-workbench install
+~~~
+
+Private repos work through `gh` authentication or SSH. To change shared personal settings, edit the package, push, and run `agent-workbench update` on each machine. Worker configuration layers distributed defaults, `~/.agents/skills/workbench-personal/workers.yml`, then `~/.config/agent-workbench/workers.yml` (or the absolute `$XDG_CONFIG_HOME` equivalent); the last file remains for machine-specific settings and overrides the package.
+
+The package's `AGENTS.md` is applied immediately after the public block, inside `<!-- BEGIN agent-workbench personal -->` and `<!-- END agent-workbench personal -->`. Keep machine-local private text outside both blocks. Edit personal instructions in the package; edits inside either installed managed block cause a conflict. Install removes the owned personal block if the package or its `AGENTS.md` disappears. Status reports package presence and applied personal files.
+
 ## Apply shared global instructions
 
 The optional setup installer supports Linux and macOS with Python 3.11+. Distribution and native updates also require Node.js 22.20+ and npx. When a supported Linux package-temperature sensor and user systemd are available, setup installs thermal-guard's launcher and background logger; otherwise the thermal rule does not apply. No separate npm package, compiled binary, or shell configuration is installed.
@@ -106,7 +128,7 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 
 | Path | Purpose |
 | --- | --- |
-| `~/.agents/AGENTS.md` | Shared public block and your private text outside it |
+| `~/.agents/AGENTS.md` | Shared public block, optional personal package block, and your private text outside both |
 | `~/.codex/AGENTS.md` | Native Codex symlink to the shared file |
 | `~/.claude/CLAUDE.md` | Existing Claude text plus native `@~/.agents/AGENTS.md` import |
 | `~/.local/bin/agent-workbench` | Thin launcher for the installed setup skill |
@@ -115,14 +137,14 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 | `~/.claude/settings.json` → `hooks.PreToolUse` | Owned hooks for Opus approval and GitHub polling policy (when `orchestrate-harnesses` is installed) |
 | `~/.local/state/agent-workbench/` | Ownership, hashes, exclusive lock, private backups |
 
-The exact public markers are `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->`. Put personal rules outside that block in `~/.agents/AGENTS.md`. On first installation, existing Codex regular-file bytes are kept outside the block unchanged. Existing Claude text stays in place. Neither npx distribution nor this setup changes project instructions, other agent settings, credentials, model configuration, or native permissions.
+The exact public markers are `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->`. Put machine-local personal rules outside both managed blocks in `~/.agents/AGENTS.md`. On first installation, existing Codex regular-file bytes are kept outside the block unchanged. Existing Claude text stays in place. Neither npx distribution nor this setup changes project instructions, other agent settings, credentials, model configuration, or native permissions.
 
 The generated agents let a Claude Manager dispatch each tier as `subagent_type: haiku`, `sonnet`, and so on. A tier is generated when its role has `harness: claude` or a non-null `claude_route`. Defaults generate haiku, sonnet and opus only; the `codex` profile has null routes and runs its Codex tiers through `codex exec`. Gateway prefixes are installation-specific; set `profiles.codex.tiers.luna.claude_route: <your-gateway>/gpt-6-luna` and `policy.context.gateway_window` in your partial override to generate that route. Rerun `agent-workbench install` after editing the override. Generated files are owned by hash: setup refuses to overwrite a foreign or edited file, leaves other files in `~/.claude/agents` alone, and `uninstall` removes only unmodified owned files.
 
 ~~~sh
 # Reapply already distributed public assets (idempotent).
 agent-workbench install
-# Update only this repository's installed skills, then apply freshly loaded setup code.
+# Update this repository's installed skills and workbench-personal, then apply setup.
 agent-workbench update
 # Inspect hashes, versions, native paths, managed edits and masking overrides.
 agent-workbench status
@@ -130,9 +152,9 @@ agent-workbench status
 agent-workbench uninstall
 ~~~
 
-Update reads native version-3 skills lock ownership (`~/.agents/.skill-lock.json`, or `$XDG_STATE_HOME/skills/.skill-lock.json` when configured) and delegates to `skills@1.7.4 update` with only this repository's installed skill names. A failed native update leaves global instruction files unchanged. Updates honor the installed native skill source/ref metadata. `npx skills update -g -y` remains available for ordinary updates across all your skills; use `agent-workbench install` afterward to apply any newly distributed instruction template.
+Update reads native version-3 skills lock ownership (`~/.agents/.skill-lock.json`, or `$XDG_STATE_HOME/skills/.skill-lock.json` when configured) and delegates to `skills@1.7.4 update` with this repository's installed skill names plus `workbench-personal` when present in the lock, regardless of its source. A failed native update leaves global instruction files unchanged. Updates honor the installed native skill source/ref metadata. `npx skills update -g -y` remains available for ordinary updates across all your skills; use `agent-workbench install` afterward to apply any newly distributed instruction template.
 
-Setup refuses foreign links or same-name commands, masking Codex overrides, duplicate/broken markers, and edits inside its public block. Resolve the reported conflict before retrying. State and backups are private to your user. Backups are historical snapshots; uninstall keeps current private text and restores Codex to a regular file containing it, removes the owned Claude import and launcher, and retains backups. It never replaces later personal edits with stale backup content. For historical recovery, inspect those backups yourself and restore only the intended text. Interrupted or partially failed operations should be inspected with `status` before retrying.
+Setup refuses foreign links or same-name commands, masking Codex overrides, duplicate/broken markers, and edits inside either managed instruction block. Resolve the reported conflict before retrying. State and backups are private to your user. Backups are historical snapshots; uninstall keeps current private text and restores Codex to a regular file containing it, removes the owned Claude import and launcher, and retains backups. It never replaces later personal edits with stale backup content. For historical recovery, inspect those backups yourself and restore only the intended text. Interrupted or partially failed operations should be inspected with `status` before retrying.
 
 For disposable fixtures, copy the skill beneath a selected home's `.agents/skills/workbench-setup`, then use `python3 .../scripts/workbench.py --home PATH install`. An alternate-home `update` requires an explicit `--skills-cmd` command and never defaults to the real user's global npx update.
 
