@@ -550,7 +550,8 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(list(settings), ["model", "hooks", "env"])
         entries = settings["hooks"]["PreToolUse"]
         self.assertEqual(entries[0], foreign)
-        self.assertEqual([entry["matcher"] for entry in entries[1:]], ["Agent|Task", "Bash"])
+        self.assertEqual([entry["matcher"] for entry in entries[1:]],
+                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task"])
         hook = self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"
         for entry in entries[1:]:
             self.assertEqual(entry["hooks"], [{"type": "command", "command": shlex.quote(str(hook))}])
@@ -558,7 +559,8 @@ class SetupTests(unittest.TestCase):
         state = json.loads((self.state / "state.json").read_bytes())
         self.assertEqual(state["hooks"], entries[1:])
         self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"],
-                         {"Agent|Task": "applied", "Bash": "applied"})
+                         {"Agent|Task": "applied", "Bash": "applied",
+                          "mcp__t3-code__delegate_task": "applied"})
         before = self.snapshot()
         self.assertIn("no-op", self.run_setup("install").stdout)
         self.assertEqual(before, self.snapshot())
@@ -577,9 +579,32 @@ class SetupTests(unittest.TestCase):
         state_path.write_text(json.dumps(state))
         self.install_orchestration()
         self.run_setup("install")
-        self.assertEqual(len(json.loads(state_path.read_bytes())["hooks"]), 2)
+        state = json.loads(state_path.read_bytes())
+        self.assertEqual(len(state["hooks"]), 3)
+        self.assertEqual([entry["matcher"] for entry in state["hooks"]],
+                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task"])
         self.run_setup("uninstall")
         self.assertEqual(json.loads((self.home / ".claude/settings.json").read_bytes())["hooks"]["PreToolUse"], [])
+
+    def test_policy_hooks_upgrade_two_owned_entries_to_three(self):
+        self.install_orchestration()
+        self.run_setup("install")
+        path = self.home / ".claude/settings.json"
+        state_path = self.state / "state.json"
+        settings = json.loads(path.read_bytes())
+        settings["hooks"]["PreToolUse"] = settings["hooks"]["PreToolUse"][:2]
+        path.write_text(json.dumps(settings))
+        state = json.loads(state_path.read_bytes())
+        state["hooks"] = state["hooks"][:2]
+        state_path.write_text(json.dumps(state))
+
+        self.run_setup("install")
+
+        entries = json.loads(path.read_bytes())["hooks"]["PreToolUse"]
+        self.assertEqual([entry["matcher"] for entry in entries],
+                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task"])
+        self.assertEqual([entry["matcher"] for entry in json.loads(state_path.read_bytes())["hooks"]],
+                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task"])
 
     def test_policy_hooks_edited_owned_entry_is_kept_and_canonical_reapplied(self):
         self.install_orchestration()

@@ -8,6 +8,11 @@ import sys
 APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder)."
 POLLING = ("GitHub polling is disabled. Use watch_pull_request and the single-call status reads "
            "in orchestrate-harnesses' GitHub API budget section.")
+T3_MODEL = ("Set target.model (and effort in target.options) for the Worker tier you chose "
+            "before dispatching with delegate_task.")
+INHERITED_MODEL = ("Built-in agents inherit the Manager's model. Use a tier agent "
+                   "(subagent_type: <role>) or pass model explicitly.")
+INHERITING_AGENT_TYPES = {None, "general-purpose", "Plan", "Explore", "claude"}
 
 
 def polls_github(command):
@@ -47,8 +52,16 @@ def main():
         tool = event.get("tool_name")
         arguments = event.get("tool_input", {})
         decision = reason = None
-        if tool in ("Agent", "Task") and arguments.get("subagent_type") == "opus":
-            decision, reason = "ask", APPROVAL
+        if tool == "mcp__t3-code__delegate_task":
+            target = arguments.get("target", {})
+            if not target.get("model"):
+                decision, reason = "deny", T3_MODEL
+        elif tool in ("Agent", "Task"):
+            subagent_type = arguments.get("subagent_type")
+            if subagent_type == "opus" or arguments.get("model") == "opus":
+                decision, reason = "ask", APPROVAL
+            elif subagent_type in INHERITING_AGENT_TYPES and not arguments.get("model"):
+                decision, reason = "deny", INHERITED_MODEL
         elif tool == "Bash" and polls_github(arguments.get("command", "")):
             decision, reason = "deny", POLLING
     except (ValueError, TypeError, AttributeError):
