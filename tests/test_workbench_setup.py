@@ -560,7 +560,7 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(entry["hooks"], [{"type": "command", "command": shlex.quote(str(hook))}])
             self.assertTrue(os.access(hook, os.X_OK))
         state = json.loads((self.state / "state.json").read_bytes())
-        self.assertEqual(state["hooks"], entries[1:])
+        self.assertEqual(state["hooks"], entries[1:] + [stop_entry])
         self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"],
                          {"Agent|Task": "applied", "Bash": "applied",
                           "mcp__t3-code__delegate_task": "applied", "Stop": "applied"})
@@ -598,6 +598,7 @@ class SetupTests(unittest.TestCase):
         state_path = self.state / "state.json"
         settings = json.loads(path.read_bytes())
         settings["hooks"]["PreToolUse"] = settings["hooks"]["PreToolUse"][:2]
+        del settings["hooks"]["Stop"]
         path.write_text(json.dumps(settings))
         state = json.loads(state_path.read_bytes())
         state["hooks"] = state["hooks"][:2]
