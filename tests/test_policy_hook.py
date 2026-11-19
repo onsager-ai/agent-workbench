@@ -1,4 +1,5 @@
 import json
+import os
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -23,12 +24,39 @@ class PolicyHookTests(unittest.TestCase):
         self.bundle = module.worker_bundle(root / "skills/orchestrate-harnesses/workers.yml")
         self.workers.write_text(json.dumps(self.bundle))
 
-    def invoke(self, payload):
+    def invoke(self, payload, env=None):
         result = subprocess.run([sys.executable, "-I", str(HOOK), "--workers", str(self.workers)], input=payload,
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "")
         return json.loads(result.stdout)["hookSpecificOutput"] if result.stdout else None
+
+    def t3_env(self, thread="mcp:launch:5f9a6b10-be25-429c-abb6-1ebd74859825"):
+        home = self.workers.parent / "t3"
+        (home / "userdata").mkdir(parents=True, exist_ok=True)
+        (home / "userdata/environment-id").write_text("env-1\n")
+        return {"PATH": os.environ.get("PATH", ""), "T3CODE_HOME": str(home), "T3CODE_THREAD_ID": thread}
+
+    def send(self, message, env):
+        return self.invoke(json.dumps({"hook_event_name": "PreToolUse", "tool_name": "mcp__t3-code__t3_thread_send",
+                                       "tool_input": {"threadId": "peer", "mode": "auto", "message": message}}), env)
+
+    def test_thread_send_footer_is_stamped_from_t3_identity(self):
+        env = self.t3_env()
+        thread = env["T3CODE_THREAD_ID"]
+        first = self.send("Done.\n\n-- WB_MSG from=x/duhem-pm kind=result id=duhempm:1 re=89effeb3:2", env)
+        self.assertNotIn("permissionDecision", first)
+        self.assertEqual(first["updatedInput"], {"threadId": "peer", "mode": "auto", "message":
+            f"Done.\n\n-- WB_MSG from=env-1/{thread} kind=result id=74859825:1 re=89effeb3:2"})
+        second = self.send("Decided.\n\n-- WB_MSG kind=decision", env)
+        self.assertEqual(second["updatedInput"]["message"],
+                         f"Decided.\n\n-- WB_MSG from=env-1/{thread} kind=decision id=74859825:2 re=none")
+
+    def test_thread_send_without_footer_or_identity_is_unchanged(self):
+        env = self.t3_env()
+        self.assertIsNone(self.send("Plain task text.", env))
+        del env["T3CODE_THREAD_ID"]
+        self.assertIsNone(self.send("Hi.\n\n-- WB_MSG from=a/b kind=request id=x:1 re=none", env))
 
     def test_opus_requires_approval(self):
         for tool in ("Agent", "Task"):

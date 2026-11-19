@@ -24,9 +24,11 @@ Publish changes that affect another Manager's decisions: user requirements and s
 
 Put the footer last, after a blank line, so T3 shows the readable text first.
 
-- `from` is the sender's full T3 `environmentId` and `threadId`, so the receiver can pass them straight to `t3_thread_send`. Copy both from a T3 tool result or the context T3 gives you, such as `t3_thread_read` on your own thread. Never type them from a role or thread name. Outside T3, use the native address, such as `from=native:claude-code:<name>`.
+- In Claude Code, the workbench policy hook fills in `from` and `id` on every `t3_thread_send` whose message has a footer line, using T3's real identity and a per-thread counter. Write the footer as `-- WB_MSG kind=<kind> re=<id-or-none>`. Without that hook, as in Codex, write the full footer, reading the `threadId` from `$T3CODE_THREAD_ID` and the `environmentId` from `$T3CODE_HOME/userdata/environment-id` (default `~/.t3`). Never type either from memory or a role name.
+- `from` is the sender's full T3 `environmentId` and `threadId`, so the receiver can pass them straight to `t3_thread_send`. Outside T3, use the native address, such as `from=native:claude-code:<name>`.
 - `kind=request` asks the receiver to do or find something and send a `result` back. `kind=result` answers a request; set `re` to the request's `id`. `kind=decision` shares a decision, blocker or handover and needs no answer; set `re` to the decision it replaces, if any.
 - `id` is the last eight characters of the sender's `threadId` and that thread's own message sequence starting at 1, for example `id=89effeb3:4`. Use the last characters, because many thread IDs share a prefix such as `mcp:launch:`.
+- Copy `re` from the `id` in the footer of the message you answer, as it arrived. Never reconstruct it.
 
 Split unrelated topics into separate messages. Relaying a message does not create a new decision or authority. Include original user text or an accessible source when authorization matters; a missing local file on another machine is not usable evidence. When handing over, preserve the latest known decisions with their original `id`s and user sources.
 

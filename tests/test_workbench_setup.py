@@ -632,7 +632,8 @@ class SetupTests(unittest.TestCase):
         entries = settings["hooks"]["PreToolUse"]
         self.assertEqual(entries[0], foreign)
         self.assertEqual([entry["matcher"] for entry in entries[1:]],
-                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task"])
+                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task",
+                          "mcp__t3-code__t3_thread_send"])
         stop_entry = settings["hooks"]["Stop"][-1]
         self.assertEqual(stop_entry, {"hooks": [{"type": "command", "command":
                                                   shlex.join([str(self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"), "--workers", str(self.state / "workers.json")])}]})
@@ -644,7 +645,8 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(state["hooks"], entries[1:] + [stop_entry])
         self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"],
                          {"Agent|Task": "applied", "Bash": "applied",
-                          "mcp__t3-code__delegate_task": "applied", "Stop": "applied"})
+                          "mcp__t3-code__delegate_task": "applied",
+                          "mcp__t3-code__t3_thread_send": "applied", "Stop": "applied"})
         before = self.snapshot()
         self.assertIn("no-op", self.run_setup("install").stdout)
         self.assertEqual(before, self.snapshot())
@@ -666,7 +668,8 @@ class SetupTests(unittest.TestCase):
         path.write_text(json.dumps(settings))
         self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"],
                          {"Agent|Task": "missing", "Bash": "applied",
-                          "mcp__t3-code__delegate_task": "applied", "Stop": "applied"})
+                          "mcp__t3-code__delegate_task": "applied",
+                          "mcp__t3-code__t3_thread_send": "applied", "Stop": "applied"})
         self.run_setup("install")
         self.assertIn(edited, json.loads(path.read_bytes())["hooks"]["PreToolUse"])
         self.assertIn(canonical, json.loads(path.read_bytes())["hooks"]["PreToolUse"])
@@ -693,7 +696,7 @@ class SetupTests(unittest.TestCase):
         self.run_setup("install")
         saved = json.loads((self.state / "state.json").read_bytes())["hooks"]
         self.assertEqual([entry["matcher"] for entry in saved if "matcher" in entry],
-                         ["Agent|Task", "mcp__t3-code__delegate_task"])
+                         ["Agent|Task", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"])
         self.assertEqual(len([entry for entry in saved if "matcher" not in entry]), 1)
         self.run_setup("uninstall")
         hooks = json.loads(path.read_bytes())["hooks"]
