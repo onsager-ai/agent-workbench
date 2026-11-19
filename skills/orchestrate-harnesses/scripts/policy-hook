@@ -102,9 +102,16 @@ def dispatch_approval(path, event, tier):
                 profile = rule["profile"]
                 break
         config = bundle["profiles"][profile] if profile else bundle["base"]
+        known = {name for item in [bundle["base"], *bundle["profiles"].values()] for name in item["tiers"]}
+        if tier not in known or config["tiers"].get(tier, {}).get("opt_in"):
+            return None
         for level in config["ladder"]:
-            if tier in level["tiers"] and level.get("approval") == "required":
-                return f"Worker {tier} at level {level['level']} needs the user's approval for this task (configured Worker ladder)."
+            if tier in level["tiers"]:
+                if level.get("approval") == "required":
+                    return f"Worker {tier} at level {level['level']} needs the user's approval for this task (configured Worker ladder)."
+                return None
+        return (f"Worker {tier} is not in the ladder for profile {profile or 'base'} at {cwd}; "
+                "dispatch it only with the user's approval.")
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         return "Worker policy configuration is missing or unreadable; rerun agent-workbench install before dispatching Workers."
     return None

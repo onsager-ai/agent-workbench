@@ -58,6 +58,10 @@ class PolicyHookTests(unittest.TestCase):
             self.assertIsNone(self.invoke(json.dumps(payload)))
             payload["cwd"] = str(work)
             payload["tool_input"]["subagent_type"] = "opus"
+            result = self.invoke(json.dumps(payload))
+            self.assertEqual(result["permissionDecision"], "ask")
+            self.assertIn("not in the ladder", result["permissionDecisionReason"])
+            payload["tool_input"]["subagent_type"] = "terra"
             self.assertIsNone(self.invoke(json.dumps(payload)))
         self.bundle["profile"] = "corporate"
         self.workers.write_text(json.dumps(self.bundle))
