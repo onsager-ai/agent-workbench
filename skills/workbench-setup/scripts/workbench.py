@@ -165,7 +165,7 @@ def resolve_worker_config(config):
     return result
 
 
-def worker_bundle(distributed, override=None, home=None):
+def worker_bundle(distributed, overlays=(), home=None):
     def load(path):
         try:
             config = yaml.safe_load(read(path))
@@ -182,8 +182,9 @@ def worker_bundle(distributed, override=None, home=None):
             validate_worker_shape(profile, profile=True)
         return config
     config = load(distributed)
-    if override and present(override):
-        config = merge_workers(config, load(override))
+    for overlay in overlays:
+        if present(overlay):
+            config = merge_workers(config, load(overlay))
     if config.get("version") != 2:
         raise Conflict("workers version must be 2")
     base = {key: value for key, value in config.items() if key in ("defaults", "tiers", "ladder", "policy")}
@@ -405,6 +406,8 @@ class Setup:
         self.claude_settings = self.home / ".claude/settings.json"
         self.codex_settings = self.home / ".codex/config.toml"
         self.models = orchestration / "workers.yml"
+        self.personal = self.home / ".agents/skills/workbench-personal"
+        self.personal_workers = self.personal / "workers.yml"
         self.workers_path = self.root / "workers.json"
         self.worker = orchestration / "references/worker.md"
         self.policy_hook = orchestration / "scripts/policy-hook"
@@ -433,12 +436,13 @@ class Setup:
 
     def workers_bundle(self):
         inspect(self.models, self.home)
+        inspect(self.personal_workers, self.home)
         if present(self.override):
             base = self.home if self.override.is_relative_to(self.home) else self.override.parent
             inspect(self.override, base)
         if not present(self.models):
             return None
-        return worker_bundle(self.models, self.override, self.home)
+        return worker_bundle(self.models, (self.personal_workers, self.override), self.home)
 
     def workers(self, cwd):
         bundle = self.workers_bundle()

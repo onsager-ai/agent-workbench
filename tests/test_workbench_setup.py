@@ -371,6 +371,23 @@ class SetupTests(unittest.TestCase):
         if override is not None:
             self.write(self.home / ".config/agent-workbench/workers.yml", json.dumps(override).encode())
 
+    def test_personal_worker_layering_and_validation(self):
+        self.install_orchestration({"defaults": {"timeout_s": 900}})
+        personal = self.home / ".agents/skills/workbench-personal/workers.yml"
+        self.write(personal, b"defaults: {timeout_s: 800, effort: high}\n")
+        workers = json.loads(self.run_setup("workers").stdout)
+        self.assertEqual(workers["defaults"]["timeout_s"], 900)
+        self.assertEqual(workers["defaults"]["effort"], "high")
+        (self.home / ".config/agent-workbench/workers.yml").unlink()
+        self.assertEqual(json.loads(self.run_setup("workers").stdout)["defaults"]["timeout_s"], 800)
+        self.write(personal, b"defaults: {unknown: true}\n")
+        before = self.snapshot()
+        self.assertIn("unknown keys", self.run_setup("install", ok=False).stderr)
+        self.assertEqual(before, self.snapshot())
+        personal.unlink()
+        personal.symlink_to(self.home / "foreign-workers")
+        self.assertIn("symlink", self.run_setup("workers", ok=False).stderr)
+
     def agent(self, name):
         return self.home / ".claude/agents" / (name + ".md")
 
