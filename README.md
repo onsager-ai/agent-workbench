@@ -50,6 +50,8 @@ Managers apply these settings through actual native tool capabilities. A configu
 
 The **DeepSeek Flash** Worker is opt-in, outside the ladder, for CI log triage, repository exploration, small edits and independent diff review when the user asks for it. Its `flash` role runs in the Codex harness through the configured model provider. Configure the client-visible model ID for your provider and record accepted results, correction time and actual cost. See [Flash routing guidance](skills/orchestrate-harnesses/references/deepseek-flash.md). Workbench does not automatically launch an agent when CI fails; log triage is a task assigned by a Manager.
 
+Workbench has no custom orchestration runtime, task database or process supervisor. Native runs use their tool IDs, briefs and existing task/PR evidence; they do not create another Python-managed task record.
+
 The remaining Python files have narrow purposes:
 
 | Files | Purpose |
