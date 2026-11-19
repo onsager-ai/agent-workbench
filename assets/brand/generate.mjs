@@ -37,20 +37,26 @@ const VIS = { x1: 2, y1: 11, x2: 30, y2: 30 }; // visible ink bounds
 const VIS_W = VIS.x2 - VIS.x1;
 const VIS_H = VIS.y2 - VIS.y1;
 
+// Favicons and icon PNGs move the ink up by FAVICON_SHIFT units so it is
+// vertically centred in its square instead of sitting on the family
+// canvas position. Rasters round the shift to whole pixels.
+const FAVICON_SHIFT = (CANVAS - VIS_H) / 2 - VIS.y1; // -4.5
+
 // 16 px and 48 px are fractional scales (0.5 and 1.5 px per unit); these
-// hand-snapped whole-pixel grids keep the mark mirror-symmetric there.
+// hand-snapped, vertically centred whole-pixel grids keep the mark
+// mirror-symmetric there.
 const SNAPPED = {
   16: [
-    { x: 5, y: 5, w: 6, h: 6 },
-    { x: 1, y: 13, w: 2, h: 2 },
-    { x: 7, y: 13, w: 2, h: 2 },
-    { x: 13, y: 13, w: 2, h: 2 },
+    { x: 5, y: 3, w: 6, h: 6 },
+    { x: 1, y: 11, w: 2, h: 2 },
+    { x: 7, y: 11, w: 2, h: 2 },
+    { x: 13, y: 11, w: 2, h: 2 },
   ],
   48: [
-    { x: 16, y: 16, w: 16, h: 16 },
-    { x: 3, y: 39, w: 6, h: 6 },
-    { x: 21, y: 39, w: 6, h: 6 },
-    { x: 39, y: 39, w: 6, h: 6 },
+    { x: 16, y: 9, w: 16, h: 16 },
+    { x: 3, y: 32, w: 6, h: 6 },
+    { x: 21, y: 32, w: 6, h: 6 },
+    { x: 39, y: 32, w: 6, h: 6 },
   ],
 };
 
@@ -116,7 +122,7 @@ function faviconSvg() {
     w: CANVAS,
     h: CANVAS,
     title: NAME,
-    body: `<style>g{fill:${INK_LIGHT}}@media(prefers-color-scheme:dark){g{fill:${INK_DARK}}}</style><g>${rects(MARK)}</g>`,
+    body: `<style>g{fill:${INK_LIGHT}}@media(prefers-color-scheme:dark){g{fill:${INK_DARK}}}</style><g transform="translate(0 ${FAVICON_SHIFT})">${rects(MARK)}</g>`,
   });
 }
 
@@ -166,7 +172,7 @@ function png(svgText, width) {
 function rasterMark(size) {
   const body = SNAPPED[size]
     ? `<g fill="#000000" shape-rendering="crispEdges">${rects(SNAPPED[size])}</g>`
-    : `<g fill="#000000" shape-rendering="crispEdges" transform="scale(${size / CANVAS})">${rects(MARK)}</g>`;
+    : `<g fill="#000000" shape-rendering="crispEdges" transform="translate(0 ${Math.round(FAVICON_SHIFT * (size / CANVAS))}) scale(${size / CANVAS})">${rects(MARK)}</g>`;
   const out = new Resvg(svg({ w: size, h: size, title: NAME, body }), {
     fitTo: { mode: 'original' },
   }).render();
