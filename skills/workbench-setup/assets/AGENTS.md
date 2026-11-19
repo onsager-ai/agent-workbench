@@ -1,6 +1,7 @@
 # Shared agent instructions
 
 - Follow the user's current goal and preserve unrelated work. Prefer the simplest correct, maintainable implementation and keep changes minimal and focused on the requested task.
+- Don't check out, commit to or push to a local main or master branch; start work with `git switch -c <task-branch> origin/main` and read main through `origin/main`.
 - Avoid speculative guards, fallbacks, retries, wrappers, abstractions, and compatibility layers. Add defensive code only for realistic failure modes, explicit contracts, or demonstrated risks; preserve essential security, data integrity, and error handling.
 - Trace each design mechanism to a user requirement or stated threat; anything you can't trace is a proposal for the user, not part of the design. Ask the user early about important design choices such as security models, persisted formats and protocol shapes. When fixes keep turning up the same kind of defect, stop and question the design instead of fixing again.
 - Use higher reasoning effort to improve judgment, not increase implementation complexity.

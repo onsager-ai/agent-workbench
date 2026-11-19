@@ -5,10 +5,14 @@ import json
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import sys
 
 
 APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder)."
+PROTECTED_BRANCH_REASON = ("The local main branch is protected. Use a task branch, origin/main, "
+                           "or git switch -c <task> origin/main.")
+PROTECTED_BRANCHES = {"main", "master"}
 POLLING = ("GitHub polling is disabled. Use watch_pull_request and the single-call status reads "
            "in orchestrate-harnesses' GitHub API budget section.")
 T3_MODEL = ("Set target.model (and effort in target.options) for the Worker tier you chose "
@@ -51,6 +55,125 @@ def polls_github(command):
                any(start < index < end and words[0] == "sleep" for index, words in commands) and
                any(start < index < end and words[0] == "gh" for index, words in commands)
                for start, end in loops)
+
+
+def shell_commands(command):
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";|&()\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    tokens = []
+    for token in lexer:
+        if token and set(token) <= set(";|&()\n"):
+            tokens.extend(token)
+        else:
+            tokens.append(token)
+    joined = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index:index + 2] == ["&", "&"]:
+            joined.append("&&")
+            index += 2
+        elif tokens[index:index + 2] == ["|", "|"]:
+            joined.append("||")
+            index += 2
+        else:
+            joined.append(tokens[index])
+            index += 1
+    tokens = joined
+    separators = {";", "|", "&", "&&", "||", "(", ")", "\n", "do", "then", "!", "while", "until"}
+    commands = []
+    current = []
+    cd_prefix = None
+    for token in tokens:
+        if token in separators:
+            if token in ("&&", "||") and current and current[0] == "cd":
+                cd_prefix = current + [token]
+                current = []
+                continue
+            if current:
+                commands.append((cd_prefix or []) + current)
+                cd_prefix = None
+                current = []
+        else:
+            current.append(token)
+    if current:
+        commands.append((cd_prefix or []) + current)
+    return commands
+
+
+def git_command(words):
+    """Return git argv, honoring `git -C <directory> ...`."""
+    if not words or words[0] != "git":
+        return None, None
+    argv = words[1:]
+    directory = None
+    while len(argv) >= 2 and argv[0] == "-C":
+        directory = argv[1]
+        argv = argv[2:]
+    return argv, directory
+
+
+def resolve_git_context(event, git_cwd, cd_cwd=None):
+    cwd = Path(event.get("cwd") or Path.cwd())
+    if git_cwd:
+        return (cwd / git_cwd).resolve() if not Path(git_cwd).is_absolute() else Path(git_cwd)
+    if cd_cwd:
+        path = Path(cd_cwd)
+        return (cwd / path).resolve() if not path.is_absolute() else path
+    return cwd.resolve()
+
+
+def protected_branch_git(command, event):
+    reason = None
+    for words in shell_commands(command):
+        cd_cwd = words[1] if len(words) >= 4 and words[0] == "cd" and words[2] in ("&&", "||") else None
+        if cd_cwd:
+            words = words[3:]
+        argv, git_cwd = git_command(words)
+        if not argv:
+            continue
+        directory = resolve_git_context(event, git_cwd, cd_cwd)
+        operation = argv[0]
+        args = argv[1:]
+        if operation in ("checkout", "switch") and args:
+            branch = None
+            if args[0] in ("-B", "-C") and len(args) > 1:
+                branch = args[1]
+            elif args[0] in ("-b", "-c"):
+                branch = None
+            elif args[0] == "-f" and len(args) > 1:
+                branch = args[1]
+            elif args[0].startswith("-"):
+                continue
+            else:
+                branch = args[0]
+            if branch in PROTECTED_BRANCHES:
+                # `git checkout <branch> [--] <paths>` restores files, it does not switch branches.
+                if operation == "checkout" and len(args) > 1 and args[0] not in ("-B", "-b", "-f"):
+                    continue
+                return PROTECTED_BRANCH_REASON
+        if operation == "worktree" and len(args) >= 3 and args[0] == "add":
+            branch_args = args[1:]
+            if "-b" in branch_args or "-B" in branch_args:
+                continue
+            if branch_args[-1] in PROTECTED_BRANCHES:
+                return PROTECTED_BRANCH_REASON
+        if operation == "push":
+            refs = [arg for arg in args if not arg.startswith("-")]
+            refspecs = refs[1:] if len(refs) >= 2 else []
+            if any(ref.split(":", 1)[-1].removeprefix("refs/heads/") in PROTECTED_BRANCHES
+                   or ref.split(":", 1)[0].removeprefix("refs/heads/") in PROTECTED_BRANCHES
+                   for ref in refspecs):
+                return PROTECTED_BRANCH_REASON
+        if operation in {"commit", "merge", "rebase", "cherry-pick", "revert", "reset", "am"} or operation == "push" and len([arg for arg in args if not arg.startswith("-")]) < 2:
+            try:
+                result = subprocess.run(["git", "-C", str(directory), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                                        capture_output=True, text=True, timeout=2, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if result.returncode == 0 and result.stdout.strip() in PROTECTED_BRANCHES:
+                return PROTECTED_BRANCH_REASON
+    return reason
 
 
 def last_assistant_text(event):
@@ -152,8 +275,13 @@ def main():
                 decision, reason = "ask", APPROVAL
             elif subagent_type in INHERITING_AGENT_TYPES and not arguments.get("model"):
                 decision, reason = "deny", INHERITED_MODEL
-        elif tool == "Bash" and polls_github(arguments.get("command", "")):
-            decision, reason = "deny", POLLING
+        elif tool == "Bash":
+            command = arguments.get("command", "")
+            branch_reason = protected_branch_git(command, event)
+            if branch_reason:
+                decision, reason = "deny", branch_reason
+            elif polls_github(command):
+                decision, reason = "deny", POLLING
     except (ValueError, TypeError, AttributeError):
         return
     if decision:
