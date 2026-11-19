@@ -552,15 +552,18 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(entries[0], foreign)
         self.assertEqual([entry["matcher"] for entry in entries[1:]],
                          ["Agent|Task", "Bash", "mcp__t3-code__delegate_task"])
+        stop_entry = settings["hooks"]["Stop"][-1]
+        self.assertEqual(stop_entry, {"hooks": [{"type": "command", "command":
+                                                  shlex.quote(str(self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"))}]})
         hook = self.home / ".agents/skills/orchestrate-harnesses/scripts/policy-hook"
         for entry in entries[1:]:
             self.assertEqual(entry["hooks"], [{"type": "command", "command": shlex.quote(str(hook))}])
             self.assertTrue(os.access(hook, os.X_OK))
         state = json.loads((self.state / "state.json").read_bytes())
-        self.assertEqual(state["hooks"], entries[1:])
+        self.assertEqual(state["hooks"], entries[1:] + [stop_entry])
         self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"],
                          {"Agent|Task": "applied", "Bash": "applied",
-                          "mcp__t3-code__delegate_task": "applied"})
+                          "mcp__t3-code__delegate_task": "applied", "Stop": "applied"})
         before = self.snapshot()
         self.assertIn("no-op", self.run_setup("install").stdout)
         self.assertEqual(before, self.snapshot())
@@ -580,11 +583,13 @@ class SetupTests(unittest.TestCase):
         self.install_orchestration()
         self.run_setup("install")
         state = json.loads(state_path.read_bytes())
-        self.assertEqual(len(state["hooks"]), 3)
-        self.assertEqual([entry["matcher"] for entry in state["hooks"]],
-                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task"])
+        self.assertEqual(len(state["hooks"]), 4)
+        self.assertEqual([entry.get("matcher", "Stop") for entry in state["hooks"]],
+                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "Stop"])
         self.run_setup("uninstall")
-        self.assertEqual(json.loads((self.home / ".claude/settings.json").read_bytes())["hooks"]["PreToolUse"], [])
+        settings = json.loads((self.home / ".claude/settings.json").read_bytes())
+        self.assertEqual(settings["hooks"]["PreToolUse"], [])
+        self.assertEqual(settings["hooks"]["Stop"], [])
 
     def test_policy_hooks_upgrade_two_owned_entries_to_three(self):
         self.install_orchestration()
@@ -593,6 +598,7 @@ class SetupTests(unittest.TestCase):
         state_path = self.state / "state.json"
         settings = json.loads(path.read_bytes())
         settings["hooks"]["PreToolUse"] = settings["hooks"]["PreToolUse"][:2]
+        del settings["hooks"]["Stop"]
         path.write_text(json.dumps(settings))
         state = json.loads(state_path.read_bytes())
         state["hooks"] = state["hooks"][:2]
@@ -603,8 +609,10 @@ class SetupTests(unittest.TestCase):
         entries = json.loads(path.read_bytes())["hooks"]["PreToolUse"]
         self.assertEqual([entry["matcher"] for entry in entries],
                          ["Agent|Task", "Bash", "mcp__t3-code__delegate_task"])
-        self.assertEqual([entry["matcher"] for entry in json.loads(state_path.read_bytes())["hooks"]],
-                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task"])
+        saved = json.loads(state_path.read_bytes())["hooks"]
+        self.assertEqual([entry.get("matcher", "Stop") for entry in saved],
+                         ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "Stop"])
+        self.assertEqual(len(json.loads(path.read_bytes())["hooks"]["Stop"]), 1)
 
     def test_policy_hooks_edited_owned_entry_is_kept_and_canonical_reapplied(self):
         self.install_orchestration()
@@ -618,7 +626,7 @@ class SetupTests(unittest.TestCase):
         path.write_text(json.dumps(settings))
         self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"],
                          {"Agent|Task": "missing", "Bash": "applied",
-                          "mcp__t3-code__delegate_task": "applied"})
+                          "mcp__t3-code__delegate_task": "applied", "Stop": "applied"})
         self.run_setup("install")
         self.assertIn(edited, json.loads(path.read_bytes())["hooks"]["PreToolUse"])
         self.assertIn(canonical, json.loads(path.read_bytes())["hooks"]["PreToolUse"])
@@ -643,10 +651,14 @@ class SetupTests(unittest.TestCase):
         foreign = {"matcher": "Bash", "hooks": [{"type": "command", "command": shlex.quote(str(hook))}]}
         self.write(path, json.dumps({"hooks": {"PreToolUse": [foreign]}}).encode())
         self.run_setup("install")
-        self.assertEqual([entry["matcher"] for entry in json.loads(
-            (self.state / "state.json").read_bytes())["hooks"]], ["Agent|Task", "mcp__t3-code__delegate_task"])
+        saved = json.loads((self.state / "state.json").read_bytes())["hooks"]
+        self.assertEqual([entry["matcher"] for entry in saved if "matcher" in entry],
+                         ["Agent|Task", "mcp__t3-code__delegate_task"])
+        self.assertEqual(len([entry for entry in saved if "matcher" not in entry]), 1)
         self.run_setup("uninstall")
-        self.assertEqual(json.loads(path.read_bytes())["hooks"]["PreToolUse"], [foreign])
+        hooks = json.loads(path.read_bytes())["hooks"]
+        self.assertEqual(hooks["PreToolUse"], [foreign])
+        self.assertEqual(hooks["Stop"], [])
 
     def test_policy_hooks_removed_when_orchestration_is_removed(self):
         self.install_orchestration()

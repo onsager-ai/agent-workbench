@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Enforce the Worker approval and GitHub polling policies at PreToolUse."""
+"""Enforce Worker, GitHub polling, and user-question policies."""
 import json
+import re
 import shlex
 import sys
 
@@ -13,6 +14,10 @@ T3_MODEL = ("Set target.model (and effort in target.options) for the Worker tier
 INHERITED_MODEL = ("Built-in agents inherit the Manager's model. Use a tier agent "
                    "(subagent_type: <role>) or pass model explicitly.")
 INHERITING_AGENT_TYPES = {None, "general-purpose", "Plan", "Explore", "claude"}
+STOP_REASON = ("If this asks the user something, re-ask it with AskUserQuestion, putting the recommended "
+               "option first and offering your best guesses as options for open-ended answers. "
+               "If it was not a question to the user, end the turn without it.")
+TRANSCRIPT_TAIL_BYTES = 256 * 1024
 
 
 def polls_github(command):
@@ -46,9 +51,58 @@ def polls_github(command):
                for start, end in loops)
 
 
+def last_assistant_text(event):
+    message = event.get("last_assistant_message")
+    if isinstance(message, str):
+        return message
+    path = event.get("transcript_path")
+    if not isinstance(path, str):
+        return ""
+    with open(path, "rb") as transcript:
+        transcript.seek(0, 2)
+        size = transcript.tell()
+        transcript.seek(max(0, size - TRANSCRIPT_TAIL_BYTES))
+        tail = transcript.read(TRANSCRIPT_TAIL_BYTES)
+    entries = []
+    for line in tail.splitlines():
+        try:
+            entry = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(entry, dict) and entry.get("type") == "assistant":
+            entries.append(entry)
+    for entry in reversed(entries):
+        content = entry.get("message", {}).get("content", [])
+        if not isinstance(content, list):
+            continue
+        text = "".join(block.get("text", "") for block in content
+                       if isinstance(block, dict) and block.get("type") == "text"
+                       and isinstance(block.get("text"), str))
+        if text:
+            return text
+    return ""
+
+
+def ends_with_question(text):
+    return re.sub(r"[\s*_`~]+$", "", text).endswith(("?", "？"))
+
+
 def main():
     try:
         event = json.load(sys.stdin)
+        if not isinstance(event, dict):
+            return
+        if event.get("hook_event_name") == "Stop":
+            if event.get("stop_hook_active"):
+                return
+            try:
+                if ends_with_question(last_assistant_text(event)):
+                    print(json.dumps({"decision": "block", "reason": STOP_REASON}))
+            except (OSError, ValueError, TypeError, AttributeError):
+                return
+            return
+        if event.get("hook_event_name") not in (None, "PreToolUse"):
+            return
         tool = event.get("tool_name")
         arguments = event.get("tool_input", {})
         decision = reason = None
