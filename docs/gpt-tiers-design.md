@@ -42,12 +42,22 @@ Add a check after each Agent/Task dispatch. It reads the Worker's transcript, co
 
 This catches every kind of wrong model: an override, a Magpie fallback, a stale route, or a typo in a personal override. That includes failures we haven't thought of yet. It doesn't depend on Claude Code's internals beyond the transcript format.
 
-To verify before building:
-
-- Whether a `PostToolUse` hook on Agent receives enough to find the subagent transcript (agent ID or transcript path), and whether its `additionalContext` reaches the Manager. `SubagentStop` is the alternative, but it fires inside the Worker's run, so it would have to write a note for the Manager rather than tell it directly.
-- The rule for matching a recorded name to an expected ID. Today, dropping the `onsager/` prefix is enough for Codex routes. Routing groups need a rule from Magpie (see open questions).
-
 The check should warn, not block. The work has already run by the time it fires.
+
+#### Spike result (2026-11-19)
+
+A temporary project-local `PostToolUse` hook on `Agent|Task` was run against one foreground haiku dispatch. Findings:
+
+- **The note reaches the Manager.** The hook's `hookSpecificOutput.additionalContext` showed up in the Manager's context right after the Agent result.
+- **The hook gets two model signals.** `tool_response` includes `agentId`, `agentType` and `resolvedModel`. `resolvedModel` is the model Claude Code asked for after applying any override: `claude-haiku-5-5` for this probe. In the AW PM transcript it was `onsager/auto/claude-sonnet-5-5` for the overridden luna and sol runs, and `onsager/codex/gpt-6-luna` for normal luna runs.
+- **The Worker transcript can be found.** It is at `<transcript_path without .jsonl>/subagents/agent-<agentId>.jsonl`, and its `message.model` values show what Magpie answered with: `group/auto-claude-haiku-5-5` for this probe.
+
+So the check can run in two steps:
+
+1. **Requested model.** Compare `resolvedModel` with the agent file's `model:` for `agentType`. They must match exactly. This step needs no naming rules or file reads, and it would have caught the AW PM override.
+2. **Answering model.** Compare the transcript's models with the tier. This step catches Magpie fallbacks, but it needs a naming rule. Dropping `onsager/` works for Codex routes. Routing groups (`onsager/auto/…` requested, `group/auto-…` recorded) need a rule from Magpie (see open questions). Until Magpie gives one, this step should only report names it can't match, not treat them as errors.
+
+Not yet tested: background dispatches (`run_in_background: true`). Their Agent result returns before the Worker finishes, so the transcript check would need `SubagentStop` or a check when the result notification arrives. Workbench Workers run in the foreground today, so this can wait.
 
 ### 2. List the remaining Claude-only assumptions
 
