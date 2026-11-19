@@ -581,17 +581,34 @@ class SetupTests(unittest.TestCase):
         self.run_setup("uninstall")
         self.assertEqual(json.loads((self.home / ".claude/settings.json").read_bytes())["hooks"]["PreToolUse"], [])
 
-    def test_policy_hooks_edited_owned_entry_conflicts_without_writes(self):
+    def test_policy_hooks_edited_owned_entry_is_kept_and_canonical_reapplied(self):
         self.install_orchestration()
         self.run_setup("install")
         path = self.home / ".claude/settings.json"
         settings = json.loads(path.read_bytes())
-        settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"] = "edited-hook"
+        canonical = settings["hooks"]["PreToolUse"][0]
+        edited = json.loads(json.dumps(canonical))
+        edited["hooks"][0]["command"] = "edited-hook"
+        settings["hooks"]["PreToolUse"][0] = edited
         path.write_text(json.dumps(settings))
-        before = self.snapshot()
-        for command in ("install", "status", "uninstall"):
-            self.assertIn("owned Claude hook", self.run_setup(command, ok=False).stderr)
-            self.assertEqual(before, self.snapshot())
+        self.assertEqual(json.loads(self.run_setup("status").stdout)["hooks"],
+                         {"Agent|Task": "missing", "Bash": "applied"})
+        self.run_setup("install")
+        self.assertIn(edited, json.loads(path.read_bytes())["hooks"]["PreToolUse"])
+        self.assertIn(canonical, json.loads(path.read_bytes())["hooks"]["PreToolUse"])
+        self.run_setup("uninstall")
+        self.assertEqual(json.loads(path.read_bytes())["hooks"]["PreToolUse"], [edited])
+
+    def test_policy_hooks_duplicated_owned_entry_conflicts(self):
+        self.install_orchestration()
+        self.run_setup("install")
+        path = self.home / ".claude/settings.json"
+        settings = json.loads(path.read_bytes())
+        settings["hooks"]["PreToolUse"].append(settings["hooks"]["PreToolUse"][0])
+        path.write_text(json.dumps(settings))
+        data = path.read_bytes()
+        self.assertIn("duplicated", self.run_setup("install", ok=False).stderr)
+        self.assertEqual(path.read_bytes(), data)
 
     def test_preexisting_identical_policy_hook_is_not_owned(self):
         self.install_orchestration()
@@ -616,10 +633,11 @@ class SetupTests(unittest.TestCase):
     def test_policy_hooks_invalid_configuration_conflicts_without_writes(self):
         self.install_orchestration()
         path = self.home / ".claude/settings.json"
-        self.write(path, b'{"hooks":{"PreToolUse":{}}}')
-        before = self.snapshot()
+        data = b'{"hooks":{"PreToolUse":{}}}'
+        self.write(path, data)
         self.assertIn("invalid Claude hooks", self.run_setup("install", ok=False).stderr)
-        self.assertEqual(before, self.snapshot())
+        self.assertEqual(path.read_bytes(), data)
+        self.assertFalse((self.state / "state.json").exists())
 
     def test_native_apply_rewrite_conflict_and_uninstall(self):
         self.install_orchestration({"codex_context_window": 900000})

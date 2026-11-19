@@ -456,8 +456,8 @@ class Setup:
             raise Conflict("invalid Claude hooks.PreToolUse configuration")
         current = hooks.get("PreToolUse", [])
         for entry in owned:
-            if current.count(entry) != 1:
-                raise Conflict("owned Claude hook is missing, duplicated or edited; left unchanged")
+            if current.count(entry) > 1:
+                raise Conflict("owned Claude hook is duplicated; left unchanged")
         desired = []
         if not uninstall and present(self.models) and present(self.worker):
             inspect(self.policy_hook, self.home)
@@ -466,12 +466,12 @@ class Setup:
             command = shlex.quote(str(self.policy_hook))
             desired = [{"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
                        for matcher in ("Agent|Task", "Bash")]
-        report = {entry["matcher"]: "applied" for entry in owned}
+        report = {entry["matcher"]: "applied" if entry in current else "missing" for entry in owned}
         if status:
             return owned, report
         updated = list(current)
         for entry in owned:
-            if entry not in desired:
+            if entry not in desired and entry in updated:
                 updated.remove(entry)
         record = []
         for entry in desired:
