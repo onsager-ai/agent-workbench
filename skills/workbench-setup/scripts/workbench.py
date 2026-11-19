@@ -656,7 +656,8 @@ class Setup:
                 raise Conflict("missing canonical policy hook; distribute orchestrate-harnesses first")
             command = shlex.join([str(self.policy_hook), "--workers", str(self.workers_path)])
             desired = [{"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
-                       for matcher in ("Agent|Task", "Bash", "mcp__t3-code__delegate_task")]
+                       for matcher in ("Agent|Task", "Bash", "mcp__t3-code__delegate_task",
+                                       "mcp__t3-code__t3_thread_send")]
             desired_stop = [{"hooks": [{"type": "command", "command": command}]}]
         report = {entry["matcher"]: "applied" if entry in current else "missing"
                   for entry in owned if "matcher" in entry}
@@ -749,7 +750,8 @@ class Setup:
             for entry in hooks:
                 if (not isinstance(entry, dict) or set(entry) not in ({"matcher", "hooks"}, {"hooks"})
                         or ("matcher" in entry and entry["matcher"] not in (
-                            "Agent|Task", "Bash", "mcp__t3-code__delegate_task"))
+                            "Agent|Task", "Bash", "mcp__t3-code__delegate_task",
+                            "mcp__t3-code__t3_thread_send"))
                         or not isinstance(entry["hooks"], list) or len(entry["hooks"]) != 1
                         or not isinstance(entry["hooks"][0], dict)
                         or set(entry["hooks"][0]) != {"type", "command"}
