@@ -8,7 +8,7 @@ import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
-import { Setup, effectiveWorkers, shellQuote, shellSplit } from "../skills/workbench-setup/scripts/workbench.mjs";
+import { Setup, codexHookHash, codexHookKey, effectiveWorkers, shellQuote, shellSplit } from "../skills/workbench-setup/scripts/workbench.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SKILL = path.join(ROOT, "skills/workbench-setup");
@@ -134,6 +134,14 @@ class Fixture {
 
   get hookCommand() {
     return [this.hook, "--workers", path.join(this.state, "workers.json")].map(shellQuote).join(" ");
+  }
+
+  get codexHookCommand() {
+    return [this.hook, "--host", "codex", "--workers", path.join(this.state, "workers.json")].map(shellQuote).join(" ");
+  }
+
+  get codexHooksPath() {
+    return path.join(this.home, ".codex/hooks.json");
   }
 
   personalFile(name = "AGENTS.md") {
@@ -920,6 +928,211 @@ describe("workbench setup", () => {
     assert.match(f.run("install", [], false).stderr, /invalid Claude hooks/);
     assert.deepEqual(read(settingsPath), data);
     assert.ok(!exists(path.join(f.state, "state.json")));
+  });
+
+  const codexHandler = (f) => ({ type: "command", command: f.codexHookCommand, timeout: 30 });
+  const CODEX_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send"];
+
+  test("codex hooks install, status and uninstall preserve foreign entries", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const foreign = { matcher: "Bash", hooks: [{ type: "command", command: "personal-hook" }] };
+    f.write(f.codexHooksPath, JSON.stringify({ note: "keep", hooks: { PreToolUse: [foreign], SessionStart: [] } }));
+    f.run("install");
+    let file = f.json(f.codexHooksPath);
+    assert.deepEqual(Object.keys(file), ["note", "hooks"]);
+    assert.deepEqual(Object.keys(file.hooks), ["PreToolUse", "SessionStart", "Stop"]);
+    assert.deepEqual(file.hooks.PreToolUse[0], foreign);
+    assert.deepEqual(file.hooks.PreToolUse.slice(1).map((entry) => entry.matcher), CODEX_MATCHERS);
+    for (const entry of file.hooks.PreToolUse.slice(1)) assert.deepEqual(entry.hooks, [codexHandler(f)]);
+    assert.deepEqual(file.hooks.Stop, [{ hooks: [codexHandler(f)] }]);
+    assert.deepEqual(f.stateJson().codex_hooks, [...file.hooks.PreToolUse.slice(1), file.hooks.Stop[0]]);
+    assert.deepEqual(f.stateJson().hooks.length, 5);
+    assert.deepEqual(JSON.parse(f.run("status").stdout).codex_hooks, {
+      "Agent|spawn_agent": "applied", Bash: "applied", mcp__t3_code__delegate_task: "applied",
+      mcp__t3_code__t3_thread_send: "applied", Stop: "applied",
+    });
+    const before = f.snapshot();
+    assert.match(f.run("install").stdout, /no-op/);
+    assert.deepEqual(f.snapshot(), before);
+    f.run("uninstall");
+    file = f.json(f.codexHooksPath);
+    assert.deepEqual(file.hooks, { PreToolUse: [foreign], SessionStart: [], Stop: [] });
+    assert.equal(file.note, "keep");
+  });
+
+  test("codex hooks are skipped without a codex directory or orchestration", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    fs.rmdirSync(path.join(f.home, ".codex"));
+    f.run("install");
+    assert.ok(!exists(f.codexHooksPath));
+    assert.deepEqual(f.stateJson().codex_hooks, []);
+    const g = new Fixture();
+    g.configureHome(path.join(g.temporary, "plain"));
+    fs.mkdirSync(path.join(g.home, ".codex"), { recursive: true });
+    g.run("install");
+    assert.ok(!exists(g.codexHooksPath));
+  });
+
+  test("codex hooks edited owned entry is kept, duplicates conflict, identical foreign is unowned", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    const file = f.json(f.codexHooksPath);
+    const canonical = file.hooks.PreToolUse[0];
+    const edited = JSON.parse(JSON.stringify(canonical));
+    edited.hooks[0].command = "edited-hook";
+    file.hooks.PreToolUse[0] = edited;
+    fs.writeFileSync(f.codexHooksPath, JSON.stringify(file));
+    assert.equal(JSON.parse(f.run("status").stdout).codex_hooks["Agent|spawn_agent"], "missing");
+    f.run("install");
+    const reapplied = f.json(f.codexHooksPath).hooks.PreToolUse;
+    assert.ok(reapplied.some((entry) => isDeepStrictEqual(entry, edited)));
+    assert.ok(reapplied.some((entry) => isDeepStrictEqual(entry, canonical)));
+    f.run("uninstall");
+    assert.deepEqual(f.json(f.codexHooksPath).hooks.PreToolUse, [edited]);
+
+    const g = new Fixture();
+    g.configureHome(path.join(g.temporary, "duplicate"));
+    g.installOrchestration();
+    g.run("install");
+    const dup = g.json(g.codexHooksPath);
+    dup.hooks.PreToolUse.push(dup.hooks.PreToolUse[0]);
+    fs.writeFileSync(g.codexHooksPath, JSON.stringify(dup));
+    const data = read(g.codexHooksPath);
+    assert.match(g.run("install", [], false).stderr, /duplicated/);
+    assert.deepEqual(read(g.codexHooksPath), data);
+
+    const h = new Fixture();
+    h.configureHome(path.join(h.temporary, "identical"));
+    h.installOrchestration();
+    const same = { matcher: "Bash", hooks: [codexHandler(h)] };
+    h.write(h.codexHooksPath, JSON.stringify({ hooks: { PreToolUse: [same] } }));
+    h.run("install");
+    assert.deepEqual(h.stateJson().codex_hooks.filter((entry) => "matcher" in entry).map((entry) => entry.matcher),
+      ["Agent|spawn_agent", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send"]);
+    h.run("uninstall");
+    assert.deepEqual(h.json(h.codexHooksPath).hooks.PreToolUse, [same]);
+  });
+
+  test("codex hooks removed when orchestration is removed; invalid file conflicts", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    fs.rmSync(path.join(f.home, ".agents/skills/orchestrate-harnesses"), { recursive: true });
+    f.run("install");
+    assert.deepEqual(f.stateJson().codex_hooks, []);
+    assert.deepEqual(f.json(f.codexHooksPath).hooks.PreToolUse, []);
+    for (const [index, data] of ['{"hooks":{"PreToolUse":{}}}', "{broken", '{"hooks":null}'].entries()) {
+      const g = new Fixture();
+      g.configureHome(path.join(g.temporary, `invalid-${index}`));
+      g.installOrchestration();
+      g.write(g.codexHooksPath, data);
+      assert.match(g.run("install", [], false).stderr, /invalid Codex hooks/);
+      assert.deepEqual(read(g.codexHooksPath), Buffer.from(data));
+      assert.ok(!exists(path.join(g.state, "state.json")));
+    }
+  });
+
+  test("codex hook hash matches Codex 0.170.0 fingerprints", () => {
+    // Declaration hashes from codex-rs core/tests/suite/hooks.rs (plugin hooks, timeout defaulting to 600).
+    const command = "python3 -I -S ${PLUGIN_ROOT}/hooks/pre_tool_use_hook.py";
+    assert.equal(codexHookHash("PreToolUse", "^Bash$", { type: "command", command }),
+      "sha256:c9ee1aca1b5d8c72b99df6571c87d61350b09f7f4594ae30e7250a2027e9d76b");
+    assert.equal(codexHookHash("PostToolUse", "^Bash$", { type: "command", command }),
+      "sha256:9eef43ad6f26b1f9b94f318a50445f8bb62c363da08152a2966b73d308bf42ba");
+    assert.equal(codexHookKey("/h/.codex/hooks.json", "PreToolUse", 2), "/h/.codex/hooks.json:pre_tool_use:2:0");
+    assert.equal(codexHookKey("/h/.codex/hooks.json", "Stop", 0), "/h/.codex/hooks.json:stop:0:0");
+    // Stop ignores the matcher, so the hash does not depend on it.
+    assert.equal(codexHookHash("Stop", "x", { command: "c", timeout: 30 }), codexHookHash("Stop", null, { command: "c", timeout: 30 }));
+  });
+
+  const quiet = (action) => {
+    const log = console.log;
+    const lines = [];
+    console.log = (...items) => lines.push(items.join(" "));
+    try {
+      action();
+    } finally {
+      console.log = log;
+    }
+    return lines;
+  };
+
+  test("codex trust is written with consent, tracked and removed on uninstall", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const config = path.join(f.home, ".codex/config.toml");
+    const original = Buffer.from('model = "x"\n[projects."/tmp"]\ntrust_level = "trusted"');
+    f.write(config, original);
+    const setup = new Setup(f.home);
+    setup.confirmCodexTrust = () => true;
+    quiet(() => setup.install());
+    const hooks = f.json(f.codexHooksPath).hooks;
+    const handler = hooks.PreToolUse[1].hooks[0];
+    const toml = read(config).toString("utf8");
+    const key = `${f.codexHooksPath}:pre_tool_use:1:0`;
+    assert.ok(toml.includes(`[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = "${codexHookHash("PreToolUse", "Bash", handler)}"\n`));
+    assert.ok(toml.includes(`${f.codexHooksPath}:stop:0:0`));
+    assert.equal(f.stateJson().codex_trust.length, 5);
+    assert.deepEqual(JSON.parse(f.run("status").stdout).codex_trust, {
+      "Agent|spawn_agent": "trusted", Bash: "trusted", mcp__t3_code__delegate_task: "trusted",
+      mcp__t3_code__t3_thread_send: "trusted", Stop: "trusted",
+    });
+    // A second install neither prompts nor changes anything.
+    const before = f.snapshot();
+    const second = new Setup(f.home);
+    second.confirmCodexTrust = () => assert.fail("must not prompt");
+    quiet(() => second.install());
+    assert.deepEqual(f.snapshot(), before);
+    f.run("uninstall");
+    assert.deepEqual(read(config), original);
+  });
+
+  const hasScript = spawnSync("script", ["--version"]).status === 0;
+  test("codex trust prompt reads the answer from a real terminal", { skip: !hasScript && "util-linux script not available" }, () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const command = [process.execPath, f.script, "--home", f.home, "install"].map(shellQuote).join(" ");
+    const result = spawnSync("script", ["-qec", command, "/dev/null"],
+      { input: "y\n", encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: "" } });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /Trust agent-workbench's Codex hooks now\? \[y\/N\]/);
+    assert.equal(f.stateJson().codex_trust.length, 5);
+    assert.equal(JSON.parse(f.run("status").stdout).codex_trust.Bash, "trusted");
+  });
+
+  test("codex trust is skipped without a terminal and reported untrusted", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const result = f.run("install");
+    assert.match(result.stdout, /Run \/hooks in Codex once to trust agent-workbench's hooks\./);
+    assert.ok(!exists(path.join(f.home, ".codex/config.toml")) || !read(path.join(f.home, ".codex/config.toml")).includes("hooks.state"));
+    assert.deepEqual(f.stateJson().codex_trust, []);
+    assert.equal(JSON.parse(f.run("status").stdout).codex_trust.Bash, "untrusted");
+  });
+
+  test("codex trust leaves foreign and edited tables alone", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const config = path.join(f.home, ".codex/config.toml");
+    const foreignKey = `${f.codexHooksPath}:pre_tool_use:0:0`;
+    f.write(config, `[hooks.state.${JSON.stringify(foreignKey)}]\ntrusted_hash = "sha256:foreign"\n`);
+    const setup = new Setup(f.home);
+    setup.confirmCodexTrust = () => true;
+    const lines = quiet(() => setup.install());
+    assert.ok(lines.some((line) => line.includes("foreign") && line.includes(foreignKey)));
+    assert.equal(JSON.parse(f.run("status").stdout).codex_trust["Agent|spawn_agent"], "modified");
+    assert.equal(f.stateJson().codex_trust.length, 4);
+    // Edit one owned table: uninstall keeps it and removes the rest.
+    const edited = read(config).toString("utf8").replace(/(pre_tool_use:1:0"\]\ntrusted_hash = ")sha256:[0-9a-f]+/, "$1sha256:edited");
+    fs.writeFileSync(config, edited);
+    f.run("uninstall");
+    const left = read(config).toString("utf8");
+    assert.ok(left.includes("sha256:foreign"));
+    assert.ok(left.includes("sha256:edited"));
+    assert.ok(!left.includes("stop:0:0"));
   });
 
   test("null settings sections are reported as invalid configuration", () => {

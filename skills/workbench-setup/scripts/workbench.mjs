@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import tty from "node:tty";
 import { isDeepStrictEqual } from "node:util";
 
 const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
@@ -27,6 +28,8 @@ const IMPORT = Buffer.from("@~/.agents/AGENTS.md");
 const LIMIT = 10 * 1024 * 1024;
 const ROLE = /^[a-z][a-z0-9-]*$/;
 const HOOK_MATCHERS = ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"];
+const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send"];
+const CODEX_HOOK_TIMEOUT = 30;
 
 export class Conflict extends Error {}
 
@@ -311,6 +314,25 @@ export function effectiveWorkers(bundle, cwd) {
 }
 
 const digest = (data) => crypto.createHash("sha256").update(data).digest("hex");
+// Codex 0.170.0 trust identity (codex-rs hooks/src/engine/discovery.rs hook_hash and
+// config/src/fingerprint.rs version_for_toml): sha256 of the compact JSON of the sorted-key
+// {event_name, hooks: [normalized handler], matcher}, with the command timeout defaulting to 600.
+const CODEX_EVENT_LABELS = { PreToolUse: "pre_tool_use", PostToolUse: "post_tool_use", Stop: "stop" };
+const sortedJson = (value) => (Array.isArray(value) ? value.map(sortedJson)
+  : isDict(value) ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortedJson(value[key])])) : value);
+
+export function codexHookHash(event, matcher, handler) {
+  const identity = {
+    event_name: CODEX_EVENT_LABELS[event],
+    hooks: [{ type: "command", command: handler.command, timeout: Math.max(1, handler.timeout ?? 600), async: handler.async === true }],
+  };
+  // Codex ignores matchers on Stop.
+  if (event !== "Stop" && matcher != null) identity.matcher = matcher;
+  return "sha256:" + digest(Buffer.from(JSON.stringify(sortedJson(identity)), "utf8"));
+}
+
+export const codexHookKey = (file, event, group, handler = 0) => `${file}:${CODEX_EVENT_LABELS[event]}:${group}:${handler}`;
+
 const present = (target) => {
   try {
     fs.lstatSync(target);
@@ -656,6 +678,7 @@ export class Setup {
     const orchestration = at(".agents/skills/orchestrate-harnesses");
     this.claudeSettings = at(".claude/settings.json");
     this.codexSettings = at(".codex/config.toml");
+    this.codexHooks = at(".codex/hooks.json");
     this.models = path.join(orchestration, "workers.yml");
     this.personal = at(".agents/skills/workbench-personal");
     this.personalWorkers = path.join(this.personal, "workers.yml");
@@ -959,6 +982,182 @@ export class Setup {
     return [record, report];
   }
 
+  // Codex user hooks live in ~/.codex/hooks.json with the same ownership rules as the Claude entries.
+  codexHookPlans(state, plans, { uninstall = false, status = false } = {}) {
+    const owned = state?.codex_hooks ?? [];
+    const directory = path.dirname(this.codexHooks);
+    inspect(directory, this.home, { directory: true });
+    inspect(this.codexHooks, this.home);
+    const available = present(directory);
+    if (!available && owned.length) throw new Conflict("owned Codex hooks are missing; restore hooks.json");
+    const data = read(this.codexHooks);
+    let parsed;
+    try {
+      parsed = data.length ? JSON.parse(utf8(data)) : {};
+    } catch {
+      throw new Conflict(`invalid Codex hooks configuration: ${this.codexHooks}`);
+    }
+    const hooks = isDict(parsed) && has(parsed, "hooks") ? parsed.hooks : {};
+    const current = isDict(hooks) && has(hooks, "PreToolUse") ? hooks.PreToolUse : [];
+    const currentStop = isDict(hooks) && has(hooks, "Stop") ? hooks.Stop : [];
+    if (!isDict(parsed) || !isDict(hooks) || !Array.isArray(current) || !Array.isArray(currentStop)) {
+      throw new Conflict("invalid Codex hooks.PreToolUse or hooks.Stop configuration");
+    }
+    const contains = (list, entry) => list.some((item) => isDeepStrictEqual(item, entry));
+    for (const entry of owned) {
+      const collection = has(entry, "matcher") ? current : currentStop;
+      if (collection.filter((item) => isDeepStrictEqual(item, entry)).length > 1) {
+        throw new Conflict("owned Codex hook is duplicated; left unchanged");
+      }
+    }
+    let desired = [];
+    let desiredStop = [];
+    if (!uninstall && available && present(this.models) && present(this.worker)) {
+      inspect(this.policyHook, this.home);
+      if (!isFile(this.policyHook)) {
+        throw new Conflict("missing canonical policy hook; distribute orchestrate-harnesses first");
+      }
+      const command = [this.policyHook, "--host", "codex", "--workers", this.workersPath].map(shellQuote).join(" ");
+      const handler = { type: "command", command, timeout: CODEX_HOOK_TIMEOUT };
+      desired = CODEX_HOOK_MATCHERS.map((matcher) => ({ matcher, hooks: [{ ...handler }] }));
+      desiredStop = [{ hooks: [{ ...handler }] }];
+    }
+    const report = {};
+    for (const entry of owned) if (has(entry, "matcher")) report[entry.matcher] = contains(current, entry) ? "applied" : "missing";
+    for (const entry of owned) if (!has(entry, "matcher")) report.Stop = contains(currentStop, entry) ? "applied" : "missing";
+    if (status) return [owned, report, { PreToolUse: current, Stop: currentStop }];
+    const updated = [...current];
+    const updatedStop = [...currentStop];
+    const remove = (list, entry) => {
+      const index = list.findIndex((item) => isDeepStrictEqual(item, entry));
+      if (index !== -1) list.splice(index, 1);
+    };
+    for (const entry of owned) {
+      const collection = has(entry, "matcher") ? updated : updatedStop;
+      if (!contains(has(entry, "matcher") ? desired : desiredStop, entry)) remove(collection, entry);
+    }
+    const record = [];
+    for (const entry of desired) {
+      if (contains(owned, entry) || !contains(updated, entry)) record.push(entry);
+      if (!contains(updated, entry)) updated.push(entry);
+    }
+    for (const entry of desiredStop) {
+      if (contains(owned, entry) || !contains(updatedStop, entry)) record.push(entry);
+      if (!contains(updatedStop, entry)) updatedStop.push(entry);
+    }
+    if (!isDeepStrictEqual(updated, current) || !isDeepStrictEqual(updatedStop, currentStop)) {
+      if (!has(parsed, "hooks")) parsed.hooks = {};
+      parsed.hooks.PreToolUse = updated;
+      parsed.hooks.Stop = updatedStop;
+      plans.set(this.codexHooks, ["file", Buffer.from(dumps(parsed, { indent: 2, ascii: false }) + "\n"), 0o600]);
+    }
+    return [record, report, { PreToolUse: updated, Stop: updatedStop }];
+  }
+
+  // Trust key and hash for each owned hook entry at its position in the hooks.json lists.
+  codexTrustItems(entries, lists) {
+    const items = [];
+    for (const entry of entries) {
+      const event = has(entry, "matcher") ? "PreToolUse" : "Stop";
+      const index = lists[event].findIndex((item) => isDeepStrictEqual(item, entry));
+      if (index === -1) continue;
+      items.push({
+        label: entry.matcher ?? "Stop", key: codexHookKey(this.codexHooks, event, index),
+        hash: codexHookHash(event, entry.matcher, entry.hooks[0]),
+      });
+    }
+    return items;
+  }
+
+  codexHookStates(text) {
+    const state = parseToml(text).hooks?.state;
+    return isDict(state) ? state : {};
+  }
+
+  confirmCodexTrust() {
+    // tty.isatty, not process.stdin.isTTY: creating the stdin stream makes fd 0 non-blocking, so readSync gets EAGAIN.
+    if (!tty.isatty(0) || !tty.isatty(1)) return false;
+    process.stdout.write("Trust agent-workbench's Codex hooks now? [y/N] ");
+    const buffer = Buffer.alloc(256);
+    let answer = "";
+    try {
+      answer = buffer.toString("utf8", 0, fs.readSync(0, buffer, 0, buffer.length, null));
+    } catch {}
+    return /^\s*y(es)?\s*$/i.test(answer);
+  }
+
+  // Append whole owned hooks.state tables to config.toml and remove only unmodified owned ones.
+  codexTrustPlans(state, plans, items, { uninstall = false } = {}) {
+    const owned = state?.codex_trust ?? [];
+    const [data] = this.nativeConfig("codex");
+    if (data === null) {
+      if (owned.length) throw new Conflict("owned Codex trust entries are missing; restore config.toml");
+      return [[], []];
+    }
+    const original = (plans.has(this.codexSettings) ? plans.get(this.codexSettings)[1] : data).toString("utf8");
+    let text = original;
+    const wanted = new Map(uninstall ? [] : items.map((item) => [item.key, item]));
+    const record = [];
+    for (const entry of owned) {
+      const item = wanted.get(entry.key);
+      const at = text.lastIndexOf(entry.text);
+      if (at === -1) continue;
+      if (item && item.hash === entry.hash) record.push(entry);
+      else text = text.slice(0, at) + text.slice(at + entry.text.length);
+    }
+    const messages = [];
+    if (uninstall) {
+      if (text !== original) plans.set(this.codexSettings, ["file", Buffer.from(text, "utf8"), 0o600]);
+      return [record, messages];
+    }
+    const states = this.codexHookStates(text);
+    const pending = [];
+    for (const item of items) {
+      const existing = states[item.key];
+      if (existing === undefined) pending.push(item);
+      else if (!isDict(existing) || existing.trusted_hash !== item.hash) {
+        messages.push(`left foreign or changed Codex hooks.state entry unchanged: ${item.key}`);
+      }
+    }
+    if (pending.length) {
+      if (this.confirmCodexTrust()) {
+        let edited = text;
+        const added = [];
+        for (const item of pending) {
+          const chunk = (edited.length && !edited.endsWith("\n") ? "\n" : "") + (edited.length ? "\n" : "") +
+            `[hooks.state.${JSON.stringify(item.key)}]\ntrusted_hash = ${JSON.stringify(item.hash)}\n`;
+          edited += chunk;
+          added.push({ key: item.key, hash: item.hash, text: chunk });
+        }
+        try {
+          this.codexHookStates(edited);
+          text = edited;
+          record.push(...added);
+        } catch {
+          messages.push("could not add Codex hook trust safely; run /hooks in Codex to trust agent-workbench's hooks.");
+        }
+      } else {
+        messages.push("Run /hooks in Codex once to trust agent-workbench's hooks.");
+      }
+    }
+    if (text !== original) plans.set(this.codexSettings, ["file", Buffer.from(text, "utf8"), 0o600]);
+    return [record, messages];
+  }
+
+  // Report trust per owned hook: trusted, untrusted (no state entry) or modified (state names another hash).
+  codexTrustStatus(items) {
+    const [data] = this.nativeConfig("codex");
+    const states = data === null ? {} : this.codexHookStates(data.toString("utf8"));
+    return Object.fromEntries(items.map((item) => {
+      const existing = states[item.key];
+      return [item.label, existing === undefined ? "untrusted" : isDict(existing) && existing.trusted_hash === item.hash ? "trusted" : "modified"];
+    }));
+  }
+
+  backupName(file) {
+    return { [this.claudeSettings]: "claude_settings", [this.codexSettings]: "codex_settings", [this.codexHooks]: "codex_hooks" }[file];
+  }
+
   checkAgents(state, desired = []) {
     const owned = state ? state.agents : {};
     for (const name of [...new Set([...Object.keys(owned), ...desired])].sort()) {
@@ -1024,6 +1223,26 @@ export class Setup {
           throw invalid("invalid hook ownership metadata");
         }
       }
+      if (has(state, "codex_hooks") && !Array.isArray(state.codex_hooks)) throw invalid("invalid Codex hook ownership metadata");
+      for (const entry of state.codex_hooks ?? []) {
+        const names = isDict(entry) ? Object.keys(entry).sort().join(",") : "";
+        const inner = isDict(entry) ? entry.hooks : null;
+        if (!["hooks,matcher", "hooks"].includes(names)
+            || (has(entry, "matcher") && !CODEX_HOOK_MATCHERS.includes(entry.matcher))
+            || !Array.isArray(inner) || inner.length !== 1 || !isDict(inner[0])
+            || Object.keys(inner[0]).sort().join(",") !== "command,timeout,type"
+            || inner[0].type !== "command" || typeof inner[0].command !== "string"
+            || !isInt(inner[0].timeout)) {
+          throw invalid("invalid Codex hook ownership metadata");
+        }
+      }
+      if (has(state, "codex_trust") && !Array.isArray(state.codex_trust)) throw invalid("invalid Codex trust ownership metadata");
+      for (const entry of state.codex_trust ?? []) {
+        if (!isDict(entry) || Object.keys(entry).sort().join(",") !== "hash,key,text"
+            || Object.values(entry).some((value) => typeof value !== "string")) {
+          throw invalid("invalid Codex trust ownership metadata");
+        }
+      }
       for (const [name, entry] of Object.entries(state.agents)) {
         if (!ROLE.test(name) || typeof need(entry, "hash") !== "string") throw invalid("invalid agent ownership metadata");
       }
@@ -1048,7 +1267,7 @@ export class Setup {
     inspect(this.codex, this.home, { link: true });
     inspect(this.lockPath, this.home, { directory: true });
     inspect(path.join(this.root, "backups"), this.home, { directory: true });
-    for (const name of ["shared", "codex", "claude", "launcher", "claude_settings", "codex_settings"]) {
+    for (const name of ["shared", "codex", "claude", "launcher", "claude_settings", "codex_settings", "codex_hooks"]) {
       inspect(path.join(this.root, "backups", name + ".json"), this.home);
     }
     const override = path.join(this.home, ".codex/AGENTS.override.md");
@@ -1182,6 +1401,7 @@ export class Setup {
     this.preflight();
     let changed = false;
     let desired;
+    let trustMessages = [];
     this.withLock(() => {
       const [state, oldBlock, private_] = this.preflight();
       let privateText = private_;
@@ -1217,16 +1437,19 @@ export class Setup {
       }
       const [nativePlans, nativeRecord] = this.nativePlans(state, this.contextValues());
       const [hookRecord] = this.hookPlans(state, nativePlans);
+      const [codexHookRecord, , codexLists] = this.codexHookPlans(state, nativePlans);
+      const [codexTrustRecord, messages] = this.codexTrustPlans(state, nativePlans, this.codexTrustItems(codexHookRecord, codexLists));
+      trustMessages = messages;
       desired = this.desiredAgents();
       this.checkAgents(state, Object.keys(desired));
       for (const name of ["shared", "codex", "claude", "launcher"]) this.backup(name, this[name]);
-      for (const file of nativePlans.keys()) this.backup(file === this.claudeSettings ? "claude_settings" : "codex_settings", file);
+      for (const file of nativePlans.keys()) this.backup(this.backupName(file), file);
       const bundle = this.workersBundle();
       const workersBytes = bundle ? Buffer.from(dumps(bundle, { indent: 2 }) + "\n") : null;
       const launcher = this.launcherBytes();
       const record = {
         workers_hash: workersBytes ? digest(workersBytes) : null,
-        native: nativeRecord, hooks: hookRecord,
+        native: nativeRecord, hooks: hookRecord, codex_hooks: codexHookRecord, codex_trust: codexTrustRecord,
         schema: 2, version: VERSION, template_hash: digest(template),
         personal_block: personalBlock !== null ? { hash: digest(personalBlock), text: personalBlock.toString("utf8") } : null,
         personal_files: [...(bundle && present(this.personalWorkers) ? ["workers.yml"] : []),
@@ -1284,6 +1507,7 @@ export class Setup {
     const names = Object.keys(desired).sort();
     console.log(`claude agents: ${names.join(", ") || "none"}`);
     if (!names.length) console.log("no Claude agents generated: orchestrate-harnesses is not installed");
+    for (const message of trustMessages) console.log(message);
   }
 
   status() {
@@ -1292,11 +1516,13 @@ export class Setup {
     const template = read(this.template);
     const [, , nativeStatus] = this.nativePlans(state, this.contextValues(), { status: true });
     const [, hookStatus] = this.hookPlans(state, new Map(), { status: true });
+    const [codexOwned, codexHookStatus, codexLists] = this.codexHookPlans(state, new Map(), { status: true });
     console.log(dumps({
       installed_version: state.version, available_version: VERSION,
       installed_template_hash: state.template_hash,
       available_template_hash: digest(template),
-      native_settings: nativeStatus, hooks: hookStatus,
+      native_settings: nativeStatus, hooks: hookStatus, codex_hooks: codexHookStatus,
+      codex_trust: this.codexTrustStatus(this.codexTrustItems(codexOwned, codexLists)),
       personal_package: { present: present(this.personal), applied_files: state.personal_files },
       private_bytes: private_.length, shared: this.shared,
       codex: this.codex, claude: this.claude,
@@ -1330,7 +1556,9 @@ export class Setup {
       }
       const [nativePlans] = this.nativePlans(state, null, { uninstall: true });
       this.hookPlans(state, nativePlans, { uninstall: true });
-      for (const file of nativePlans.keys()) this.backup(file === this.claudeSettings ? "claude_settings" : "codex_settings", file);
+      this.codexHookPlans(state, nativePlans, { uninstall: true });
+      this.codexTrustPlans(state, nativePlans, [], { uninstall: true });
+      for (const file of nativePlans.keys()) this.backup(this.backupName(file), file);
       // Keep current personal bytes, never restore an old snapshot over them.
       const agents = new Map(Object.keys(state.agents).map((name) => [this.agentPath(name), ["absent", null, null]]));
       if (state.workers_hash) agents.set(this.workersPath, ["absent", null, null]);

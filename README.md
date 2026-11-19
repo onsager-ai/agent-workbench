@@ -41,6 +41,8 @@ Workers use a configurable ladder. The default is **Haiku medium → Sonnet medi
 
 Worker configuration is YAML, loaded with the vendored `yaml` package without `npm install` or network access. Put partial overrides in `~/.config/agent-workbench/workers.yml` (or the absolute `$XDG_CONFIG_HOME` equivalent). Mappings merge, lists replace, and null tiers are deleted. Run `agent-workbench workers --cwd PATH` to inspect the chosen profile and resolved configuration, then `agent-workbench install` to apply agent and hook changes.
 
+Codex CLI 0.141 or newer (hooks are on by default) gets the same policy hook through `~/.codex/hooks.json` when `~/.codex` exists. Codex hooks cannot ask, so the interactive Opus and ladder approvals become denials that tell the model to get your approval and retry, and the built-in-agent model inheritance rule is not applied. Codex runs hooks only after you trust them: on a terminal, install asks "Trust agent-workbench's Codex hooks now? [y/N]" and, on yes, records the trust hashes in `~/.codex/config.toml`; otherwise run `/hooks` in Codex once. `agent-workbench status` shows `codex_hooks` and `codex_trust`.
+
 For a corporate setup, add a profile and select it for your work directory:
 
 ```yaml
@@ -154,6 +156,7 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 | `~/.local/state/agent-workbench/workers.json` | Owned resolved base and profile policy used by the dispatch hook |
 | `~/.claude/agents/<tier>.md` | Generated Claude Code subagents, one per routable Worker tier (when `orchestrate-harnesses` is installed) |
 | `~/.claude/settings.json` → `hooks.PreToolUse` | Owned hooks for Opus approval, GitHub polling policy, and protection of local `main`/`master` branches (when `orchestrate-harnesses` is installed) |
+| `~/.codex/hooks.json` and `[hooks.state]` in `~/.codex/config.toml` | Owned Codex policy hooks and, after you confirm, their trust entries (when `orchestrate-harnesses` is installed and `~/.codex` exists) |
 | `~/.local/state/agent-workbench/` | Ownership, hashes, exclusive lock, private backups |
 
 The exact public markers are `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->`. Put machine-local personal rules outside both managed blocks in `~/.agents/AGENTS.md`. On first installation, existing Codex regular-file bytes are kept outside the block unchanged. Existing Claude text stays in place. Neither npx distribution nor this setup changes project instructions, other agent settings, credentials, model configuration, or native permissions.

@@ -504,12 +504,21 @@ function workersArgument(argv) {
   return null;
 }
 
+function hostArgument(argv) {
+  for (let index = 0; index < argv.length; index++) {
+    if (argv[index] === "--host" && index + 1 < argv.length) return argv[index + 1];
+    if (argv[index].startsWith("--host=")) return argv[index].slice("--host=".length);
+  }
+  return "claude";
+}
+
 function emit(value) {
   process.stdout.write(JSON.stringify(value) + "\n");
 }
 
 function main() {
   const workers = workersArgument(process.argv.slice(2));
+  const codex = hostArgument(process.argv.slice(2)) === "codex";
   let decision = null;
   let reason = null;
   try {
@@ -529,12 +538,20 @@ function main() {
     const args = "tool_input" in event ? event.tool_input : {};
     if (typeof tool === "string" && tool.endsWith("t3_thread_send")) {
       const stamped = stampFooter(args, workers ? path.dirname(workers) : null);
-      if (stamped) emit({ hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: stamped } });
+      // Codex only honors updatedInput together with permissionDecision:allow.
+      if (stamped) {
+        emit({ hookSpecificOutput: { hookEventName: "PreToolUse", ...(codex ? { permissionDecision: "allow" } : {}), updatedInput: stamped } });
+      }
       return;
     }
-    if (tool === "mcp__t3-code__delegate_task") {
+    if (tool === "mcp__t3-code__delegate_task" || tool === "mcp__t3_code__delegate_task") {
       const target = "target" in dict(args) ? args.target : {};
       if (!dict(target).model) [decision, reason] = ["deny", T3_MODEL];
+    } else if (tool === "spawn_agent") {
+      const subagentType = dict(args).agent_type;
+      const approval = dispatchApproval(workers, event, subagentType);
+      if (approval) [decision, reason] = ["ask", approval];
+      else if (args.model === "opus") [decision, reason] = ["ask", APPROVAL];
     } else if (tool === "Agent" || tool === "Task") {
       const subagentType = dict(args).subagent_type;
       const approval = dispatchApproval(workers, event, subagentType);
@@ -553,6 +570,8 @@ function main() {
     return;
   }
   if (decision) {
+    // Codex fails open on "ask", so it gets a deny that tells the model to obtain approval first.
+    if (codex && decision === "ask") [decision, reason] = ["deny", `${reason} Get the user's approval, then retry.`];
     emit({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision, permissionDecisionReason: reason } });
   }
 }
