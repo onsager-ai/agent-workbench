@@ -37,6 +37,7 @@ const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegat
 const CODEX_HOOK_TIMEOUT = 30;
 
 export class Conflict extends Error {}
+const recovery = (message, step) => `${message}; fix: ${step}`;
 
 const INTEGER_KEYS = new Set(["version", "timeout_s", "max_auto_rework", "max_tokens", "gateway_window", "codex_window"]);
 
@@ -1410,6 +1411,27 @@ export class Setup {
     }
   }
 
+  trust() {
+    let trusted = false;
+    this.withLock(() => {
+      const [state] = this.preflight({ status: true });
+      if (!state) throw new Conflict("not installed; run agent-workbench install first");
+      const [owned, , lists] = this.codexHookPlans(state, new Map(), { status: true });
+      const plans = new Map();
+      const [record, messages] = this.codexTrustPlans(state, plans, this.codexTrustItems(owned, lists));
+      trusted = messages.length === 0 && record.length > 0;
+      if (plans.has(this.codexSettings)) this.backup("codex_settings", this.codexSettings);
+      if (plans.size) {
+        const updated = { ...state, codex_trust: record };
+        plans.set(this.statePath, ["file", Buffer.from(dumps(updated, { indent: 2, sortKeys: true }) + "\n"), 0o600]);
+        transaction(plans, () => { for (const [file, plan] of plans) atomic(file, plan[1]); });
+      }
+      for (const message of messages) console.log(message);
+      if (trusted) console.log("Codex hooks trusted");
+      else if (!messages.length) console.log("No Codex hooks need trust");
+    });
+  }
+
   install() {
     this.preflight();
     let changed = false;
@@ -1451,8 +1473,11 @@ export class Setup {
       const [nativePlans, nativeRecord] = this.nativePlans(state, this.contextValues());
       const [hookRecord] = this.hookPlans(state, nativePlans);
       const [codexHookRecord, , codexLists] = this.codexHookPlans(state, nativePlans);
-      const [codexTrustRecord, messages] = this.codexTrustPlans(state, nativePlans, this.codexTrustItems(codexHookRecord, codexLists));
-      trustMessages = messages;
+      const codexTrustRecord = (state?.codex_trust ?? []).filter((entry) =>
+        this.codexTrustItems(codexHookRecord, codexLists).some((item) => item.key === entry.key && item.hash === entry.hash));
+      trustMessages = this.codexTrustItems(codexHookRecord, codexLists)
+        .filter((item) => !codexTrustRecord.some((entry) => entry.key === item.key && entry.hash === item.hash))
+        .map((item) => `Run agent-workbench trust to trust Codex hooks, or run /hooks in Codex once: ${item.label}`);
       desired = this.desiredAgents();
       this.checkAgents(state, Object.keys(desired));
       for (const name of ["shared", "codex", "claude", "launcher"]) this.backup(name, this[name]);
@@ -1523,28 +1548,67 @@ export class Setup {
     for (const message of trustMessages) console.log(message);
   }
 
-  status() {
+  status({ json = false } = {}) {
     const [state, , private_] = this.preflight({ status: true });
-    if (!state) throw new Conflict("not installed");
+    if (!state) throw new Conflict("not installed; run agent-workbench install first");
     const template = read(this.template);
-    const [, , nativeStatus] = this.nativePlans(state, this.contextValues(), { status: true });
-    const [, hookStatus] = this.hookPlans(state, new Map(), { status: true });
-    const [codexOwned, codexHookStatus, codexLists] = this.codexHookPlans(state, new Map(), { status: true });
-    console.log(dumps({
+    let nativeStatus = {};
+    try { [, , nativeStatus] = this.nativePlans(state, this.contextValues(), { status: true }); }
+    catch (error) { nativeStatus = { error: error.message }; }
+    let hookStatus = {};
+    try { [, hookStatus] = this.hookPlans(state, new Map(), { status: true }); }
+    catch (error) { hookStatus = { error: error.message }; }
+    let codexOwned = [];
+    let codexHookStatus = {};
+    let codexLists = { PreToolUse: [], Stop: [] };
+    try { [codexOwned, codexHookStatus, codexLists] = this.codexHookPlans(state, new Map(), { status: true }); }
+    catch (error) { codexHookStatus = { error: error.message }; }
+    const report = {
       installed_version: state.version, available_version: VERSION,
       installed_template_hash: state.template_hash,
       available_template_hash: digest(template),
       native_settings: nativeStatus, hooks: hookStatus, codex_hooks: codexHookStatus,
-      codex_trust: this.codexTrustStatus(this.codexTrustItems(codexOwned, codexLists)),
+      codex_trust: Object.hasOwn(codexHookStatus, "error") ? {} : this.codexTrustStatus(this.codexTrustItems(codexOwned, codexLists)),
       personal_package: { present: present(this.personal), applied_files: state.personal_files },
       private_bytes: private_.length, shared: this.shared,
       codex: this.codex, claude: this.claude,
       launcher: this.launcher, thermal: this.thermalCommand("status"),
       agents: Object.fromEntries(Object.keys(state.agents).sort().map((name) => [name, this.agentPath(name)])),
-    }, { sortKeys: true }));
-    this.checkAgents(state, Object.keys(this.desiredAgents()));
-    if (state.template_hash !== digest(template) || state.version !== VERSION) {
-      throw new Conflict("an instruction update is available; run install to apply distributed assets");
+    };
+    if (json) console.log(dumps(report, { sortKeys: true }));
+    else {
+      const line = (name, status, fix) => {
+        const label = status === "applied" || status === "trusted" || status === "not installed" || status.startsWith("skipped:") ? "ok" : status === "missing" || status === "untrusted" ? "missing" : "conflict";
+        console.log(`${label}  ${name}: ${status}; ${fix}`);
+      };
+      line("setup", state.version === VERSION ? "applied" : "missing", "run agent-workbench install to apply update");
+      for (const [kind, settings] of Object.entries(nativeStatus)) {
+        if (kind === "error") line("configuration", "conflict", `resolve: ${settings}`);
+        else if (typeof settings === "string") line(`${kind} settings`, settings, settings.startsWith("skipped:") ? "run agent-workbench install if that config directory is available" : "run agent-workbench install");
+        else for (const [key, status] of Object.entries(settings)) line(`${kind} setting ${key}`, status, status === "conflict" ? "resolve the value, then run agent-workbench install" : "run agent-workbench install to apply");
+      }
+      for (const [name, status] of Object.entries(hookStatus)) {
+        if (name === "error") line("Claude hooks", "conflict", `resolve: ${status}`);
+        else line(`Claude hook ${name}`, status, "run agent-workbench install to restore");
+      }
+      for (const [name, status] of Object.entries(codexHookStatus)) {
+        if (name === "error") line("Codex hooks", "conflict", `resolve: ${status}`);
+        else line(`Codex hook ${name}`, status, "run agent-workbench install to restore");
+      }
+      if (Object.hasOwn(codexHookStatus, "error")) line("Codex trust", "conflict", `resolve: ${codexHookStatus.error}`);
+      else for (const [name, status] of Object.entries(report.codex_trust)) line(`Codex trust ${name}`, status, status === "trusted" ? "no action needed" : "run agent-workbench trust (or /hooks in Codex)");
+      line("personal package", report.personal_package.present ? "applied" : "not installed", "install workbench-personal if needed");
+      line("instruction template", state.template_hash === report.available_template_hash && state.version === VERSION ? "applied" : "missing", "run agent-workbench install to apply update");
+      line(`private instructions (${private_.length} bytes)`, "applied", "no action needed");
+      line(`thermal (${report.thermal})`, report.thermal === "not installed" ? "not installed" : "applied", report.thermal === "not installed" ? "install thermal-guard if needed" : "no action needed");
+      for (const [name, file] of Object.entries(report.agents)) line(`Claude agent ${name}`, fs.existsSync(file) ? "applied" : "missing", "run agent-workbench install to restore");
+    }
+    if (!json) {
+      try { this.checkAgents(state, Object.keys(this.desiredAgents())); }
+      catch (error) { console.log(`conflict  Claude agents: ${error.message}; resolve the file conflict, then run agent-workbench install`); }
+      if (state.template_hash !== digest(template) || state.version !== VERSION) {
+        console.log("missing  instruction template update; run agent-workbench install to apply distributed assets");
+      }
     }
   }
 
@@ -1649,7 +1713,7 @@ function stripTrailingNewlines(data) {
 const COMMANDS = {
   install: "Apply shared instructions, hooks and settings",
   update: "Update distributed skills, then apply them",
-  status: "Check installed files and settings",
+  status: "Check installed files and settings (supports --json)",
   trust: "Trust installed Codex policy hooks",
   uninstall: "Remove managed setup while keeping private files",
   workers: "Show effective worker configuration",
@@ -1658,13 +1722,19 @@ const USAGE = "usage: workbench.mjs [--home HOME] [--skills-cmd SKILLS_CMD] [--c
   `{${Object.keys(COMMANDS).join(",")}}`;
 
 function parseArguments(argv) {
-  const options = { home: os.homedir(), skillsCmd: undefined, cwd: process.cwd(), command: undefined };
+  const options = { home: os.homedir(), skillsCmd: undefined, cwd: process.cwd(), command: undefined, json: false, help: false, helpCommand: undefined };
   const fail = (message) => {
     console.error(`${USAGE}\nworkbench.mjs: error: ${message}`);
     process.exit(2);
   };
   const flags = { "--home": "home", "--skills-cmd": "skillsCmd", "--cwd": "cwd" };
   for (let index = 0; index < argv.length; index++) {
+    if (argv[index] === "--help" || argv[index] === "-h") {
+      options.help = true;
+      if (options.command) options.helpCommand = options.command;
+      continue;
+    }
+    if (argv[index] === "--json") { options.json = true; continue; }
     const [flag, inline] = argv[index].startsWith("--") && argv[index].includes("=") ?
       [argv[index].slice(0, argv[index].indexOf("=")), argv[index].slice(argv[index].indexOf("=") + 1)] : [argv[index]];
     if (has(flags, flag)) {
@@ -1675,27 +1745,50 @@ function parseArguments(argv) {
       fail(`unrecognized arguments: ${argv[index]}`);
     } else if (options.command === undefined) {
       options.command = flag;
+    } else if (options.command === "help") {
+      options.helpCommand = flag;
     } else {
       fail(`unrecognized arguments: ${flag}`);
     }
   }
+  if (options.command === undefined && options.help) return options;
   if (options.command === undefined) fail("the following arguments are required: command");
-  if (!["install", "update", "status", "uninstall", "workers"].includes(options.command)) {
-    fail(`argument command: invalid choice: '${options.command}' (choose from 'install', 'update', 'status', 'uninstall', 'workers')`);
+  if (options.command === "help") {
+    options.command = undefined;
+    options.help = true;
+    if (options.helpCommand !== undefined && !has(COMMANDS, options.helpCommand)) fail(`unknown command '${options.helpCommand}'`);
+    return options;
+  }
+  if (!has(COMMANDS, options.command)) {
+    fail(`argument command: invalid choice: '${options.command}' (choose from ${Object.keys(COMMANDS).map((item) => `'${item}'`).join(", ")})`);
   }
   return options;
 }
 
+function printHelp(command) {
+  if (!command) {
+    console.log(`${USAGE}\n\nCommands:`);
+    for (const [name, description] of Object.entries(COMMANDS)) console.log(`  ${name.padEnd(10)} ${description}`);
+    console.log("\nUse workbench.mjs help <command> for command options.");
+  } else {
+    const args = command === "workers" ? " [--cwd CWD]" : command === "update" ? " [--skills-cmd SKILLS_CMD]" : command === "status" ? " [--json]" : "";
+    console.log(`usage: workbench.mjs [--home HOME]${args} ${command}\n\n${COMMANDS[command]}`);
+  }
+}
+
 export function main(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
+  if (args.help) { printHelp(args.helpCommand ?? (args.command === "help" ? undefined : args.command)); return 0; }
   try {
     const setup = new Setup(args.home);
     if (args.command === "workers") setup.workers(args.cwd);
     else if (args.command === "update") return setup.update(args.skillsCmd);
+    else if (args.command === "status") setup.status({ json: args.json });
     else setup[args.command]();
     return 0;
   } catch (error) {
-    console.error(`agent-workbench: ${error.message}`);
+    const message = error instanceof Conflict ? recovery(error.message, `resolve the reported issue, then run agent-workbench ${args.command}`) : error.message;
+    console.error(`agent-workbench: ${message}`);
     return 1;
   }
 }

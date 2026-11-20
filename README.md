@@ -169,7 +169,9 @@ agent-workbench install
 # Update this repository's installed skills and workbench-personal, then apply setup.
 agent-workbench update
 # Inspect hashes, versions, native paths, managed edits and masking overrides.
-agent-workbench status
+agent-workbench status [--json]
+# Trust Codex policy hooks after reviewing the prompt.
+agent-workbench trust
 # Roll back setup while preserving current personal edits.
 agent-workbench uninstall
 ~~~
