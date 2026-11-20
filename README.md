@@ -21,7 +21,7 @@ Agent Workbench is a set of portable skills for Codex and Claude Code that helps
 
 2. Start a new Manager session. Use the native subagent tools in your harness to delegate work; setup details and configuration are in the [reference](docs/reference.md).
 
-For manual skill installation, updates, project-local installs, and detailed configuration, see the [reference](docs/reference.md). Setup does not install agent tools or authenticate harnesses.
+For manual skill installation, updates, project-local installs, `awb prune` cleanup, and detailed configuration, see the [reference](docs/reference.md). Setup does not install agent tools or authenticate harnesses.
 
 ## Skills
 

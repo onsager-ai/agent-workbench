@@ -167,6 +167,10 @@ agent-workbench status [--json]
 agent-workbench trust
 # Roll back setup while preserving current personal edits.
 agent-workbench uninstall
+# Report local worktrees/branches whose merged PRs qualify for cleanup.
+awb prune [--repo PATH] [--json]
+# Remove eligible local worktrees and branches after reviewing the report.
+awb prune --apply
 ```
 
 `update` reads native version-3 skills lock ownership (`~/.agents/.skill-lock.json`, or `$XDG_STATE_HOME/skills/.skill-lock.json` when configured) and delegates to `skills@1.7.4 update` with this repository's installed skill names plus `workbench-personal` when present in the lock, regardless of its source. A failed native update leaves global instruction files unchanged. Updates honor the installed native skill source/ref metadata. `npx skills update -g -y` remains available for ordinary updates across all skills; use `agent-workbench install` afterward to apply any newly distributed instruction template.

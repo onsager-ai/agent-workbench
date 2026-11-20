@@ -28,6 +28,43 @@ function run(home, args, env = process.env) {
   return spawnSync(process.execPath, [cli, "--home", home, ...args], { encoding: "utf8", env });
 }
 
+test("prune reports merged PR cleanup and removes eligible local worktrees on apply", (t) => {
+  const f = fixture();
+  t.after(() => fs.rmSync(f.dir, { recursive: true, force: true }));
+  const repo = path.join(f.dir, "repo");
+  const tree = path.join(f.dir, "tree");
+  const fakeBin = path.join(f.dir, "bin");
+  fs.mkdirSync(repo);
+  fs.mkdirSync(fakeBin);
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git("init", "-b", "main");
+  git("config", "user.name", "Test");
+  git("config", "user.email", "test@example.com");
+  fs.writeFileSync(path.join(repo, "base"), "base\n");
+  git("add", "base"); git("commit", "-m", "base");
+  git("worktree", "add", "-b", "merged-task-tree", tree);
+  fs.writeFileSync(path.join(tree, "work"), "work\n");
+  spawnSync("git", ["add", "work"], { cwd: tree });
+  spawnSync("git", ["commit", "-m", "work"], { cwd: tree });
+  const mergedTip = spawnSync("git", ["rev-parse", "HEAD"], { cwd: tree, encoding: "utf8" }).stdout.trim();
+  const gh = path.join(fakeBin, "gh");
+  fs.writeFileSync(gh, `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify([{ headRefName: "merged-task-tree", headRefOid: mergedTip, state: "MERGED" }])}'\n`);
+  fs.chmodSync(gh, 0o755);
+  const env = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` };
+  const dry = spawnSync(process.execPath, [cli, "prune", "--repo", repo, "--json"], { encoding: "utf8", env, cwd: repo });
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.ok(fs.existsSync(tree));
+  assert.ok(JSON.parse(dry.stdout).some((row) => row.branch === "merged-task-tree" && row.action === "worktree"));
+  const apply = spawnSync(process.execPath, [cli, "prune", "--repo", repo, "--apply", "--json"], { encoding: "utf8", env, cwd: repo });
+  assert.equal(apply.status, 0, apply.stderr);
+  assert.equal(fs.existsSync(tree), false);
+  assert.notEqual(spawnSync("git", ["show-ref", "--verify", "refs/heads/merged-task-tree"], { cwd: repo }).status, 0);
+});
+
 test("setup installs skills, then applies and reports setup", (t) => {
   const f = fixture();
   t.after(() => fs.rmSync(f.dir, { recursive: true, force: true }));

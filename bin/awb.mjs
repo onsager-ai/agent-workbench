@@ -3,8 +3,9 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const commands = ["install", "update", "status", "trust", "uninstall", "workers"];
+const commands = ["install", "update", "status", "trust", "uninstall", "workers", "prune"];
 const usage = `Usage: awb <command> [options]
 
 Commands:
@@ -15,6 +16,7 @@ Commands:
   trust      Review and trust Codex hooks
   uninstall  Remove managed setup
   workers    Show effective Worker configuration
+  prune      Remove local worktrees and branches with merged PRs
   help       Show this help`;
 
 const argv = process.argv.slice(2);
@@ -55,6 +57,10 @@ const run = (executable, parameters) => {
   return result.status ?? 1;
 };
 const runWorkbench = (parameters) => run(process.execPath, [script, "--home", home, ...parameters]);
+
+if (command === "prune") {
+  process.exit(run(process.execPath, [fileURLToPath(new URL("./prune.mjs", import.meta.url)), ...args.slice(1)]));
+}
 
 if (command === "setup") {
   const skillArgs = skillsCmd

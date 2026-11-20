@@ -22,7 +22,7 @@ A lane is a conversational grouping, not another controller or persistent queue.
 
 ## Choose the next step
 
-Continue useful work already covered by the user's request. For delegated work, use native subagent tools for same-harness Workers and, when its tools are available, T3 Code for Manager coordination across harnesses or machines; otherwise use supported native messaging and the user for handover; return defects or changed requirements in an updated brief. Check actual revisions and required evidence before reporting delivery. Preserve explicit user holds and use prompt-for-decisions only for a genuinely unresolved user choice after preparing the concrete evidence; reuse existing authorization and settled answers.
+Continue useful work already covered by the user's request. For delegated work, use native subagent tools for same-harness Workers and, when its tools are available, T3 Code for Manager coordination across harnesses or machines; otherwise use supported native messaging and the user for handover; return defects or changed requirements in an updated brief. After confirming a task's PR merge, remove its worktree and local branch with `awb prune --apply` as part of settling the lane. Check actual revisions and required evidence before reporting delivery. Preserve explicit user holds and use prompt-for-decisions only for a genuinely unresolved user choice after preparing the concrete evidence; reuse existing authorization and settled answers.
 
 When a stuck trigger from orchestrate-harnesses fires, revisit the design or scope with the user instead of dispatching another fix round.
 
