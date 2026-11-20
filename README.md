@@ -11,21 +11,17 @@ Agent Workbench is a set of portable skills for Codex and Claude Code that helps
 
 ## Quick start
 
-1. Install the skills globally:
+1. Set up Agent Workbench:
 
    ```sh
-   npx skills add onsager-ai/agent-workbench -g -a codex -a claude-code --skill '*' -y
+   npx @onsager/awb setup
    ```
 
-2. (Optional) Apply the shared global instructions and setup tools:
+   This installs the skills and applies the shared global instructions and setup tools.
 
-   ```sh
-   node ~/.agents/skills/workbench-setup/scripts/workbench.mjs install
-   ```
+2. Start a new Manager session. Use the native subagent tools in your harness to delegate work; setup details and configuration are in the [reference](docs/reference.md).
 
-3. Start a new Manager session. Use the native subagent tools in your harness to delegate work; setup details and configuration are in the [reference](docs/reference.md).
-
-The install command distributes skills; it does not install agent tools, authenticate harnesses, or apply shared global instructions. For requirements, updates, project-local installs, and detailed configuration, see the [reference](docs/reference.md).
+For manual skill installation, updates, project-local installs, and detailed configuration, see the [reference](docs/reference.md). Setup does not install agent tools or authenticate harnesses.
 
 ## Skills
 

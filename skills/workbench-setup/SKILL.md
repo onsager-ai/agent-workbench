@@ -13,8 +13,9 @@ After global distribution, explicitly apply the setup:
 
 ```sh
 node ~/.agents/skills/workbench-setup/scripts/workbench.mjs install
-~/.local/bin/agent-workbench status
-~/.local/bin/agent-workbench trust  # optional: consent to trust installed Codex hooks
+awb status  # alias for the installed agent-workbench command
+awb trust  # optional: consent to trust installed Codex hooks
+# Or use ~/.local/bin/agent-workbench status and trust
 ```
 
 The installer creates `~/.agents/AGENTS.md`, links Codex's `~/.codex/AGENTS.md`, and ensures `~/.claude/CLAUDE.md` has one native import resolving to the shared instructions. An existing equivalent Claude import is reused. Personal text belongs outside `<!-- BEGIN agent-workbench -->` / `<!-- END agent-workbench -->` and the optional `<!-- BEGIN agent-workbench personal -->` / `<!-- END agent-workbench personal -->` block in the shared file. When `~/.agents/skills/workbench-personal/AGENTS.md` exists, install applies it in that second block immediately after the public block; removing the package or file removes the owned personal block on install. Both blocks have ownership and drift checks; edit the package source instead of the installed personal block. Existing Codex regular-file bytes are kept outside the managed block on first installation; existing Claude text stays in its file.

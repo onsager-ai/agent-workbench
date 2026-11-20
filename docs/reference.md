@@ -67,7 +67,13 @@ Codex CLI 0.141 or newer (hooks are on by default) gets the same policy hook thr
 
 ## Install and update
 
-Install all skills globally:
+Install all skills globally with the bootstrap command:
+
+```sh
+npx @onsager/awb setup
+```
+
+For manual skill installation, use the native skills CLI:
 
 ```sh
 npx skills add onsager-ai/agent-workbench -g -a codex -a claude-code --skill '*' -y
