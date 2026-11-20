@@ -174,7 +174,8 @@ describe("workbench setup", () => {
     assert.equal(JSON.parse(result.stdout).private_bytes, 0);
     const readable = spawnSync(f.launcher, ["status"], { encoding: "utf8", env });
     assert.equal(readable.status, 0, readable.stderr);
-    assert.match(readable.stdout, /^ok  setup:/m);
+    assert.match(readable.stdout, /^ok  setup: applied$/m);
+    assert.match(readable.stdout, /^ok  Claude hook Bash: applied$/m);
     assert.deepEqual(JSON.parse(result.stdout).personal_package, { present: false, applied_files: [] });
     assert.equal(mode(f.state), 0o700);
     for (const name of fs.readdirSync(path.join(f.state, "backups"))) assert.equal(mode(path.join(f.state, "backups", name)), 0o600);
@@ -809,6 +810,8 @@ describe("workbench setup", () => {
     const edited = cat(read(f.agent("opus")), "personal\n");
     fs.writeFileSync(f.agent("opus"), edited);
     for (const command of ["install", "status", "uninstall"]) assert.match(f.run(command, [], false).stderr, /edited/);
+    const jsonStatus = f.run("status", ["--json"], false);
+    assert.match(jsonStatus.stdout, /\"agents_error\"/);
     assert.deepEqual(read(f.agent("opus")), edited);
     assert.ok(exists(f.launcher));
   });
