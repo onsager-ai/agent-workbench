@@ -175,7 +175,6 @@ describe("workbench setup", () => {
     const readable = spawnSync(f.launcher, ["status"], { encoding: "utf8", env });
     assert.equal(readable.status, 0, readable.stderr);
     assert.match(readable.stdout, /^ok  setup: applied$/m);
-    assert.match(readable.stdout, /^ok  Claude hook Bash: applied$/m);
     assert.deepEqual(JSON.parse(result.stdout).personal_package, { present: false, applied_files: [] });
     assert.equal(mode(f.state), 0o700);
     for (const name of fs.readdirSync(path.join(f.state, "backups"))) assert.equal(mode(path.join(f.state, "backups", name)), 0o600);

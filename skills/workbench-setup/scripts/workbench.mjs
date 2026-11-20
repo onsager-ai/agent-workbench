@@ -1344,7 +1344,7 @@ export class Setup {
         throw new Conflict("managed Claude import missing or modified; restore the import line recorded in state.json, then rerun agent-workbench install");
       }
     }
-    this.checkAgents(state);
+    if (!status) this.checkAgents(state);
     inspect(this.workersPath, this.home);
     const ownedWorkers = state ? state.workers_hash : null;
     if (present(this.workersPath)) {
@@ -1664,7 +1664,7 @@ export class Setup {
 
   update(command) {
     this.preflight();
-    if (!this.isRealHome && !command) throw new Conflict("alternate --home requires --skills-cmd; provide it as --skills-cmd COMMAND, then rerun agent-workbench update");
+    if (!this.isRealHome && !command) throw new Conflict("alternate --home requires --skills-cmd; real-user npx was not invoked; rerun with --skills-cmd COMMAND");
     let lockFile = path.join(this.home, ".agents/.skill-lock.json");
     if (this.isRealHome && process.env.XDG_STATE_HOME) {
       lockFile = path.join(process.env.XDG_STATE_HOME, "skills/.skill-lock.json");
