@@ -1606,9 +1606,9 @@ export class Setup {
     if (!json) {
       try { this.checkAgents(state, Object.keys(this.desiredAgents())); }
       catch (error) { console.log(`conflict  Claude agents: ${error.message}; resolve the file conflict, then run agent-workbench install`); }
-      if (state.template_hash !== digest(template) || state.version !== VERSION) {
-        console.log("missing  instruction template update; run agent-workbench install to apply distributed assets");
-      }
+    }
+    if (state.template_hash !== digest(template) || state.version !== VERSION) {
+      throw new Conflict("instruction update is available; run agent-workbench install to apply distributed assets");
     }
   }
 

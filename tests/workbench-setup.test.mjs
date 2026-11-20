@@ -169,7 +169,7 @@ describe("workbench setup", () => {
     assert.deepEqual(read(f.codex), read(f.shared));
     assert.deepEqual(read(f.claude), cat(IMPORT, NL));
     const env = { ...process.env, PATH: `${path.dirname(process.execPath)}:${process.env.PATH}` };
-    const result = spawnSync(f.launcher, ["status"], { encoding: "utf8", env });
+    const result = spawnSync(f.launcher, ["status", "--json"], { encoding: "utf8", env });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).private_bytes, 0);
     const readable = spawnSync(f.launcher, ["status"], { encoding: "utf8", env });
@@ -525,7 +525,8 @@ describe("workbench setup", () => {
     f.run("install");
     fs.writeFileSync(f.shared, cat(Buffer.from([0x70, 0x80]), read(f.shared), "suffix"));
     f.write(path.join(f.skill, "assets/AGENTS.md"), "updated public\n");
-    f.run("status", [], false);
+    const status = f.run("status", [], false);
+    assert.match(status.stdout, /instruction update is available; run agent-workbench install/);
     f.run("install");
     const data = read(f.shared);
     assert.ok(data.subarray(0, 2 + BEGIN.length).equals(cat(Buffer.from([0x70, 0x80]), BEGIN)));
@@ -1183,7 +1184,7 @@ describe("workbench setup", () => {
     const f = new Fixture();
     f.installOrchestration();
     const result = f.run("install");
-    assert.match(result.stdout, /Run \/hooks in Codex once to trust agent-workbench's hooks\./);
+    assert.match(result.stdout, /Run agent-workbench trust to trust Codex hooks/);
     assert.ok(!exists(path.join(f.home, ".codex/config.toml")) || !read(path.join(f.home, ".codex/config.toml")).includes("hooks.state"));
     assert.deepEqual(f.stateJson().codex_trust, []);
     assert.equal(JSON.parse(f.run("status").stdout).codex_trust.Bash, "untrusted");
