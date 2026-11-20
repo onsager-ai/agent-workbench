@@ -133,8 +133,9 @@ describe("public layout", () => {
     assert.ok(license.includes("MIT License"));
     assert.ok(license.includes("Copyright (c) 2026 agent-workbench contributors"));
     const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
-    assert.ok(readme.includes("npx skills add onsager-ai/agent-workbench -g -a codex -a claude-code --skill '*' -y"));
+    assert.ok(readme.includes("npx @onsager/awb setup"));
     const reference = fs.readFileSync(path.join(ROOT, "docs/reference.md"), "utf8");
+    assert.ok(reference.includes("npx skills add onsager-ai/agent-workbench -g -a codex -a claude-code --skill '*' -y"));
     assert.ok(reference.includes("npx skills update -g -y"));
     assert.ok(reference.includes("remain separate and private"));
   });

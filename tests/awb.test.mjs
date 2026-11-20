@@ -33,7 +33,7 @@ test("setup installs skills, then applies and reports setup", (t) => {
   t.after(() => fs.rmSync(f.dir, { recursive: true, force: true }));
   const result = run(f.home, ["--skills-cmd", f.skillsCmd, "setup"], f.env);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /setup\s+applied/);
+  assert.match(result.stdout, /^ok  setup: applied$/m);
   assert.ok(fs.existsSync(path.join(f.home, ".local", "bin", "agent-workbench")));
 });
 
@@ -41,7 +41,7 @@ test("skills failure stops setup and preserves its exit code", (t) => {
   const f = fixture();
   t.after(() => fs.rmSync(f.dir, { recursive: true, force: true }));
   const failing = path.join(f.dir, "fail.mjs");
-  fs.writeFileSync(failing, "process.exit(37);\n", { mode: 0o755 });
+  fs.writeFileSync(failing, "#!/usr/bin/env node\nprocess.exit(37);\n", { mode: 0o755 });
   const result = run(f.home, ["--skills-cmd", failing, "setup"], f.env);
   assert.equal(result.status, 37);
   assert.equal(fs.existsSync(path.join(f.home, ".agents")), false);
@@ -54,7 +54,7 @@ test("status forwards to the installed workbench command", (t) => {
   assert.equal(result.status, 0, result.stderr);
   const status = run(f.home, ["status"]);
   assert.equal(status.status, 0, status.stderr);
-  assert.match(status.stdout, /setup\s+applied/);
+  assert.match(status.stdout, /^ok  setup: applied$/m);
 });
 
 test("uninstalled commands explain how to bootstrap", (t) => {
