@@ -1646,8 +1646,16 @@ function stripTrailingNewlines(data) {
   return data.subarray(0, end);
 }
 
+const COMMANDS = {
+  install: "Apply shared instructions, hooks and settings",
+  update: "Update distributed skills, then apply them",
+  status: "Check installed files and settings",
+  trust: "Trust installed Codex policy hooks",
+  uninstall: "Remove managed setup while keeping private files",
+  workers: "Show effective worker configuration",
+};
 const USAGE = "usage: workbench.mjs [--home HOME] [--skills-cmd SKILLS_CMD] [--cwd CWD] " +
-  "{install,update,status,uninstall,workers}";
+  `{${Object.keys(COMMANDS).join(",")}}`;
 
 function parseArguments(argv) {
   const options = { home: os.homedir(), skillsCmd: undefined, cwd: process.cwd(), command: undefined };
