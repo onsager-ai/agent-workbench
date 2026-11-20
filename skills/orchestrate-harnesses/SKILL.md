@@ -43,6 +43,6 @@ Carry commit/push authority from actual user sources into each brief. When autho
 
 Use existing native permissions and explicit user authorization. A brief's scope does not prove OS confinement. Read-only work must use supported read-only permissions. Do not widen permissions, disable hooks/trust checks, change credentials, or create an isolation layer to work around failure. A worktree can preserve unrelated work but is not a sandbox.
 
-Context, budget, and timeout targets come from effective configuration and supported native controls. Apply only controls the harness supports; report unknown or unapplied values. Context compaction is advisory, not hard request-token enforcement. See [configuration and profiles](references/configuration.md) for configuration and native-control details.
+Context, budget, and timeout targets come from effective configuration and supported native controls. Apply only controls the harness supports; report unknown or unapplied values. Context compaction is advisory, not hard request-token enforcement. The Stop hook can optionally classify prose questions through `policy.stop_classifier` at the configured local gateway. See [configuration and profiles](references/configuration.md) for configuration and native-control details.
 
 Skills can change mid-session. After a workbench update is merged or installed, reread affected skill files before acting on them. Reply in the user's language with the changed result and verified evidence. Status questions do not cancel the task; pause/cancel are control requests.

@@ -178,7 +178,19 @@ function validateWorkerShape(config, { profile = false } = {}) {
     }
   }
   if (has(config, "policy")) {
-    keys(config.policy, ["max_auto_rework", "context"], "policy");
+    keys(config.policy, ["max_auto_rework", "context", "stop_classifier"], "policy");
+    if (has(config.policy, "stop_classifier") && config.policy.stop_classifier !== null) {
+      keys(config.policy.stop_classifier, ["url", "model"], "policy.stop_classifier");
+      const { url, model } = config.policy.stop_classifier;
+      let parsedUrl;
+      try { parsedUrl = new URL(url); } catch {}
+      if (!parsedUrl || !["http:", "https:"].includes(parsedUrl.protocol)) {
+        throw new Conflict("policy.stop_classifier.url must be an http(s) URL; correct it in workers.yml");
+      }
+      if (!nonEmptyString(model)) {
+        throw new Conflict("policy.stop_classifier.model must be a nonempty string; correct it in workers.yml");
+      }
+    }
     if (has(config.policy, "context")) {
       keys(config.policy.context, ["max_tokens", "gateway_window", "codex_window"], "policy.context");
     }

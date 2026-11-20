@@ -37,6 +37,7 @@ describe("worker configuration", () => {
       assert.equal(tier.opt_in, false);
     }
     assert.equal(config.policy.context.gateway_window, null);
+    assert.equal(config.policy.stop_classifier, null);
     const codex = bundle.profiles.codex;
     assert.deepEqual(new Set(Object.keys(codex.tiers)), new Set(["haiku", "sonnet", "opus", "luna", "sol", "terra"]));
     assert.deepEqual(codex.ladder.map((entry) => entry.tiers), [["luna", "haiku"], ["sol", "sonnet"], ["opus"]]);
@@ -62,6 +63,9 @@ describe("worker configuration", () => {
       (c) => { c.ladder[0].approval = "optional"; },
       (c) => { c.policy.context.max_tokens = 0; },
       (c) => { c.policy.max_auto_rework = -1; },
+      (c) => { c.policy.stop_classifier = { url: "ftp://localhost", model: "x" }; },
+      (c) => { c.policy.stop_classifier = { url: "http://localhost", model: "" }; },
+      (c) => { c.policy.stop_classifier = { url: "http://localhost", model: "x", token: "secret" }; },
       (c) => { c.tiers.luna.cli = "codex"; },
     ];
     for (const mutate of mutations) {

@@ -1398,6 +1398,9 @@ select:
       "profiles: {unused: {roles: {}}}", "tiers: {luna: {cli: codex}}",
       "ladder: [{level: L1, tiers: [terra]}]", "ladder: []", "[broken",
       "defaults: {timeout_s: 7200.0}", "version: 2.0", "policy: {max_auto_rework: 1.0}",
+      'policy: {stop_classifier: {url: "ftp://localhost", model: x}}',
+      'policy: {stop_classifier: {url: "http://localhost", model: ""}}',
+      'policy: {stop_classifier: {url: "http://localhost", model: x, token: secret}}',
       "tiers: {no: null}", "tiers: {on: {harness: claude, model: x}}", "tiers: {null: null}",
       "profiles: {1: {tiers: {}}}", "profiles: null", "select: null",
     ];
