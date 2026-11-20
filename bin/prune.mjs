@@ -72,7 +72,8 @@ export function prune({ repo: requestedRepo, apply = false, json = false } = {})
     for (const name of fs.readdirSync("/proc")) {
       if (!/^\d+$/.test(name)) continue;
       try { processCwds.add(fs.realpathSync(`/proc/${name}/cwd`)); }
-      catch (error) { if (error.code !== "ENOENT" && error.code !== "ESRCH") processesKnown = false; }
+      // Other users' processes deny cwd reads (EACCES/EPERM); only this user's processes can hold its worktrees.
+      catch (error) { if (!["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(error.code)) processesKnown = false; }
     }
   } catch { processesKnown = false; }
   const branches = git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").split("\n").filter(Boolean);
