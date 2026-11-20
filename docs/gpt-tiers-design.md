@@ -1,6 +1,6 @@
 # GPT tiers in Claude Code: design
 
-Status: draft for discussion, 2026-11-19.
+Status: section 1 (post-run model check) shipped in #66 on 2026-11-20. Sections 2 and 3 and the Magpie questions are open.
 
 ## Problem
 
