@@ -15,6 +15,8 @@ Name sessions so the sidebar shows kind, project, and scope at a glance. Keep ti
 
 Omit the issue number when absent. In a Worker title, `rN` marks a review or rework round and is omitted on the first pass. A Manager sets its T3 title on its first turn and renames it when scope changes. A launching Manager passes the title when creating a thread. A Worker's title comes from the dispatch description, so write it in the Worker format.
 
+Only one active Manager thread holds a given title. When a Manager thread is settled, rename it to `<title> · settled MM-DD` with the settle date, for example `Tolmap PM · settled 11-15`. Whoever settles it, the Manager itself or a peer acting on the user's request, renames it in the same step. A new Manager for the same scope then takes the plain title. Titles are discovery hints only: address peers by `threadId`, and skip threads whose `settled` is true unless the user points you at one.
+
 ## Register and catch up
 
 1. Use `t3_thread_update` to keep the thread title in the [session naming](#session-naming) format. Post a `kind=decision` WB_MSG message in your own thread stating its role, scope and acting task owner. When a native address exists, add it to the text, such as `native=claude-code:<name>` using the session name `ListAgents` reports for itself. A title is a discovery hint; verify the role message before sending to a peer.
