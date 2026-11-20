@@ -187,3 +187,12 @@ Install Node.js 22.20 or newer, then run the global install command above. To ke
 | `skills/workbench-setup/scripts/workbench.py` | Four-line shim handing off to `workbench.mjs`, so launchers installed before the Node port can still update; may be removed in a later release |
 | `skills/orchestrate-harnesses/scripts/policy-hook` | Claude hook entry point (`policy-hook.mjs` holds the logic) |
 | `tests/*.test.mjs` | `node --test` checks for package layout, model defaults, the hook, and installer behavior; no orchestration service |
+
+## Releasing @onsager/awb
+
+The npm package holds only the `awb` wrapper, so release it only when `bin/awb.mjs` or `package.json` changes. Skill changes reach users through `npx skills update` and need no release.
+
+1. Bump `version` in `package.json` in a PR and merge it.
+2. Tag the merge commit and push the tag: `git tag v0.1.1 <sha> && git push origin v0.1.1`.
+
+The Release workflow checks that the tag matches `package.json`, runs the tests and publishes with npm trusted publishing, so no npm token is stored. Running the workflow by hand does a dry run only. Trusted publishing is configured on npmjs.com under the package's settings: publisher GitHub Actions, repository `onsager-ai/agent-workbench`, workflow `release.yml`.

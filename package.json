@@ -2,6 +2,10 @@
   "name": "@onsager/awb",
   "version": "0.1.0",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/onsager-ai/agent-workbench.git"
+  },
   "type": "module",
   "bin": {
     "awb": "bin/awb.mjs"
