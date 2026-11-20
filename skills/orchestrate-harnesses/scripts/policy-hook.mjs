@@ -580,7 +580,7 @@ async function shouldBlockQuestion(text, classifier) {
         questions: { asks: {
           type: "choice",
           instructions: "Does this final agent message end by asking the user for a decision, confirmation or answer before work can continue?",
-          criteria: { yes: "It asks the user something and waits for the answer", no: "It reports results or explains; no answer is needed" },
+          criteria: { yes: "It asks the user to choose, confirm or answer, and the agent waits for that reply", no: "It reports results or explains, possibly listing follow-ups the user can do on their own; no reply is needed for work to continue" },
         } },
       }),
       signal: AbortSignal.timeout(2000),
