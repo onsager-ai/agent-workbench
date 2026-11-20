@@ -341,6 +341,7 @@ describe("policy hook", () => {
   });
 
   test("worktree and remote push protection", () => {
+    const feature = makeGitRepo(path.join(tmp(), "feature"), "feature");
     for (const command of ["git worktree add /tmp/test-tree main", "git worktree add /tmp/test-tree master",
       "git push origin main", "git push origin HEAD:main",
       "git push origin x:refs/heads/main", "git push -f origin main"]) {
@@ -348,7 +349,7 @@ describe("policy hook", () => {
     }
     for (const command of ["git worktree add -b x /tmp/test-tree main", "git push origin feature",
       "git push -u origin HEAD"]) {
-      assertAllowed(command);
+      assertAllowed(command, feature);
     }
   });
 
