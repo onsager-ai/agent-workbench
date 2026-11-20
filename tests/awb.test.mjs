@@ -20,7 +20,7 @@ import path from 'node:path';
 const target = path.join(process.env.AWB_TEST_HOME, '.agents', 'skills', 'workbench-setup');
 fs.mkdirSync(path.dirname(target), { recursive: true });
 fs.cpSync(process.env.AWB_TEST_SOURCE, target, { recursive: true });
-`);
+`, { mode: 0o755 });
   return { dir, home, skillsCmd, env: { ...process.env, AWB_TEST_HOME: home, AWB_TEST_SOURCE: path.join(root, "skills", "workbench-setup") } };
 }
 
@@ -41,7 +41,7 @@ test("skills failure stops setup and preserves its exit code", (t) => {
   const f = fixture();
   t.after(() => fs.rmSync(f.dir, { recursive: true, force: true }));
   const failing = path.join(f.dir, "fail.mjs");
-  fs.writeFileSync(failing, "process.exit(37);\n");
+  fs.writeFileSync(failing, "process.exit(37);\n", { mode: 0o755 });
   const result = run(f.home, ["--skills-cmd", failing, "setup"], f.env);
   assert.equal(result.status, 37);
   assert.equal(fs.existsSync(path.join(f.home, ".agents")), false);

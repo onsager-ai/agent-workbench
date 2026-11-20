@@ -30,7 +30,7 @@ const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 describe("public layout", () => {
   test("top level contains only the public package paths", () => {
-    const expected = [".github", ".gitignore", "LICENSE", "README.md", "docs", "skills", "tests"];
+    const expected = [".github", ".gitignore", "LICENSE", "README.md", "bin", "docs", "package.json", "skills", "tests"];
     const actual = fs.readdirSync(ROOT).filter((name) => name !== ".git").sort();
     assert.deepEqual(actual, expected.sort());
   });
