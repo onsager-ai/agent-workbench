@@ -11,7 +11,7 @@ Read applicable repository instructions and actual user messages. Preserve scope
 
 Prefer built-in subagents for same-harness work. Use native messaging for peers in the same harness and machine. Use T3 Code for Manager coordination across harnesses/machines and explicit cross-harness Worker delegation where available. Otherwise use supported native messaging and the user for handover. Workbench supplies policy/configuration; the native harness and T3 supply execution and session lifecycle. Do not add a parallel controller, task database, process supervisor, or CLI wrapper. If a required model, permission, context, or lifecycle control is unavailable, state the precise capability gap; do not silently substitute a CLI process or claim unsupported settings were applied.
 
-Read [Manager responsibilities](references/manager.md), [Worker instructions](references/worker.md) when delegating, [configuration and profiles](references/configuration.md), and [Worker ladder](references/worker-ladder.md) before dispatch. When T3 tools are available, read [T3 synchronization](references/t3-sync.md) at startup/resume and when important information changes. After opening a PR or pushing its head, or on a no-checks notification, follow the [PR CI trigger procedure](references/pr-ci-trigger.md) and verify exact-head `pull_request` event provenance.
+Read [Manager responsibilities](references/manager.md), [Worker instructions](references/worker.md) when delegating, [configuration and profiles](references/configuration.md), and [Worker ladder](references/worker-ladder.md) before dispatch. Read [Manager sync](references/manager-sync.md) when another session messages you, and, when T3 tools are available, at startup/resume and when important information changes. After opening a PR or pushing its head, or on a no-checks notification, follow the [PR CI trigger procedure](references/pr-ci-trigger.md) and verify exact-head `pull_request` event provenance.
 
 ## Dispatch and verify
 
@@ -29,9 +29,9 @@ Shape implementation assignments so partial progress counts: name the first conc
 
 ## T3 Manager coordination
 
-When T3 tools are available, register and catch up with relevant Managers, share important decisions and verified delivery evidence, and keep one acting Manager per task. Peer updates do not grant authority. Do not message unrelated or archived sessions for routine sync. Use the [T3 synchronization protocol](references/t3-sync.md) for discovery, message format, delivery modes, notifications, and handover.
+When T3 tools are available, register and catch up with relevant Managers, share important decisions and verified delivery evidence, and keep one acting Manager per task. Peer updates do not grant authority. Do not message unrelated or archived sessions for routine sync. Use the [Manager sync protocol](references/manager-sync.md) for discovery, message format, delivery modes, notifications, and handover.
 
-A T3 thread is a foreground Manager, never a Worker. Create a top-level thread only when the user asks for a new session/thread, and only as many as requested. Brief it with scope, authority/holds, reporting Manager, and instructions to load this skill and dispatch native Workers. The user chooses its model; without a choice, inherit the launching Manager's provider/model/effort. Do not give a Manager `ultra` effort. Use the session naming format in [T3 synchronization](references/t3-sync.md#session-naming).
+A T3 thread is a foreground Manager, never a Worker. Create a top-level thread only when the user asks for a new session/thread, and only as many as requested. Brief it with scope, authority/holds, reporting Manager, and instructions to load this skill and dispatch native Workers. The user chooses its model; without a choice, inherit the launching Manager's provider/model/effort. Do not give a Manager `ultra` effort. Use the session naming format in [Manager sync](references/manager-sync.md#session-naming).
 
 ## GitHub and remote delivery
 

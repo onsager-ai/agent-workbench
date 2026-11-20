@@ -1,4 +1,4 @@
-# Synchronize important Manager information through T3 Code
+# Synchronize Managers
 
 When T3 Code tools are available, use T3 Code threads for Manager coordination across harnesses and machines. This workflow runs on startup/resume and meaningful changes, not as a background replication service. The current session stays Manager with its selected native model. Workers and reviewers do not discover or message peers.
 

@@ -64,7 +64,7 @@ describe("public layout", () => {
       "skills/orchestrate-harnesses/references/worker-ladder.md",
       "skills/orchestrate-harnesses/references/codex-workers.md",
       "skills/orchestrate-harnesses/references/worker.md",
-      "skills/orchestrate-harnesses/references/t3-sync.md",
+      "skills/orchestrate-harnesses/references/manager-sync.md",
       "skills/orchestrate-harnesses/references/magpie.md",
       "skills/orchestrate-harnesses/scripts/policy-hook",
       "skills/orchestrate-harnesses/scripts/policy-hook.mjs",
