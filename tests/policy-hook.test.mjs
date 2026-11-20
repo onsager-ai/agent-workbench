@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -49,6 +50,20 @@ describe("policy hook", () => {
     const result = run(JSON.stringify(event), { args: [] });
     return result.stdout ? JSON.parse(result.stdout) : null;
   };
+
+  const invokeStopAsync = (event) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [HOOK, "--workers", workers]);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (status) => {
+      if (status !== 0) reject(new Error(stderr || `hook exited ${status}`));
+      else resolve(stdout ? JSON.parse(stdout) : null);
+    });
+    child.stdin.end(JSON.stringify(event));
+  });
 
   function t3Env(thread = "mcp:launch:5f9a6b10-be25-429c-abb6-1ebd74859825") {
     const home = path.join(directory, "t3");
@@ -266,6 +281,41 @@ describe("policy hook", () => {
       JSON.stringify({ tool_name: "Bash", tool_input: { command: 'gh "' } }),
     ]) {
       assert.equal(invoke(payload), null, payload);
+    }
+  });
+
+  test("stop classifier overrides question mark heuristic and falls back when uncertain or unreachable", async () => {
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8").on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        const payload = JSON.parse(body);
+        assert.equal(request.headers.authorization, undefined);
+        assert.equal(payload.model, "typesafe/jev-latest");
+        const message = payload.state.message;
+        const probabilities = message === "Actual ask." ? { yes: 0.8, no: 0.2 } :
+          message === "Just a report?" ? { yes: 0.1, no: 0.9 } : { yes: 0.5, no: 0.5 };
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ answers: { asks: { choice: probabilities.yes >= 0.7 ? "yes" : "no", confidence: 0.9, probabilities } } }));
+      });
+    });
+    server.listen(0, "127.0.0.1");
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const url = `http://127.0.0.1:${server.address().port}/v1/systemone`;
+      bundle.base.policy.stop_classifier = { url, model: "typesafe/jev-latest" };
+      fs.writeFileSync(workers, JSON.stringify(bundle));
+      const invoke = async (message) => invokeStopAsync({ hook_event_name: "Stop", last_assistant_message: message });
+      assert.equal((await invoke("Actual ask.")).decision, "block");
+      assert.equal(await invoke("Just a report?"), null);
+      assert.equal((await invoke("Unclear? ")).decision, "block");
+
+      bundle.base.policy.stop_classifier.url = "http://127.0.0.1:1/unreachable";
+      fs.writeFileSync(workers, JSON.stringify(bundle));
+      assert.equal((await invoke("Fallback? ")).decision, "block");
+      assert.equal(await invoke("Fallback report."), null);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
     }
   });
 

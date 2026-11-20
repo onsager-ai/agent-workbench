@@ -154,6 +154,8 @@ Generated agents let a Claude Manager dispatch each tier as `subagent_type: haik
 
 Setup applies the configured compaction target to owned Claude and Codex config keys when their config directories exist, preserving existing provider routing. Compaction is advisory, not a hard request-token cap; restart running sessions to pick up changes. Setup preserves personal text outside its managed block.
 
+The optional `policy.stop_classifier` workers setting enables model classification for the Stop hook's prose-question check. Set `{url, model}` to use it; while enabled, every turn's final assistant message is sent to that URL, so use the local Magpie gateway. A confident yes blocks for AskUserQuestion; a confident no passes, and uncertain or failed requests use the existing question-mark check. It is off by default.
+
 ## Setup commands and behavior
 
 ```sh

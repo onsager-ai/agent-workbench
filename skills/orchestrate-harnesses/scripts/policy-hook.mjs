@@ -567,7 +567,40 @@ function emit(value) {
   process.stdout.write(JSON.stringify(value) + "\n");
 }
 
-function main() {
+async function shouldBlockQuestion(text, classifier) {
+  if (!text) return false;
+  if (!classifier) return endsWithQuestion(text);
+  try {
+    const response = await fetch(classifier.url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: classifier.model,
+        state: { message: text },
+        questions: { asks: {
+          type: "choice",
+          instructions: "Does this final agent message end by asking the user for a decision, confirmation or answer before work can continue?",
+          criteria: { yes: "It asks the user something and waits for the answer", no: "It reports results or explains; no answer is needed" },
+        } },
+      }),
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!response.ok) return endsWithQuestion(text);
+    const body = await response.json();
+    const answer = body?.answers?.asks;
+    const probabilities = answer?.probabilities;
+    if (!isDict(answer) || !["yes", "no"].includes(answer.choice) || !Number.isFinite(answer.confidence) ||
+        !isDict(probabilities) || !Number.isFinite(probabilities.yes) || !Number.isFinite(probabilities.no) ||
+        probabilities.yes < 0 || probabilities.yes > 1 || probabilities.no < 0 || probabilities.no > 1) {
+      return endsWithQuestion(text);
+    }
+    if (probabilities.yes >= 0.7) return true;
+    if (probabilities.no >= 0.7) return false;
+  } catch {}
+  return endsWithQuestion(text);
+}
+
+async function main() {
   const workers = workersArgument(process.argv.slice(2));
   const codex = hostArgument(process.argv.slice(2)) === "codex";
   let decision = null;
@@ -584,7 +617,15 @@ function main() {
     if (event.hook_event_name === "Stop") {
       if (event.stop_hook_active) return;
       try {
-        if (endsWithQuestion(lastAssistantText(event))) emit({ decision: "block", reason: STOP_REASON });
+        const text = lastAssistantText(event);
+        let classifier = null;
+        if (workers) {
+          try {
+            const bundle = JSON.parse(fs.readFileSync(workers, "utf8"));
+            classifier = selectWorkerProfile(bundle, event).config.policy.stop_classifier;
+          } catch {}
+        }
+        if (await shouldBlockQuestion(text, classifier)) emit({ decision: "block", reason: STOP_REASON });
       } catch {
         return;
       }
