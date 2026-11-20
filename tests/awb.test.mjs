@@ -51,6 +51,8 @@ test("prune reports merged PR cleanup and removes eligible local worktrees on ap
   spawnSync("git", ["add", "work"], { cwd: tree });
   spawnSync("git", ["commit", "-m", "work"], { cwd: tree });
   const mergedTip = spawnSync("git", ["rev-parse", "HEAD"], { cwd: tree, encoding: "utf8" }).stdout.trim();
+  git("branch", "empty-leftover");
+  git("update-ref", "refs/remotes/origin/main", "main");
   const gh = path.join(fakeBin, "gh");
   fs.writeFileSync(gh, `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify([{ headRefName: "merged-task-tree", headRefOid: mergedTip, state: "MERGED" }])}'\n`);
   fs.chmodSync(gh, 0o755);
@@ -59,9 +61,11 @@ test("prune reports merged PR cleanup and removes eligible local worktrees on ap
   assert.equal(dry.status, 0, dry.stderr);
   assert.ok(fs.existsSync(tree));
   assert.ok(JSON.parse(dry.stdout).some((row) => row.branch === "merged-task-tree" && row.action === "worktree"));
+  assert.ok(JSON.parse(dry.stdout).some((row) => row.branch === "empty-leftover" && row.action === "branch"));
   const apply = spawnSync(process.execPath, [cli, "prune", "--repo", repo, "--apply", "--json"], { encoding: "utf8", env, cwd: repo });
   assert.equal(apply.status, 0, apply.stderr);
   assert.equal(fs.existsSync(tree), false);
+  assert.notEqual(spawnSync("git", ["show-ref", "--verify", "refs/heads/empty-leftover"], { cwd: repo }).status, 0);
   assert.notEqual(spawnSync("git", ["show-ref", "--verify", "refs/heads/merged-task-tree"], { cwd: repo }).status, 0);
 });
 

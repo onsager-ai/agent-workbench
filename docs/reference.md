@@ -167,7 +167,8 @@ agent-workbench status [--json]
 agent-workbench trust
 # Roll back setup while preserving current personal edits.
 agent-workbench uninstall
-# Report local worktrees/branches whose merged PRs qualify for cleanup.
+# Report local worktrees/branches whose merged PRs qualify for cleanup, plus
+# PR-less branches with no commits beyond the default branch.
 awb prune [--repo PATH] [--json]
 # Remove eligible local worktrees and branches after reviewing the report.
 awb prune --apply

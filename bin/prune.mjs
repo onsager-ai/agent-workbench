@@ -84,6 +84,17 @@ export function prune({ repo: requestedRepo, apply = false, json = false } = {})
     const matches = prs.filter((pr) => pr.headRefName === branch);
     const merged = matches.filter((pr) => pr.state === "MERGED");
     const branchTip = git(repo, "rev-parse", `refs/heads/${branch}`);
+    if (!matches.length) {
+      // Leftover isolation branches (e.g. Claude's worktree-agent-*) carry no commits beyond the default branch.
+      const base = run("git", ["rev-parse", "--verify", `refs/remotes/origin/${defaultBranch}`], repo);
+      const hasTree = worktrees.some((tree) => tree.branch === `refs/heads/${branch}`);
+      if (base.status === 0 && !hasTree &&
+          run("git", ["merge-base", "--is-ancestor", branchTip, base.stdout.trim()], repo).status === 0) {
+        mergedHeads.set(branch, base.stdout.trim());
+        rows.push({ branch, worktree: "", action: "branch", reason: "no commits beyond origin/" + defaultBranch });
+        continue;
+      }
+    }
     if (!merged.length) {
       const state = matches.some((pr) => pr.state === "OPEN") ? "OPEN PR" : matches.length ? "CLOSED-unmerged PR" : "no PR";
       rows.push({ branch, worktree: "", action: "skip", reason: state });
