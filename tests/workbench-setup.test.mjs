@@ -60,7 +60,8 @@ class Fixture {
 
   run(command, args = [], ok = true) {
     assert.notEqual(this.home, os.homedir());
-    const result = spawnSync(process.execPath, [this.script, "--home", this.home, command, ...args],
+    const result = spawnSync(process.execPath, [this.script, "--home", this.home, command, ...args,
+      ...(command === "status" && !args.includes("--json") ? ["--json"] : [])],
       { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: "" } });
     assert.equal(result.status === 0, ok, result.stdout + result.stderr);
     return result;
@@ -158,15 +159,22 @@ const hex = (data) => crypto.createHash("sha256").update(data).digest("hex");
 describe("workbench setup", () => {
   test("fresh install, status and launcher", () => {
     const f = new Fixture();
+    const help = spawnSync(process.execPath, [f.script, "help"], { encoding: "utf8" });
+    assert.equal(help.status, 0);
+    assert.match(help.stdout, /trust\s+Trust installed Codex policy hooks/);
+    assert.match(spawnSync(process.execPath, [f.script, "status", "--help"], { encoding: "utf8" }).stdout, /--json/);
     f.run("install");
     assert.equal(f.private().length, 0);
     assert.ok(isLink(f.codex));
     assert.deepEqual(read(f.codex), read(f.shared));
     assert.deepEqual(read(f.claude), cat(IMPORT, NL));
     const env = { ...process.env, PATH: `${path.dirname(process.execPath)}:${process.env.PATH}` };
-    const result = spawnSync(f.launcher, ["status"], { encoding: "utf8", env });
+    const result = spawnSync(f.launcher, ["status", "--json"], { encoding: "utf8", env });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).private_bytes, 0);
+    const readable = spawnSync(f.launcher, ["status"], { encoding: "utf8", env });
+    assert.equal(readable.status, 0, readable.stderr);
+    assert.match(readable.stdout, /^ok  setup: applied$/m);
     assert.deepEqual(JSON.parse(result.stdout).personal_package, { present: false, applied_files: [] });
     assert.equal(mode(f.state), 0o700);
     for (const name of fs.readdirSync(path.join(f.state, "backups"))) assert.equal(mode(path.join(f.state, "backups", name)), 0o600);
@@ -517,7 +525,8 @@ describe("workbench setup", () => {
     f.run("install");
     fs.writeFileSync(f.shared, cat(Buffer.from([0x70, 0x80]), read(f.shared), "suffix"));
     f.write(path.join(f.skill, "assets/AGENTS.md"), "updated public\n");
-    f.run("status", [], false);
+    const status = f.run("status", [], false);
+    assert.match(status.stdout, /instruction update is available; run agent-workbench install/);
     f.run("install");
     const data = read(f.shared);
     assert.ok(data.subarray(0, 2 + BEGIN.length).equals(cat(Buffer.from([0x70, 0x80]), BEGIN)));
@@ -800,6 +809,8 @@ describe("workbench setup", () => {
     const edited = cat(read(f.agent("opus")), "personal\n");
     fs.writeFileSync(f.agent("opus"), edited);
     for (const command of ["install", "status", "uninstall"]) assert.match(f.run(command, [], false).stderr, /edited/);
+    const jsonStatus = f.run("status", ["--json"], false);
+    assert.match(jsonStatus.stdout, /\"agents_error\"/);
     assert.deepEqual(read(f.agent("opus")), edited);
     assert.ok(exists(f.launcher));
   });
@@ -1122,8 +1133,13 @@ describe("workbench setup", () => {
     quiet(() => setup.install());
     const hooks = f.json(f.codexHooksPath).hooks;
     const handler = hooks.PreToolUse[1].hooks[0];
-    const toml = read(config).toString("utf8");
     const key = `${f.codexHooksPath}:pre_tool_use:1:0`;
+    assert.ok(!read(config).toString("utf8").includes("hooks.state"));
+    assert.equal(f.stateJson().codex_trust.length, 0);
+    const trustSetup = new Setup(f.home);
+    trustSetup.confirmCodexTrust = () => true;
+    quiet(() => trustSetup.trust());
+    const toml = read(config).toString("utf8");
     assert.ok(toml.includes(`[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = "${codexHookHash("PreToolUse", "Bash", handler)}"\n`));
     assert.ok(toml.includes(`${f.codexHooksPath}:stop:0:0`));
     assert.equal(f.stateJson().codex_trust.length, 5);
@@ -1135,7 +1151,7 @@ describe("workbench setup", () => {
     const before = f.snapshot();
     const second = new Setup(f.home);
     second.confirmCodexTrust = () => assert.fail("must not prompt");
-    quiet(() => second.install());
+    quiet(() => second.trust());
     assert.deepEqual(f.snapshot(), before);
     f.run("uninstall");
     assert.deepEqual(read(config), original);
@@ -1145,7 +1161,8 @@ describe("workbench setup", () => {
   test("codex trust prompt reads the answer from a real terminal", { skip: !hasScript && "util-linux script not available" }, () => {
     const f = new Fixture();
     f.installOrchestration();
-    const command = [process.execPath, f.script, "--home", f.home, "install"].map(shellQuote).join(" ");
+    f.run("install");
+    const command = [process.execPath, f.script, "--home", f.home, "trust"].map(shellQuote).join(" ");
     const result = spawnSync("script", ["-qec", command, "/dev/null"],
       { input: "y\n", encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: "" } });
     assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -1154,11 +1171,22 @@ describe("workbench setup", () => {
     assert.equal(JSON.parse(f.run("status").stdout).codex_trust.Bash, "trusted");
   });
 
+  test("install leaves Codex hooks untrusted until trust is run", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const installed = f.run("install");
+    assert.match(installed.stdout, /agent-workbench trust/);
+    assert.deepEqual(f.stateJson().codex_trust, []);
+    const result = f.run("trust");
+    assert.match(result.stdout, /Run \/hooks in Codex once to trust agent-workbench's hooks\./);
+    assert.deepEqual(f.stateJson().codex_trust, []);
+  });
+
   test("codex trust is skipped without a terminal and reported untrusted", () => {
     const f = new Fixture();
     f.installOrchestration();
     const result = f.run("install");
-    assert.match(result.stdout, /Run \/hooks in Codex once to trust agent-workbench's hooks\./);
+    assert.match(result.stdout, /Run agent-workbench trust to trust Codex hooks/);
     assert.ok(!exists(path.join(f.home, ".codex/config.toml")) || !read(path.join(f.home, ".codex/config.toml")).includes("hooks.state"));
     assert.deepEqual(f.stateJson().codex_trust, []);
     assert.equal(JSON.parse(f.run("status").stdout).codex_trust.Bash, "untrusted");
@@ -1171,8 +1199,10 @@ describe("workbench setup", () => {
     const foreignKey = `${f.codexHooksPath}:pre_tool_use:0:0`;
     f.write(config, `[hooks.state.${JSON.stringify(foreignKey)}]\ntrusted_hash = "sha256:foreign"\n`);
     const setup = new Setup(f.home);
-    setup.confirmCodexTrust = () => true;
-    const lines = quiet(() => setup.install());
+    quiet(() => setup.install());
+    const trustSetup = new Setup(f.home);
+    trustSetup.confirmCodexTrust = () => true;
+    const lines = quiet(() => trustSetup.trust());
     assert.ok(lines.some((line) => line.includes("foreign") && line.includes(foreignKey)));
     assert.equal(JSON.parse(f.run("status").stdout).codex_trust["Agent|spawn_agent"], "modified");
     assert.equal(f.stateJson().codex_trust.length, 4);

@@ -112,7 +112,7 @@ export function shellSplit(text) {
     } else if (quote === '"') {
       if (char === '"') quote = null;
       else if (char === "\\") {
-        if (index + 1 >= text.length) throw new Conflict("No escaped character");
+        if (index + 1 >= text.length) throw new Conflict("No escaped character; close the quoted value and retry");
         const next = text[++index];
         word += next === '"' || next === "\\" ? next : "\\" + next;
       } else word += char;
@@ -123,11 +123,11 @@ export function shellSplit(text) {
       quote = char;
       word ??= "";
     } else if (char === "\\") {
-      if (index + 1 >= text.length) throw new Conflict("No escaped character");
+      if (index + 1 >= text.length) throw new Conflict("No escaped character; add the escaped character and retry");
       word = (word ?? "") + text[++index];
     } else word = (word ?? "") + char;
   }
-  if (quote) throw new Conflict("No closing quotation");
+  if (quote) throw new Conflict("No closing quotation; close the quoted value and retry");
   if (word !== null) words.push(word);
   return words;
 }
@@ -139,7 +139,7 @@ export function mergeWorkers(base, overlay) {
     if (key === "tiers" && isDict(value)) {
       if (!has(result, key)) result[key] = {};
       const tiers = result[key];
-      if (!isDict(tiers)) throw new Conflict("tiers must be a mapping");
+      if (!isDict(tiers)) throw new Conflict("tiers must be a mapping; edit workers.yml to use a mapping, then rerun the command");
       for (const [name, tier] of Object.entries(value)) {
         if (tier === null) tiers[name] = null;
         else if (isDict(tier) && isDict(tiers[name])) tiers[name] = mergeWorkers(tiers[name], tier);
@@ -155,10 +155,10 @@ export function mergeWorkers(base, overlay) {
 }
 
 function keys(value, allowed, where) {
-  if (!isDict(value)) throw new Conflict(`${where} must be a mapping`);
+  if (!isDict(value)) throw new Conflict(`${where} must be a mapping; edit the named worker configuration and rerun the command`);
   const permitted = new Set(Array.isArray(allowed) ? allowed : Object.keys(allowed));
   const unknown = Object.keys(value).filter((name) => !permitted.has(name));
-  if (unknown.length) throw new Conflict(`unknown keys in ${where}: ${unknown.join(", ")}`);
+  if (unknown.length) throw new Conflict(`unknown keys in ${where}: ${unknown.join(", ")}; remove or correct those keys in workers.yml, then rerun the command`);
 }
 
 const positive = (value) => typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -171,7 +171,7 @@ function validateWorkerShape(config, { profile = false } = {}) {
   if (has(config, "tiers")) {
     keys(config.tiers, config.tiers, "tiers");
     for (const [name, tier] of Object.entries(config.tiers)) {
-      if (!ROLE.test(name)) throw new Conflict(`invalid tier name: ${name}`);
+      if (!ROLE.test(name)) throw new Conflict(`invalid tier name: ${name}; rename it to lowercase letters, numbers or hyphens in workers.yml`);
       if (tier !== null) {
         keys(tier, ["harness", "model", "effort", "timeout_s", "budget_usd", "claude_route", "weekly_brake_percent", "opt_in"], `tier ${name}`);
       }
@@ -184,7 +184,7 @@ function validateWorkerShape(config, { profile = false } = {}) {
     }
   }
   if (has(config, "ladder")) {
-    if (!Array.isArray(config.ladder)) throw new Conflict("ladder must be a list");
+    if (!Array.isArray(config.ladder)) throw new Conflict("ladder must be a list; edit workers.yml to use a list");
     for (const level of config.ladder) keys(level, ["level", "tiers", "approval", "start_for"], "ladder entry");
   }
 }
@@ -192,68 +192,68 @@ function validateWorkerShape(config, { profile = false } = {}) {
 export function resolveWorkerConfig(config) {
   validateWorkerShape(config, { profile: true });
   const defaults = config.defaults ?? {};
-  if (!nonEmptyString(defaults.effort)) throw new Conflict("defaults.effort must be a nonempty string");
-  if (!isInt(defaults.timeout_s) || defaults.timeout_s <= 0) throw new Conflict("defaults.timeout_s must be a positive integer");
+  if (!nonEmptyString(defaults.effort)) throw new Conflict("defaults.effort must be a nonempty string; set it in workers.yml");
+  if (!isInt(defaults.timeout_s) || defaults.timeout_s <= 0) throw new Conflict("defaults.timeout_s must be a positive integer; set it in workers.yml");
   if (defaults.budget_usd != null && !positive(defaults.budget_usd)) {
-    throw new Conflict("defaults.budget_usd must be positive and finite or null");
+    throw new Conflict("defaults.budget_usd must be positive and finite or null; correct it in workers.yml");
   }
   const result = clone(config);
   const tiers = {};
   for (const [name, tier] of Object.entries(result.tiers ?? {})) if (tier !== null) tiers[name] = tier;
   result.tiers = tiers;
   for (const [name, raw] of Object.entries(tiers)) {
-    if (!isDict(raw)) throw new Conflict(`tier ${name} must be a mapping`);
+    if (!isDict(raw)) throw new Conflict(`tier ${name} must be a mapping; edit its entry in workers.yml`);
     const tier = { ...defaults, opt_in: false, ...raw };
     tiers[name] = tier;
     const harness = tier.harness;
     if (!["codex", "claude"].includes(harness) || !nonEmptyString(tier.model)) {
-      throw new Conflict(`tier ${name} needs a harness (codex|claude) and model string`);
+      throw new Conflict(`tier ${name} needs a harness (codex|claude) and model string; correct its entry in workers.yml`);
     }
-    if (!nonEmptyString(tier.effort)) throw new Conflict(`tier ${name}: effort must be a nonempty string`);
-    if (!isInt(tier.timeout_s) || tier.timeout_s <= 0) throw new Conflict(`tier ${name}: timeout_s must be a positive integer`);
+    if (!nonEmptyString(tier.effort)) throw new Conflict(`tier ${name}: effort must be a nonempty string; set it in workers.yml`);
+    if (!isInt(tier.timeout_s) || tier.timeout_s <= 0) throw new Conflict(`tier ${name}: timeout_s must be a positive integer; correct it in workers.yml`);
     const budget = tier.budget_usd;
     if (budget != null && (harness !== "claude" || !positive(budget))) {
-      throw new Conflict(`tier ${name}: budget_usd must be positive and finite or null, and Claude only`);
+      throw new Conflict(`tier ${name}: budget_usd must be positive and finite or null, and Claude only; correct it in workers.yml`);
     }
     if (has(tier, "claude_route") && (harness !== "codex" ||
         (tier.claude_route !== null && !nonEmptyString(tier.claude_route)))) {
-      throw new Conflict(`tier ${name}: claude_route is a Codex-only string or null`);
+      throw new Conflict(`tier ${name}: claude_route is a Codex-only string or null; correct it in workers.yml`);
     }
-    if (typeof tier.opt_in !== "boolean") throw new Conflict(`tier ${name}: opt_in must be boolean`);
+    if (typeof tier.opt_in !== "boolean") throw new Conflict(`tier ${name}: opt_in must be boolean; correct it in workers.yml`);
     if (has(tier, "weekly_brake_percent") && (!positive(tier.weekly_brake_percent) || tier.weekly_brake_percent > 100)) {
-      throw new Conflict(`tier ${name}: weekly_brake_percent must be > 0 and <= 100`);
+      throw new Conflict(`tier ${name}: weekly_brake_percent must be > 0 and <= 100; correct it in workers.yml`);
     }
   }
   const seenLevels = new Set();
   const seenTiers = new Set();
-  if (!Array.isArray(result.ladder) || !result.ladder.length) throw new Conflict("ladder must be a nonempty list");
+  if (!Array.isArray(result.ladder) || !result.ladder.length) throw new Conflict("ladder must be a nonempty list; correct it in workers.yml");
   for (const level of result.ladder) {
     const name = level.level;
-    if (!nonEmptyString(name) || seenLevels.has(name)) throw new Conflict("ladder level must be a unique nonempty string");
+    if (!nonEmptyString(name) || seenLevels.has(name)) throw new Conflict("ladder level must be a unique nonempty string; correct levels in workers.yml");
     seenLevels.add(name);
     const names = level.tiers;
-    if (!Array.isArray(names) || !names.length) throw new Conflict(`level ${name}: tiers must be a nonempty list`);
+    if (!Array.isArray(names) || !names.length) throw new Conflict(`level ${name}: tiers must be a nonempty list; correct it in workers.yml`);
     for (const tier of names) {
-      if (typeof tier !== "string" || !has(tiers, tier)) throw new Conflict(`level ${name}: undefined tier ${tier}`);
-      if (seenTiers.has(tier)) throw new Conflict(`tier ${tier} occurs in multiple ladder entries`);
-      if (tiers[tier].opt_in) throw new Conflict(`opt_in tier ${tier} cannot appear in the ladder`);
+      if (typeof tier !== "string" || !has(tiers, tier)) throw new Conflict(`level ${name}: undefined tier ${tier}; define it in tiers or remove it from the ladder in workers.yml`);
+      if (seenTiers.has(tier)) throw new Conflict(`tier ${tier} occurs in multiple ladder entries; keep it in one ladder entry in workers.yml`);
+      if (tiers[tier].opt_in) throw new Conflict(`opt_in tier ${tier} cannot appear in the ladder; remove it from the ladder in workers.yml`);
       seenTiers.add(tier);
     }
-    if (has(level, "approval") && level.approval !== "required") throw new Conflict("ladder approval must be required or absent");
+    if (has(level, "approval") && level.approval !== "required") throw new Conflict("ladder approval must be required or absent; correct it in workers.yml");
     if (has(level, "start_for") && (!Array.isArray(level.start_for) || level.start_for.some((kind) => !nonEmptyString(kind)))) {
-      throw new Conflict("start_for must be a list of task-kind strings");
+      throw new Conflict("start_for must be a list of task-kind strings; correct it in workers.yml");
     }
   }
   const policy = result.policy ?? {};
   if (!isInt(policy.max_auto_rework) || policy.max_auto_rework < 0) {
-    throw new Conflict("policy.max_auto_rework must be a nonnegative integer");
+    throw new Conflict("policy.max_auto_rework must be a nonnegative integer; correct it in workers.yml");
   }
   const context = policy.context ?? {};
   for (const key of ["max_tokens", "gateway_window", "codex_window"]) {
     const value = context[key];
     if (key !== "max_tokens" && value == null) continue;
     if (!isInt(value) || value <= 0) {
-      throw new Conflict(`policy.context.${key} must be a positive integer` + (key !== "max_tokens" ? " or null" : ""));
+      throw new Conflict(`policy.context.${key} must be a positive integer` + (key !== "max_tokens" ? " or null" : "") + "; correct it in workers.yml");
     }
   }
   return result;
@@ -265,21 +265,21 @@ export function workerBundle(distributed, overlays = [], home = null) {
     try {
       config = parseWorkersYaml(read(file).toString("utf8"));
     } catch (error) {
-      throw new Conflict(`invalid YAML in ${file}: ${error.message}`);
+      throw new Conflict(`invalid YAML in ${file}: ${error.message}; correct the file and rerun the command`);
     }
     validateWorkerShape(config);
-    if (has(config, "version") && config.version !== 2) throw new Conflict(`${file}: version must be 2`);
+    if (has(config, "version") && config.version !== 2) throw new Conflict(`${file}: version must be 2; correct the file and rerun the command`);
     const profiles = has(config, "profiles") ? config.profiles : {};
     keys(profiles, profiles, "profiles");
     for (const [name, profile] of Object.entries(profiles)) {
-      if (!name) throw new Conflict("profile name must be a nonempty string");
+      if (!name) throw new Conflict("profile name must be a nonempty string; assign a name in workers.yml");
       validateWorkerShape(profile, { profile: true });
     }
     return config;
   };
   let config = load(distributed);
   for (const overlay of overlays) if (present(overlay)) config = mergeWorkers(config, load(overlay));
-  if (config.version !== 2) throw new Conflict("workers version must be 2");
+  if (config.version !== 2) throw new Conflict("workers version must be 2; update workers.yml");
   const base = {};
   for (const key of ["defaults", "tiers", "ladder", "policy"]) if (has(config, key)) base[key] = config[key];
   const profiles = {};
@@ -288,18 +288,18 @@ export function workerBundle(distributed, overlays = [], home = null) {
   }
   const selected = config.profile ?? null;
   if (selected !== null && (typeof selected !== "string" || !has(profiles, selected))) {
-    throw new Conflict(`undefined default profile: ${selected}`);
+    throw new Conflict(`undefined default profile: ${selected}; select a defined profile in workers.yml`);
   }
   const rules = has(config, "select") ? config.select : [];
-  if (!Array.isArray(rules)) throw new Conflict("select must be a list");
+  if (!Array.isArray(rules)) throw new Conflict("select must be a list; correct it in workers.yml");
   const resolvedRules = [];
   for (const rule of rules) {
     keys(rule, ["path", "profile"], "select entry");
     if (typeof rule.profile !== "string" || !has(profiles, rule.profile)) {
-      throw new Conflict(`select references undefined profile: ${rule.profile ?? "None"}`);
+      throw new Conflict(`select references undefined profile: ${rule.profile ?? "None"}; select a defined profile in workers.yml`);
     }
     let rulePath = rule.path;
-    if (!nonEmptyString(rulePath)) throw new Conflict("select.path must be a nonempty string");
+    if (!nonEmptyString(rulePath)) throw new Conflict("select.path must be a nonempty string; correct it in workers.yml");
     if (rulePath === "~" || rulePath.startsWith("~/")) rulePath = String(home || os.homedir()) + rulePath.slice(1);
     resolvedRules.push({ path: resolvePath(rulePath), profile: rule.profile });
   }
@@ -397,16 +397,16 @@ function which(name) {
 
 // Never traverse symlink parents or read a foreign-owned entry.
 function inspect(target, home, { link = false, directory = false } = {}) {
-  if (!isRelativeTo(target, home)) throw new Conflict(`path escapes selected home: ${target}`);
+  if (!isRelativeTo(target, home)) throw new Conflict(`path escapes selected home: ${target}; choose a path within the selected home`);
   let homeInfo = null;
   try {
     homeInfo = fs.lstatSync(home);
   } catch {}
   if (!homeInfo || homeInfo.isSymbolicLink() || !homeInfo.isDirectory() || homeInfo.uid !== process.getuid()) {
-    throw new Conflict(`home must be an owned directory: ${home}`);
+    throw new Conflict(`home must be an owned directory: ${home}; select an existing directory owned by the current user`);
   }
   for (let parent = path.dirname(home); ; parent = path.dirname(parent)) {
-    if (isSymlink(parent)) throw new Conflict(`selected home has a symlink ancestor: ${home}`);
+    if (isSymlink(parent)) throw new Conflict(`selected home has a symlink ancestor: ${home}; choose a path without symlinked parents`);
     if (parent === path.dirname(parent)) break;
   }
   let current = home;
@@ -415,16 +415,16 @@ function inspect(target, home, { link = false, directory = false } = {}) {
     current = path.join(current, part);
     if (present(current)) {
       const info = fs.lstatSync(current);
-      if (!info.isDirectory() || info.uid !== process.getuid()) throw new Conflict(`unsafe parent directory: ${current}`);
+      if (!info.isDirectory() || info.uid !== process.getuid()) throw new Conflict(`unsafe parent directory: ${current}; replace it with a directory owned by the current user`);
     }
   }
   if (!present(target)) return;
   const info = fs.lstatSync(target);
-  if (info.uid !== process.getuid()) throw new Conflict(`entry owned by another user: ${target}`);
+  if (info.uid !== process.getuid()) throw new Conflict(`entry owned by another user: ${target}; have its owner resolve it or choose another home`);
   let allowed = directory ? info.isDirectory() : info.isFile();
   if (link && info.isSymbolicLink()) allowed = true;
-  if (!allowed) throw new Conflict(`unexpected file type or symlink: ${target}`);
-  if (!directory && info.isFile() && info.size > LIMIT) throw new Conflict(`file too large for bounded inspection: ${target}`);
+  if (!allowed) throw new Conflict(`unexpected file type or symlink: ${target}; replace it with a regular ${directory ? "directory" : "file"} and retry`);
+  if (!directory && info.isFile() && info.size > LIMIT) throw new Conflict(`file too large for bounded inspection: ${target}; reduce its size below 10 MiB and retry`);
 }
 
 const count = (data, needle) => {
@@ -436,13 +436,13 @@ const count = (data, needle) => {
 function splitBlock(data, begin = BEGIN, finish = END) {
   if (!count(data, begin) && !count(data, finish)) return [null, data];
   if (count(data, begin) !== 1 || count(data, finish) !== 1) {
-    throw new Conflict("duplicate or unbalanced managed markers; repair markers manually");
+    throw new Conflict("duplicate or unbalanced managed markers; repair the markers manually, then rerun the command");
   }
   const start = data.indexOf(begin);
   let end = data.indexOf(finish);
-  if (end < start) throw new Conflict("managed markers are reversed");
+  if (end < start) throw new Conflict("managed markers are reversed; reorder the markers manually, then rerun the command");
   const inside = data.subarray(start + begin.length, end);
-  if (MARKERS.some((marker) => inside.includes(marker))) throw new Conflict("managed markers are nested or overlapping");
+  if (MARKERS.some((marker) => inside.includes(marker))) throw new Conflict("managed markers are nested or overlapping; repair the markers manually, then rerun the command");
   end += finish.length;
   if (data[end] === 0x0a) end += 1;
   return [data.subarray(start, end), Buffer.concat([data.subarray(0, start), data.subarray(end)])];
@@ -483,7 +483,7 @@ function importLines(data, home, claudeParent, shared) {
 function removeExactLine(data, line) {
   const lines = splitByteLines(data);
   const index = lines.findIndex((current) => current.equals(line));
-  if (index === -1) throw new Conflict("managed Claude import missing or modified; left unchanged");
+  if (index === -1) throw new Conflict("managed Claude import missing or modified; left unchanged; restore the import line recorded in state.json, then rerun");
   lines.splice(index, 1);
   return Buffer.concat(lines);
 }
@@ -567,7 +567,7 @@ function transaction(plans, action) {
         problems.push(`rollback could not restore ${target}: ${error.message}`);
       }
     }
-    if (problems.length) throw new Conflict("operation failed; inspect retained backups and state: " + problems.join("; "));
+    if (problems.length) throw new Conflict("operation failed; inspect retained backups and state: " + problems.join("; ") + "; resolve each listed file, then retry the operation");
     throw original;
   }
 }
@@ -728,7 +728,7 @@ export class Setup {
 
   workers(cwd) {
     const bundle = this.workersBundle();
-    if (bundle === null) throw new Conflict("missing workers.yml; distribute orchestrate-harnesses first");
+    if (bundle === null) throw new Conflict("missing workers.yml; distribute orchestrate-harnesses first, then rerun agent-workbench workers");
     console.log(dumps(effectiveWorkers(bundle, cwd), { indent: 2 }));
   }
 
@@ -778,7 +778,7 @@ export class Setup {
         const model = tier.harness === "claude" ? tier.model : tier.claude_route ?? null;
         const signature = JSON.stringify([tier.model, model, tier.effort]);
         if (has(signatures, name) && signatures[name] !== signature) {
-          throw new Conflict(`tier ${name} has different model/route/effort across profiles; rename it`);
+          throw new Conflict(`tier ${name} has different model/route/effort across profiles; rename it in workers.yml, then rerun the command`);
         }
         signatures[name] = signature;
         if (model === null) continue;
@@ -821,7 +821,7 @@ export class Setup {
       }
       return [data, parseToml(utf8(data))];
     } catch {
-      throw new Conflict(`invalid ${kind} configuration: ${file}`);
+      throw new Conflict(`invalid ${kind} configuration: ${file}; correct the configuration, then rerun the command`);
     }
   }
 
@@ -861,14 +861,14 @@ export class Setup {
         lines.splice(firstTable, 0, prefix + key + " = " + String(value) + "\n");
         firstTable += 1;
       } else {
-        throw new Conflict(`cannot safely edit ${kind} key: ${key}`);
+        throw new Conflict(`cannot safely edit ${kind} key: ${key}; edit the key manually, then rerun the command`);
       }
     }
     const result = Buffer.from(lines.join(""), "utf8");
     try {
       parseToml(result.toString("utf8"));
     } catch {
-      throw new Conflict("invalid Codex configuration after edit");
+      throw new Conflict("invalid Codex configuration after edit; restore config.toml and retry the command");
     }
     return result;
   }
@@ -903,7 +903,7 @@ export class Setup {
         if (status) continue;
         if (conflict) {
           if (uninstall) continue;
-          throw new Conflict(`foreign or edited ${kind} setting: ${key}`);
+          throw new Conflict(`foreign or edited ${kind} setting: ${key}; resolve that value, then run agent-workbench install`);
         }
         if (has(wanted, key)) {
           entries[key] = wanted[key];
@@ -926,7 +926,7 @@ export class Setup {
     const owned = state?.hooks ?? [];
     let [data] = this.nativeConfig("claude");
     if (data === null) {
-      if (owned.length) throw new Conflict("owned Claude hooks are missing; restore settings.json");
+      if (owned.length) throw new Conflict("owned Claude hooks are missing; restore settings.json, then rerun agent-workbench install");
       data = Buffer.alloc(0);
     }
     if (plans.has(this.claudeSettings)) data = plans.get(this.claudeSettings)[1];
@@ -934,13 +934,13 @@ export class Setup {
     const hooks = has(parsed, "hooks") ? parsed.hooks : {};
     const events = Object.entries(CLAUDE_HOOK_MATCHERS);
     if (!isDict(hooks) || events.some(([event]) => has(hooks, event) && !Array.isArray(hooks[event]))) {
-      throw new Conflict("invalid Claude hooks.PreToolUse, hooks.PostToolUse, or hooks.Stop configuration");
+      throw new Conflict("invalid Claude hooks.PreToolUse, hooks.PostToolUse, or hooks.Stop configuration; correct settings.json, then rerun agent-workbench install");
     }
     let command = null;
     if (!uninstall && present(this.models) && present(this.worker)) {
       inspect(this.policyHook, this.home);
       if (!isFile(this.policyHook)) {
-        throw new Conflict("missing canonical policy hook; distribute orchestrate-harnesses first");
+        throw new Conflict("missing canonical policy hook; distribute orchestrate-harnesses first, then rerun agent-workbench install");
       }
       command = [this.policyHook, "--workers", this.workersPath].map(shellQuote).join(" ");
     }
@@ -957,7 +957,7 @@ export class Setup {
       const updated = [...current];
       for (const { key, ...entry } of previous) {
         const matches = current.filter((item) => isDeepStrictEqual(item, entry));
-        if (matches.length > 1) throw new Conflict("owned Claude hook is duplicated; left unchanged");
+        if (matches.length > 1) throw new Conflict("owned Claude hook is duplicated; remove the duplicate entry, then rerun agent-workbench install");
         const label = event === "PreToolUse" ? entry.matcher : key;
         report[label] = matches.length ? "applied" : "missing";
         if (!status && matches.length && !contains(desired, entry)) {
@@ -987,25 +987,25 @@ export class Setup {
     inspect(directory, this.home, { directory: true });
     inspect(this.codexHooks, this.home);
     const available = present(directory);
-    if (!available && owned.length) throw new Conflict("owned Codex hooks are missing; restore hooks.json");
+    if (!available && owned.length) throw new Conflict("owned Codex hooks are missing; restore hooks.json, then rerun agent-workbench install");
     const data = read(this.codexHooks);
     let parsed;
     try {
       parsed = data.length ? JSON.parse(utf8(data)) : {};
     } catch {
-      throw new Conflict(`invalid Codex hooks configuration: ${this.codexHooks}`);
+      throw new Conflict(`invalid Codex hooks configuration: ${this.codexHooks}; correct hooks.json, then rerun agent-workbench install`);
     }
     const hooks = isDict(parsed) && has(parsed, "hooks") ? parsed.hooks : {};
     const current = isDict(hooks) && has(hooks, "PreToolUse") ? hooks.PreToolUse : [];
     const currentStop = isDict(hooks) && has(hooks, "Stop") ? hooks.Stop : [];
     if (!isDict(parsed) || !isDict(hooks) || !Array.isArray(current) || !Array.isArray(currentStop)) {
-      throw new Conflict("invalid Codex hooks.PreToolUse or hooks.Stop configuration");
+      throw new Conflict("invalid Codex hooks.PreToolUse or hooks.Stop configuration; correct hooks.json, then rerun agent-workbench install");
     }
     const contains = (list, entry) => list.some((item) => isDeepStrictEqual(item, entry));
     for (const entry of owned) {
       const collection = has(entry, "matcher") ? current : currentStop;
       if (collection.filter((item) => isDeepStrictEqual(item, entry)).length > 1) {
-        throw new Conflict("owned Codex hook is duplicated; left unchanged");
+        throw new Conflict("owned Codex hook is duplicated; remove the duplicate entry, then rerun agent-workbench install");
       }
     }
     let desired = [];
@@ -1013,7 +1013,7 @@ export class Setup {
     if (!uninstall && available && present(this.models) && present(this.worker)) {
       inspect(this.policyHook, this.home);
       if (!isFile(this.policyHook)) {
-        throw new Conflict("missing canonical policy hook; distribute orchestrate-harnesses first");
+        throw new Conflict("missing canonical policy hook; distribute orchestrate-harnesses first, then rerun agent-workbench install");
       }
       const command = [this.policyHook, "--host", "codex", "--workers", this.workersPath].map(shellQuote).join(" ");
       const handler = { type: "command", command, timeout: CODEX_HOOK_TIMEOUT };
@@ -1089,7 +1089,7 @@ export class Setup {
     const owned = state?.codex_trust ?? [];
     const [data] = this.nativeConfig("codex");
     if (data === null) {
-      if (owned.length) throw new Conflict("owned Codex trust entries are missing; restore config.toml");
+      if (owned.length) throw new Conflict("owned Codex trust entries are missing; restore config.toml, then rerun agent-workbench trust");
       return [[], []];
     }
     const original = (plans.has(this.codexSettings) ? plans.get(this.codexSettings)[1] : data).toString("utf8");
@@ -1162,8 +1162,8 @@ export class Setup {
       const file = this.agentPath(name);
       inspect(file, this.home);
       if (!present(file)) continue;
-      if (!has(owned, name)) throw new Conflict(`foreign Claude agent file; left unchanged: ${file}`);
-      if (digest(read(file)) !== owned[name].hash) throw new Conflict(`owned Claude agent file was edited; left unchanged: ${file}`);
+      if (!has(owned, name)) throw new Conflict(`foreign Claude agent file; left unchanged: ${file}; move it aside or remove it before rerunning agent-workbench install`);
+      if (digest(read(file)) !== owned[name].hash) throw new Conflict(`owned Claude agent file was edited; left unchanged: ${file}; restore its generated contents or move it aside, then rerun agent-workbench install`);
     }
   }
 
@@ -1261,7 +1261,7 @@ export class Setup {
       }
       return state;
     } catch {
-      throw new Conflict("invalid setup state; retain backups and repair state before retrying");
+      throw new Conflict("invalid setup state; retain backups, repair state, then rerun agent-workbench install");
     }
   }
 
@@ -1285,11 +1285,11 @@ export class Setup {
     }
     const override = path.join(this.home, ".codex/AGENTS.override.md");
     inspect(override, this.home, { link: true });
-    if (present(override)) throw new Conflict("Codex AGENTS.override.md masks AGENTS.md; resolve the override first");
+    if (present(override)) throw new Conflict("Codex AGENTS.override.md masks AGENTS.md; remove or update the override, then rerun the command");
     if (this.isRealHome) {
       const command = which("agent-workbench");
       if (command && path.resolve(command) !== this.launcher) {
-        throw new Conflict("another agent-workbench command is on PATH; resolve the command collision first");
+        throw new Conflict("another agent-workbench command is on PATH; remove it from PATH or resolve the collision, then rerun the command");
       }
       for (const [variable, expected] of [["CODEX_HOME", path.join(this.home, ".codex")],
         ["CLAUDE_CONFIG_DIR", path.join(this.home, ".claude")]]) {
@@ -1297,62 +1297,62 @@ export class Setup {
         if (configured) {
           if (configured === "~" || configured.startsWith("~/")) configured = os.homedir() + configured.slice(1);
           if (path.resolve(configured) !== expected) {
-            throw new Conflict(`${variable} selects another instruction location; resolve it first`);
+            throw new Conflict(`${variable} selects another instruction location; unset it or select the intended home, then rerun the command`);
           }
         }
       }
     }
     if (isSymlink(this.codex) && fs.readlinkSync(this.codex) !== this.target) {
-      throw new Conflict("foreign Codex link; left unchanged (restore the managed link manually)");
+      throw new Conflict("foreign Codex link; left unchanged; restore the managed link target, then rerun agent-workbench install");
     }
-    if (!state && isSymlink(this.codex)) throw new Conflict("unowned Codex link; no setup ownership record");
-    if (state && !isSymlink(this.codex)) throw new Conflict("owned Codex link is missing or replaced; left unchanged");
+    if (!state && isSymlink(this.codex)) throw new Conflict("unowned Codex link; remove it or restore the original file, then rerun agent-workbench install");
+    if (state && !isSymlink(this.codex)) throw new Conflict("owned Codex link is missing or replaced; restore the managed link target, then rerun agent-workbench install");
     // A launcher whose bytes match the recorded hash is owned, including a pre-Node Python launcher.
     if (present(this.launcher)) {
       if (!state || digest(read(this.launcher)) !== state.launcher_hash) {
-        throw new Conflict("foreign or edited agent-workbench command; left unchanged");
+        throw new Conflict("foreign or edited agent-workbench command; leave it unchanged or move it aside, then rerun agent-workbench install");
       }
-      if (!(fs.statSync(this.launcher).mode & 0o100)) throw new Conflict("owned launcher is not executable; restore its executable mode");
+      if (!(fs.statSync(this.launcher).mode & 0o100)) throw new Conflict("owned launcher is not executable; restore its executable mode, then rerun agent-workbench install");
     } else if (state) {
-      throw new Conflict("owned launcher is missing; restore it before retrying");
+      throw new Conflict("owned launcher is missing; restore it from backup, then rerun agent-workbench install");
     }
     const data = read(this.shared);
     const [block, afterBlock] = splitBlock(data);
     const [personalBlock, private_] = splitBlock(afterBlock, PERSONAL_BEGIN, PERSONAL_END);
     if (state) {
       if (block === null || digest(block) !== state.block_hash) {
-        throw new Conflict("managed block drift; restore the public block recorded in state.json before retrying");
+        throw new Conflict("managed block drift; restore the public block recorded in state.json, then rerun agent-workbench install");
       }
       const ownedPersonal = state.personal_block;
       if (ownedPersonal !== null) {
         if (personalBlock === null || digest(personalBlock) !== ownedPersonal.hash) {
-          throw new Conflict("personal managed block drift; restore the personal block recorded in state.json before retrying");
+          throw new Conflict("personal managed block drift; restore the personal block recorded in state.json, then rerun agent-workbench install");
         }
       } else if (personalBlock !== null) {
-        throw new Conflict("personal managed markers have no ownership record; left unchanged");
+        throw new Conflict("personal managed markers have no ownership record; remove them or repair setup state, then rerun agent-workbench install");
       }
     } else if (block !== null || personalBlock !== null) {
-      throw new Conflict("managed markers have no ownership record; left unchanged");
+      throw new Conflict("managed markers have no ownership record; remove them or restore setup state, then rerun agent-workbench install");
     }
     const claude = read(this.claude);
     const lines = importLines(claude, this.home, path.dirname(this.claude), this.shared);
-    if (lines.length > 1) throw new Conflict("duplicate Claude imports; keep one import before retrying");
-    if (state && lines.length !== 1) throw new Conflict("managed Claude import is missing or modified; left unchanged");
+    if (lines.length > 1) throw new Conflict("duplicate Claude imports; keep one import, then rerun agent-workbench install");
+    if (state && lines.length !== 1) throw new Conflict("managed Claude import is missing or modified; restore the import line from state.json, then rerun agent-workbench install");
     if (state) {
       const imported = Setup.claudeImportRecord(state);
       if (imported.owned && !lines[0].equals(imported.line)) {
-        throw new Conflict("managed Claude import missing or modified; left unchanged");
+        throw new Conflict("managed Claude import missing or modified; restore the import line recorded in state.json, then rerun agent-workbench install");
       }
     }
-    this.checkAgents(state);
+    if (!status) this.checkAgents(state);
     inspect(this.workersPath, this.home);
     const ownedWorkers = state ? state.workers_hash : null;
     if (present(this.workersPath)) {
       if (!ownedWorkers || digest(read(this.workersPath)) !== ownedWorkers) {
-        throw new Conflict(`foreign or edited resolved Worker configuration: ${this.workersPath}`);
+        throw new Conflict(`foreign or edited resolved Worker configuration: ${this.workersPath}; move it aside, then rerun agent-workbench install`);
       }
     } else if (ownedWorkers) {
-      throw new Conflict(`owned resolved Worker configuration is missing: ${this.workersPath}`);
+      throw new Conflict(`owned resolved Worker configuration is missing: ${this.workersPath}; restore it with agent-workbench install`);
     }
     if (!uninstall) {
       this.workersBundle();
@@ -1360,16 +1360,16 @@ export class Setup {
       inspect(this.script, this.home);
       inspect(this.template, this.home);
       if (!isFile(this.script) || !isFile(this.template)) {
-        throw new Conflict("missing canonical setup resources; distribute workbench-setup globally first");
+        throw new Conflict("missing canonical setup resources; distribute workbench-setup globally first, then rerun agent-workbench install");
       }
       const template = read(this.template);
       utf8(template);
-      if (MARKERS.some((marker) => template.includes(marker))) throw new Conflict("template must not contain managed markers");
+      if (MARKERS.some((marker) => template.includes(marker))) throw new Conflict("template must not contain managed markers; remove those markers from the distributed template");
       inspect(this.personal, this.home, { directory: true });
       inspect(this.personalInstructions, this.home);
       const personal = read(this.personalInstructions);
       utf8(personal);
-      if (MARKERS.some((marker) => personal.includes(marker))) throw new Conflict("personal instructions must not contain managed markers");
+      if (MARKERS.some((marker) => personal.includes(marker))) throw new Conflict("personal instructions must not contain managed markers; remove those markers from the personal instructions file");
     }
     return [state, block, private_];
   }
@@ -1384,7 +1384,7 @@ export class Setup {
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
         if (attempt > 0 || !reclaimStaleLock(this.lockPath)) {
-          throw new Conflict("another agent-workbench operation holds the lock");
+          throw new Conflict("another agent-workbench operation holds the lock; wait for it to finish, then rerun the command");
         }
       }
     }
@@ -1408,6 +1408,27 @@ export class Setup {
       }
       atomic(destination, Buffer.from(dumps(entry, { sortKeys: true }) + "\n"));
     }
+  }
+
+  trust() {
+    let trusted = false;
+    this.withLock(() => {
+      const [state] = this.preflight({ status: true });
+      if (!state) throw new Conflict("not installed; run agent-workbench install first");
+      const [owned, , lists] = this.codexHookPlans(state, new Map(), { status: true });
+      const plans = new Map();
+      const [record, messages] = this.codexTrustPlans(state, plans, this.codexTrustItems(owned, lists));
+      trusted = messages.length === 0 && record.length > 0;
+      if (plans.has(this.codexSettings)) this.backup("codex_settings", this.codexSettings);
+      if (plans.size) {
+        const updated = { ...state, codex_trust: record };
+        plans.set(this.statePath, ["file", Buffer.from(dumps(updated, { indent: 2, sortKeys: true }) + "\n"), 0o600]);
+        transaction(plans, () => { for (const [file, plan] of plans) atomic(file, plan[1]); });
+      }
+      for (const message of messages) console.log(message);
+      if (trusted) console.log("Codex hooks trusted");
+      else if (!messages.length) console.log("No Codex hooks need trust");
+    });
   }
 
   install() {
@@ -1451,8 +1472,11 @@ export class Setup {
       const [nativePlans, nativeRecord] = this.nativePlans(state, this.contextValues());
       const [hookRecord] = this.hookPlans(state, nativePlans);
       const [codexHookRecord, , codexLists] = this.codexHookPlans(state, nativePlans);
-      const [codexTrustRecord, messages] = this.codexTrustPlans(state, nativePlans, this.codexTrustItems(codexHookRecord, codexLists));
-      trustMessages = messages;
+      const codexTrustRecord = (state?.codex_trust ?? []).filter((entry) =>
+        this.codexTrustItems(codexHookRecord, codexLists).some((item) => item.key === entry.key && item.hash === entry.hash));
+      trustMessages = this.codexTrustItems(codexHookRecord, codexLists)
+        .filter((item) => !codexTrustRecord.some((entry) => entry.key === item.key && entry.hash === item.hash))
+        .map((item) => `Run agent-workbench trust to trust Codex hooks, or run /hooks in Codex once: ${item.label}`);
       desired = this.desiredAgents();
       this.checkAgents(state, Object.keys(desired));
       for (const name of ["shared", "codex", "claude", "launcher"]) this.backup(name, this[name]);
@@ -1523,28 +1547,73 @@ export class Setup {
     for (const message of trustMessages) console.log(message);
   }
 
-  status() {
+  status({ json = false } = {}) {
     const [state, , private_] = this.preflight({ status: true });
-    if (!state) throw new Conflict("not installed");
+    if (!state) throw new Conflict("not installed; run agent-workbench install first");
     const template = read(this.template);
-    const [, , nativeStatus] = this.nativePlans(state, this.contextValues(), { status: true });
-    const [, hookStatus] = this.hookPlans(state, new Map(), { status: true });
-    const [codexOwned, codexHookStatus, codexLists] = this.codexHookPlans(state, new Map(), { status: true });
-    console.log(dumps({
+    let nativeStatus = {};
+    try { [, , nativeStatus] = this.nativePlans(state, this.contextValues(), { status: true }); }
+    catch (error) { nativeStatus = { error: error.message }; }
+    let hookStatus = {};
+    try { [, hookStatus] = this.hookPlans(state, new Map(), { status: true }); }
+    catch (error) { hookStatus = { error: error.message }; }
+    let codexOwned = [];
+    let codexHookStatus = {};
+    let codexLists = { PreToolUse: [], Stop: [] };
+    try { [codexOwned, codexHookStatus, codexLists] = this.codexHookPlans(state, new Map(), { status: true }); }
+    catch (error) { codexHookStatus = { error: error.message }; }
+    const report = {
       installed_version: state.version, available_version: VERSION,
       installed_template_hash: state.template_hash,
       available_template_hash: digest(template),
       native_settings: nativeStatus, hooks: hookStatus, codex_hooks: codexHookStatus,
-      codex_trust: this.codexTrustStatus(this.codexTrustItems(codexOwned, codexLists)),
+      codex_trust: {},
       personal_package: { present: present(this.personal), applied_files: state.personal_files },
       private_bytes: private_.length, shared: this.shared,
       codex: this.codex, claude: this.claude,
       launcher: this.launcher, thermal: this.thermalCommand("status"),
       agents: Object.fromEntries(Object.keys(state.agents).sort().map((name) => [name, this.agentPath(name)])),
-    }, { sortKeys: true }));
-    this.checkAgents(state, Object.keys(this.desiredAgents()));
+    };
+    const errors = [];
+    for (const [name, result] of [["native_settings", nativeStatus], ["hooks", hookStatus], ["codex_hooks", codexHookStatus]]) {
+      if (Object.hasOwn(result, "error")) errors.push(new Conflict(`${result.error}; run agent-workbench install after resolving the configuration`));
+    }
+    if (!Object.hasOwn(codexHookStatus, "error")) {
+      try { report.codex_trust = this.codexTrustStatus(this.codexTrustItems(codexOwned, codexLists)); }
+      catch (error) { report.codex_trust_error = error.message; errors.push(new Conflict(`${error.message}; resolve Codex config.toml, then run agent-workbench status --json`)); }
+    } else report.codex_trust_error = codexHookStatus.error;
+    try { this.checkAgents(state, Object.keys(this.desiredAgents())); }
+    catch (error) { report.agents_error = error.message; errors.push(error); }
     if (state.template_hash !== digest(template) || state.version !== VERSION) {
-      throw new Conflict("an instruction update is available; run install to apply distributed assets");
+      report.update_error = "instruction update is available; run agent-workbench install to apply distributed assets";
+      errors.push(new Conflict(report.update_error));
+    }
+    if (json) console.log(dumps(report, { sortKeys: true }));
+    else {
+      const line = (name, status, fix) => {
+        const label = status === "applied" || status === "trusted" || status === "not installed" || status.startsWith("skipped:") ? "ok" : status === "missing" || status === "untrusted" ? "missing" : "conflict";
+        console.log(`${label}  ${name}: ${status}${label === "ok" ? "" : `; ${fix}`}`);
+      };
+      line("setup", state.version === VERSION ? "applied" : "missing", "run agent-workbench install to apply update");
+      for (const [kind, settings] of Object.entries(nativeStatus)) {
+        if (kind === "error") line("configuration", "conflict", `resolve: ${settings}; run agent-workbench install`);
+        else if (typeof settings === "string") line(`${kind} settings`, settings, "run agent-workbench install if needed");
+        else for (const [key, status] of Object.entries(settings)) line(`${kind} setting ${key}`, status, status === "conflict" ? "resolve the value, then run agent-workbench install" : "run agent-workbench install to apply");
+      }
+      for (const [name, status] of Object.entries(hookStatus)) line(`Claude hook ${name}`, status, "run agent-workbench install to restore");
+      for (const [name, status] of Object.entries(codexHookStatus)) line(`Codex hook ${name}`, status, "run agent-workbench install to restore");
+      for (const [name, status] of Object.entries(report.codex_trust)) line(`Codex trust ${name}`, status, status === "trusted" ? "" : "run agent-workbench trust (or /hooks in Codex)");
+      line("personal package", report.personal_package.present ? "applied" : "not installed", "install workbench-personal if needed");
+      line("instruction template", state.template_hash === report.available_template_hash && state.version === VERSION ? "applied" : "missing", "run agent-workbench install to apply update");
+      line(`private instructions (${private_.length} bytes)`, "applied", "");
+      line(`thermal (${report.thermal})`, report.thermal === "not installed" ? "not installed" : "applied", report.thermal === "not installed" ? "install thermal-guard if needed" : "");
+      for (const [name, file] of Object.entries(report.agents)) line(`Claude agent ${name}`, fs.existsSync(file) ? "applied" : "missing", "run agent-workbench install to restore");
+      if (report.agents_error) console.log(`conflict  Claude agents: ${report.agents_error}; resolve the file conflict, then run agent-workbench install`);
+      if (report.codex_trust_error) console.log(`conflict  Codex trust: ${report.codex_trust_error}; resolve Codex config.toml, then run agent-workbench status --json`);
+    }
+    if (errors.length) {
+      if (!json) for (const error of errors) console.log(`conflict  status: ${error.message}`);
+      throw errors[0];
     }
   }
 
@@ -1595,7 +1664,7 @@ export class Setup {
 
   update(command) {
     this.preflight();
-    if (!this.isRealHome && !command) throw new Conflict("alternate --home requires --skills-cmd; real-user npx was not invoked");
+    if (!this.isRealHome && !command) throw new Conflict("alternate --home requires --skills-cmd; real-user npx was not invoked; rerun with --skills-cmd COMMAND");
     let lockFile = path.join(this.home, ".agents/.skill-lock.json");
     if (this.isRealHome && process.env.XDG_STATE_HOME) {
       lockFile = path.join(process.env.XDG_STATE_HOME, "skills/.skill-lock.json");
@@ -1604,7 +1673,7 @@ export class Setup {
     } else {
       inspect(lockFile, this.home);
     }
-    if (!present(lockFile)) throw new Conflict("native skills lock is missing; install global skills first");
+    if (!present(lockFile)) throw new Conflict("native skills lock is missing; install global skills first, then rerun agent-workbench update");
     let names;
     try {
       const native = JSON.parse(utf8(read(lockFile)));
@@ -1619,16 +1688,16 @@ export class Setup {
         throw new TypeError("setup ownership is missing or names are invalid");
       }
     } catch {
-      throw new Conflict("unsupported native skills lock or missing repository ownership");
+      throw new Conflict("unsupported native skills lock or missing repository ownership; restore a supported native skills lock, then rerun agent-workbench update");
     }
     const args = command ? shellSplit(command) : ["npx", "--yes", "skills@1.7.4"];
-    if (!args.length) throw new Conflict("empty skills command");
+    if (!args.length) throw new Conflict("empty skills command; provide an executable command with --skills-cmd");
     this.withLock(() => {
       this.preflight();
       const result = spawnSync(args[0], [...args.slice(1), "update", ...names, "-g", "-y"], { stdio: "inherit" });
       if (result.error) throw result.error;
       if (result.status !== 0) {
-        throw new Conflict(`native skills update failed (${result.status ?? result.signal}); global instructions unchanged`);
+        throw new Conflict(`native skills update failed (${result.status ?? result.signal}); global instructions unchanged; correct the skills update error, then rerun agent-workbench update`);
       }
       // Revalidate updated canonical resource paths without executing replaced symlinks.
       this.preflight();
@@ -1646,17 +1715,31 @@ function stripTrailingNewlines(data) {
   return data.subarray(0, end);
 }
 
+const COMMANDS = {
+  install: "Apply shared instructions, hooks and settings",
+  update: "Update distributed skills, then apply them",
+  status: "Check installed files and settings (supports --json)",
+  trust: "Trust installed Codex policy hooks",
+  uninstall: "Remove managed setup while keeping private files",
+  workers: "Show effective worker configuration",
+};
 const USAGE = "usage: workbench.mjs [--home HOME] [--skills-cmd SKILLS_CMD] [--cwd CWD] " +
-  "{install,update,status,uninstall,workers}";
+  `{${Object.keys(COMMANDS).join(",")}}`;
 
 function parseArguments(argv) {
-  const options = { home: os.homedir(), skillsCmd: undefined, cwd: process.cwd(), command: undefined };
+  const options = { home: os.homedir(), skillsCmd: undefined, cwd: process.cwd(), command: undefined, json: false, help: false, helpCommand: undefined };
   const fail = (message) => {
     console.error(`${USAGE}\nworkbench.mjs: error: ${message}`);
     process.exit(2);
   };
   const flags = { "--home": "home", "--skills-cmd": "skillsCmd", "--cwd": "cwd" };
   for (let index = 0; index < argv.length; index++) {
+    if (argv[index] === "--help" || argv[index] === "-h") {
+      options.help = true;
+      if (options.command) options.helpCommand = options.command;
+      continue;
+    }
+    if (argv[index] === "--json") { options.json = true; continue; }
     const [flag, inline] = argv[index].startsWith("--") && argv[index].includes("=") ?
       [argv[index].slice(0, argv[index].indexOf("=")), argv[index].slice(argv[index].indexOf("=") + 1)] : [argv[index]];
     if (has(flags, flag)) {
@@ -1667,23 +1750,45 @@ function parseArguments(argv) {
       fail(`unrecognized arguments: ${argv[index]}`);
     } else if (options.command === undefined) {
       options.command = flag;
+    } else if (options.command === "help") {
+      options.helpCommand = flag;
     } else {
       fail(`unrecognized arguments: ${flag}`);
     }
   }
+  if (options.command === undefined && options.help) return options;
   if (options.command === undefined) fail("the following arguments are required: command");
-  if (!["install", "update", "status", "uninstall", "workers"].includes(options.command)) {
-    fail(`argument command: invalid choice: '${options.command}' (choose from 'install', 'update', 'status', 'uninstall', 'workers')`);
+  if (options.command === "help") {
+    options.command = undefined;
+    options.help = true;
+    if (options.helpCommand !== undefined && !has(COMMANDS, options.helpCommand)) fail(`unknown command '${options.helpCommand}'`);
+    return options;
+  }
+  if (!has(COMMANDS, options.command)) {
+    fail(`argument command: invalid choice: '${options.command}' (choose from ${Object.keys(COMMANDS).map((item) => `'${item}'`).join(", ")})`);
   }
   return options;
 }
 
+function printHelp(command) {
+  if (!command) {
+    console.log(`${USAGE}\n\nCommands:`);
+    for (const [name, description] of Object.entries(COMMANDS)) console.log(`  ${name.padEnd(10)} ${description}`);
+    console.log("\nUse workbench.mjs help <command> for command options.");
+  } else {
+    const args = command === "workers" ? " [--cwd CWD]" : command === "update" ? " [--skills-cmd SKILLS_CMD]" : command === "status" ? " [--json]" : "";
+    console.log(`usage: workbench.mjs [--home HOME]${args} ${command}\n\n${COMMANDS[command]}`);
+  }
+}
+
 export function main(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
+  if (args.help) { printHelp(args.helpCommand ?? (args.command === "help" ? undefined : args.command)); return 0; }
   try {
     const setup = new Setup(args.home);
     if (args.command === "workers") setup.workers(args.cwd);
     else if (args.command === "update") return setup.update(args.skillsCmd);
+    else if (args.command === "status") setup.status({ json: args.json });
     else setup[args.command]();
     return 0;
   } catch (error) {
