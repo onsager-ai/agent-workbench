@@ -18,6 +18,13 @@ Coding agents work best when one session keeps the plan and cheaper ones do the 
 - **Questions you can answer quickly.** When the agent needs a decision, it asks with your harness's question tool and puts its recommended option first.
 - **Handoffs survive.** The Manager records what you asked for and what you approved, so a later session or another machine can pick up the task.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/how-it-works-dark.svg">
+    <img src="docs/media/how-it-works-light.svg" alt="You talk to a Manager session. It sends work to Haiku, Sonnet or Opus Workers, checks their results and hands tasks over to other Managers. A policy hook checks every step." width="720">
+  </picture>
+</p>
+
 For what you get, how it works and how it compares with similar projects, see the [overview](docs/overview.md).
 
 ## Quick start
@@ -29,6 +36,8 @@ For what you get, how it works and how it compares with similar projects, see th
    ```
 
    This installs the skills and applies the shared global instructions and setup tools.
+
+   <img src="docs/media/demo.svg" alt="Terminal demo: setup installs the skills, Worker subagents and policy hook. In an agent session the hook then blocks a commit on main and CI polling, asks before an Opus Worker, and sends a prose question back." width="720">
 
 2. If you use Codex, review and trust its hooks once:
 

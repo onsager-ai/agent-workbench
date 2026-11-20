@@ -28,22 +28,10 @@ npx @onsager/awb setup
 
 ## How it works
 
-```text
-          you
-           │  ask, approve, answer questions
-           ▼
-   ┌──────────────────┐     messages / handover     ┌──────────────────┐
-   │ Manager session  │ ◄─────────────────────────► │ other Managers   │
-   │ (your model)     │   native, or via T3 Code    │ (other harness   │
-   └──────────────────┘                             │  or machine)     │
-     │ brief    ▲ report + evidence                 └──────────────────┘
-     ▼          │
-   ┌──────────────────────────────┐
-   │ Workers (native subagents)   │
-   │ L1 Haiku → L2 Sonnet → L3 Opus (you approve)
-   └──────────────────────────────┘
-        policy hook checks every dispatch, shell command and turn end
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="media/how-it-works-dark.svg">
+  <img src="media/how-it-works-light.svg" alt="You talk to a Manager session. It sends work to Haiku, Sonnet or Opus Workers, checks their results and hands tasks over to other Managers. A policy hook checks every step." width="720">
+</picture>
 
 1. **The session you talk to is the Manager.** It uses the model you picked. Small questions and routine edits it handles itself.
 2. **Substantial work goes to Workers.** Workers are your harness's built-in subagents (`haiku`, `sonnet`, `opus` in Claude Code), so they inherit its permissions and sandbox. Independent pieces run in parallel.
