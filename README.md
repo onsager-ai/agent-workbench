@@ -27,6 +27,10 @@ Coding agents work best when one session keeps the plan and cheaper ones do the 
 
 For what you get, how it works and how it compares with similar projects, see the [overview](docs/overview.md).
 
+A real Claude Code session after setup: the Manager sends a bug fix to a Haiku Worker, then checks the diff, the commit and the tests itself before reporting.
+
+<img src="docs/media/session.gif" alt="Claude Code session: asked to have a Worker fix an off-by-one bug, the Manager writes a brief, a Haiku Worker commits the fix on a task branch, and the Manager verifies the diff, commit and tests before reporting." width="720">
+
 ## Quick start
 
 1. Set up Agent Workbench:

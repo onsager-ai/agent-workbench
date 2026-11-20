@@ -1,5 +1,7 @@
 // Generates the README diagram (light and dark) and the animated terminal demo.
 // No dependencies: node docs/media/generate.mjs
+// session.gif is separate: a real Claude Code session recorded with asciinema
+// (session.cast) and rendered with agg 1.9.0 at --speed 3.
 // Demo text is real output from @onsager/awb 0.1.2 setup and from its policy
 // hook, abridged; the hook scenes show the decision the hook returns.
 import { writeFileSync } from "node:fs";
