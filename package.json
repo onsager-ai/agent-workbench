@@ -1,6 +1,6 @@
 {
   "name": "@onsager/awb",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -14,7 +14,8 @@
     "node": ">=22.20"
   },
   "files": [
-    "bin/awb.mjs"
+    "bin/awb.mjs",
+    "bin/prune.mjs"
   ],
   "publishConfig": {
     "access": "public"
