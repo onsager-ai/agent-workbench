@@ -1,0 +1,18 @@
+{
+  "name": "@onsager/awb",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "awb": "bin/awb.mjs"
+  },
+  "engines": {
+    "node": ">=22.20"
+  },
+  "files": [
+    "bin/awb.mjs"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -17,6 +17,14 @@ jobs:
           node-version: '22.20'
       - name: Run retained tests
         run: node --test tests/*.test.mjs
+      - name: Verify npm package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          npm_config_cache="$tmp/npm-cache" npm pack --dry-run --json > "$tmp/pack.json"
+          node --input-type=module -e 'import fs from "node:fs"; const files = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[0].files.map((item) => item.path).sort(); const expected = ["LICENSE", "README.md", "bin/awb.mjs", "package.json"].sort(); if (JSON.stringify(files) !== JSON.stringify(expected)) { console.error({ files, expected }); process.exit(1); }' "$tmp/pack.json"
       - name: Verify skill discovery
         shell: bash
         run: |
