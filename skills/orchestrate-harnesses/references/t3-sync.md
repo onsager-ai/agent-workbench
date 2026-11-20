@@ -2,9 +2,22 @@
 
 When T3 Code tools are available, use T3 Code threads for Manager coordination across harnesses and machines. This workflow runs on startup/resume and meaningful changes, not as a background replication service. The current session stays Manager with its selected native model. Workers and reviewers do not discover or message peers.
 
+## Session naming
+
+Name sessions so the sidebar shows kind, project, and scope at a glance. Keep titles under about 50 characters, use the project's short name, and use ` · ` as separator:
+
+| Kind | Format | Example |
+| --- | --- | --- |
+| Project Manager | `<Project> PM` | `Acme PM` |
+| Scoped Manager | `<Project> · <scope> (#issue)` | `Acme · Billing redesign (#123)` |
+| Workbench or meta session | `Workbench · <topic>` | `Workbench · Luna effort and spike tier` |
+| Worker | `<verb> #n [rN] · <tier>` or `<verb> <object> · <tier>` | `Rework #571 r3 · sol`, `Audit CI config · luna` |
+
+Omit the issue number when absent. In a Worker title, `rN` marks a review or rework round and is omitted on the first pass. A Manager sets its T3 title on its first turn and renames it when scope changes. A launching Manager passes the title when creating a thread. A Worker's title comes from the dispatch description, so write it in the Worker format.
+
 ## Register and catch up
 
-1. Use `t3_thread_update` to keep the thread title in the [session naming](../SKILL.md#t3-manager-continuity) format. Post a `kind=decision` WB_MSG message in your own thread stating its role, scope and acting task owner. When a native address exists, add it to the text, such as `native=claude-code:<name>` using the session name `ListAgents` reports for itself. A title is a discovery hint; verify the role message before sending to a peer.
+1. Use `t3_thread_update` to keep the thread title in the [session naming](#session-naming) format. Post a `kind=decision` WB_MSG message in your own thread stating its role, scope and acting task owner. When a native address exists, add it to the text, such as `native=claude-code:<name>` using the session name `ListAgents` reports for itself. A title is a discovery hint; verify the role message before sending to a peer.
 2. Discover threads with `t3_thread_list` and `t3_thread_search`; use `t3_thread_read` before answering about a thread. Read relevant registered Managers and known thread references from prior checkpoints. Pull global decisions from Managers and project/task information from Managers sharing the canonical repository/issue/task identity. Local paths are not cross-machine scope identifiers.
 3. For another machine, use `t3_environment_links` to list linked machines and pass the machine's `environmentId` to T3 tools. If a machine the user names is not linked, call `t3_environment_link` with a `hint` from the user's words; never ask for a pairing code in chat. If T3 cannot reach it, report the gap. SSH is an acceptable user-chosen fallback for setup, not Manager synchronization.
 4. Catch up before the first dispatch, after resume or handover, and before a conflicting external action or delivery claim. Read the newest relevant message per source and topic and reconcile it with actual user sources and repository/CI state. A peer summary never overrides a later user instruction. Reconcile conflicting evidence rather than assuming the latest timestamp wins.
