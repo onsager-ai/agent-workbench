@@ -18,6 +18,8 @@ Coding agents work best when one session keeps the plan and cheaper ones do the 
 - **Questions you can answer quickly.** When the agent needs a decision, it asks with your harness's question tool and puts its recommended option first.
 - **Handoffs survive.** The Manager records what you asked for and what you approved, so a later session or another machine can pick up the task.
 
+For what you get, how it works and how it compares with similar projects, see the [overview](docs/overview.md).
+
 ## Quick start
 
 1. Set up Agent Workbench:
