@@ -4,6 +4,14 @@ The current interactive session is Manager. Keep its selected model and native p
 
 Prefer native harness subagents for same-harness work. A T3 thread you launch is a scoped Manager, never a Worker; see [Manager sync](manager-sync.md). Read the effective model configuration and use the actual tool schema or configured subagent definition to select an appropriate tier/model/effort. Avoid accidentally inheriting a costly parent model. Record required settings the native tool cannot apply as capability gaps; do not claim enforcement or launch a standalone CLI controller as an implicit fallback. When its tools are available, T3 Code coordinates Managers and explicitly owned cross-harness/session/machine handovers using capabilities actually available there. Otherwise use native session messaging where supported and the user for handover.
 
+## Reduce Manager calls
+
+- When a watched PR check fails, resume the Worker that owns the branch or dispatch an L1 Worker with the run URL. The Worker triages the failure; the Manager does not fetch or search CI logs.
+- Delegate diff review to an independent L1/L2 reviewer. Give it the PR and requirements; read its terse findings and the Worker report, not whole diffs. Before accepting, inspect only the specific hunks that change a contract: config schema, public docs, persisted formats, or hook policy. A Worker cannot accept its own work.
+- Make the Worker responsible for PR completion. Brief it to iterate until required CI is green on the exact head, within the round's push allowance, and end its report with `PR <url>, head <sha>, checks <state>`. The Manager makes one exact-head verification call before merging; do not babysit each step.
+- Batch independent Manager checks into one tool call; avoid exploratory one-liners.
+- Hand over at a phase boundary or when Manager context passes about 100k tokens. Write the lane state with manage-lane's [handover](../../manage-lane/references/handover.md), then continue in a fresh session. This cuts resent context on every call.
+
 Give each Worker a bounded brief containing original requirements/amendments, named paths/worktree, permissions and authorized delivery, acceptance criteria, tier/reason and current resource rules. For PR delivery, supply the [PR CI trigger procedure](pr-ci-trigger.md) inline or at its resolved installed file path, plus recovery authority and the round's remaining push allowance; generated Worker instructions cannot rely on relative links to skill resources. Size each Worker's scope to fit one context where possible; split long inventories by file group. For implementation, give a concrete first step, value partial progress within the timebox, require an early WIP commit or push when authorized, and batch CI fixes per round; see the [Worker ladder](worker-ladder.md). Reuse native run IDs and existing task/PR records. Native tool responses establish launch/status; Worker summaries are evidence to inspect. No task directory, immutable JSON contract or response schema is required.
 
 ## Brief checklist
@@ -20,7 +28,7 @@ Copy and fill in for each dispatch:
 - Host resource rules: follow `host-ops` and carry applicable limits into delegations and resumes.
 - CI-only checks: no local builds, tests or typechecks.
 - Formatter evidence: command and quoted exit code, e.g. `cargo fmt --all -- --check; echo exit=$?`.
-- PR delivery: `~/.agents/skills/orchestrate-harnesses/references/pr-ci-trigger.md`; recovery authority: ___; remaining push allowance: ___. One exact-head `pull_request` check, then return; do not poll.
+- PR delivery: `~/.agents/skills/orchestrate-harnesses/references/pr-ci-trigger.md`; recovery authority: ___; remaining push allowance: ___. Worker iterates until required CI is green on the exact head and reports `PR <url>, head <sha>, checks <state>`; Manager verifies once before merge. On failure, resume/dispatch a Worker with the run URL.
 - Named output files authorized for creation:
 - Dispatch description/title: `<verb> … · <tier>`.
 
