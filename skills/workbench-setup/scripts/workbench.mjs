@@ -950,7 +950,7 @@ export class Setup {
         if (has(owned, kind)) record[kind] = owned[kind];
         continue;
       }
-      if (status && !has(owned, kind)) {
+      if (status && !has(owned, kind) && (kind !== "claude" || !settingKeys.length)) {
         report[kind] = "skipped: not applied; run install if config directory is available";
         continue;
       }

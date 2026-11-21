@@ -1320,11 +1320,15 @@ describe("workbench setup", () => {
     const claude = path.join(f.home, ".claude/settings.json");
     const codex = path.join(f.home, ".codex/config.toml");
     const original = Buffer.from('model = "magpie" # routing\nmodel_reasoning_effort = "high"\n\n[model_providers.magpie]\nname = "route"\n[projects."/tmp"]\ntrust_level = "trusted"\n');
-    f.write(claude, '{"model":"magpie", "modelPicker":true, "env":{"OTHER":"x"}}');
+    f.write(claude, '{"model":"magpie", "modelPicker":true, "env":{"OTHER":"x"}, "modelSettings":{"claude-opus-5-5":{"effortLevel":"high"}, "sonnet":{"effortLevel":"low"}}}');
     f.write(codex, original);
     f.run("install");
     let settings = f.json(claude);
-    assert.deepEqual(settings.env, { OTHER: "x", CLAUDE_CODE_AUTO_COMPACT_WINDOW: "300000", CLAUDE_CODE_MAX_CONTEXT_TOKENS: "400000" });
+    assert.deepEqual(settings.env, { OTHER: "x", CLAUDE_CODE_MAX_CONTEXT_TOKENS: "400000" });
+    assert.equal(settings.autoCompactWindow, 300000);
+    assert.deepEqual(settings.modelSettings, {
+      "claude-opus-5-5": { effortLevel: "high", autoCompactWindow: 100000 }, sonnet: { effortLevel: "low" },
+    });
     assert.equal(settings.model, "magpie");
     const expected = sub(original, "[model_providers.magpie]",
       "model_auto_compact_token_limit = 300000\nmodel_context_window = 900000\n[model_providers.magpie]");
@@ -1332,28 +1336,37 @@ describe("workbench setup", () => {
     const before = f.snapshot();
     assert.match(f.run("install").stdout, /no-op/);
     assert.deepEqual(f.snapshot(), before);
-    delete settings.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+    delete settings.modelSettings["claude-opus-5-5"].autoCompactWindow;
     fs.writeFileSync(claude, JSON.stringify(settings));
     fs.writeFileSync(codex, original);
     let status = JSON.parse(f.run("status").stdout).native_settings;
-    assert.equal(status.claude.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "missing");
+    assert.equal(status.claude["modelSettings.claude-opus-5-5.autoCompactWindow"], "missing");
     f.run("install");
     assert.deepEqual(read(codex), expected);
     settings = f.json(claude);
-    settings.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "420000";
+    settings.modelSettings["claude-opus-5-5"].autoCompactWindow = 420000;
     fs.writeFileSync(claude, JSON.stringify(settings));
     status = JSON.parse(f.run("status").stdout).native_settings;
-    assert.equal(status.claude.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "conflict");
+    assert.equal(status.claude["modelSettings.claude-opus-5-5.autoCompactWindow"], "conflict");
     assert.match(f.run("install", [], false).stderr, /edited/);
     f.run("uninstall");
-    assert.equal(f.json(claude).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "420000");
+    settings = f.json(claude);
+    assert.ok(!("autoCompactWindow" in settings));
+    assert.deepEqual(settings.env, { OTHER: "x" });
+    assert.deepEqual(settings.modelSettings, {
+      "claude-opus-5-5": { effortLevel: "high", autoCompactWindow: 420000 }, sonnet: { effortLevel: "low" },
+    });
     assert.deepEqual(read(codex), original);
   });
 
   test("native preexisting values and invalid files", () => {
     const cases = [
-      ["claude", '{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"300000"}}', true],
-      ["claude", '{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"310000"}}', false],
+      ["claude", '{"autoCompactWindow":300000}', true],
+      ["claude", '{"autoCompactWindow":310000}', false],
+      ["claude", '{"modelSettings":{"claude-opus-5-5":{"autoCompactWindow":100000}}}', true],
+      ["claude", '{"modelSettings":{"claude-opus-5-5":{"autoCompactWindow":310000}}}', false],
+      ["claude", '{"modelSettings":{"claude-opus-5-5":null}}', false],
+      ["claude", '{"modelSettings":[]}', false],
       ["claude", "{invalid", false],
       ["codex", "model_auto_compact_token_limit = 300000\n", true],
       ["codex", "model_auto_compact_token_limit = 1\n", false],
@@ -1368,11 +1381,67 @@ describe("workbench setup", () => {
       f.run("install", [], succeeds);
       if (succeeds) {
         f.run("uninstall");
-        assert.ok(!read(file).includes(kind === "claude" ? "CLAUDE_CODE_AUTO_COMPACT_WINDOW" : "model_auto_compact_token_limit"));
+        if (kind === "claude") {
+          const original = JSON.parse(data);
+          const current = f.json(file);
+          assert.equal(current.autoCompactWindow, original.autoCompactWindow);
+          assert.equal(current.modelSettings["claude-opus-5-5"].autoCompactWindow,
+            original.modelSettings?.["claude-opus-5-5"].autoCompactWindow);
+        } else assert.ok(!read(file).includes("model_auto_compact_token_limit"));
       } else {
         assert.deepEqual(read(file), Buffer.from(data));
       }
     });
+  });
+
+  test("install migrates only the owned legacy compaction environment variable", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const claude = path.join(f.home, ".claude/settings.json");
+    const statePath = path.join(f.state, "state.json");
+    const key = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
+    f.run("install");
+    const settings = f.json(claude);
+    const state = f.stateJson();
+    delete settings.autoCompactWindow;
+    delete settings.modelSettings;
+    settings.env = { OTHER: "x", [key]: "310000" };
+    state.native.claude = { [key]: "300000" };
+    f.write(claude, JSON.stringify(settings));
+    f.write(statePath, JSON.stringify(state));
+    assert.match(f.run("install", [], false).stderr, /edited .*CLAUDE_CODE_AUTO_COMPACT_WINDOW/);
+    assert.deepEqual(f.json(claude), settings);
+    settings.env[key] = "300000";
+    f.write(claude, JSON.stringify(settings));
+    f.run("install");
+    assert.deepEqual(f.json(claude).env, { OTHER: "x" });
+    assert.equal(f.json(claude).autoCompactWindow, 300000);
+    assert.ok(!(key in f.stateJson().native.claude));
+    f.run("uninstall");
+    f.write(claude, JSON.stringify({ env: { [key]: "310000" } }));
+    f.run("install");
+    f.run("uninstall");
+    assert.deepEqual(f.json(claude).env, { [key]: "310000" });
+  });
+
+  test("install and status warn about Worker tiers sharing a Manager model", () => {
+    const f = new Fixture();
+    const manager_models = ["claude-opus-5-5", "gateway/gpt-6.2-sol"];
+    f.installOrchestration({
+      policy: { context: { manager_window: 110000, manager_models } },
+      profiles: { codex: { tiers: { sol: { claude_route: "gateway/gpt-6.2-sol" } } } },
+    });
+    const claude = path.join(f.home, ".claude/settings.json");
+    for (const command of ["install", "status"]) {
+      const warnings = f.run(command).stderr;
+      assert.equal(warnings.match(/opus tier.*shares the Manager's 110000-token/g)?.length, 1);
+      assert.equal(warnings.match(/sol tier.*shares the Manager's 110000-token/g)?.length, 1);
+    }
+    for (const model of manager_models) assert.equal(f.json(claude).modelSettings[model].autoCompactWindow, 110000);
+    f.installOrchestration({ policy: { context: { manager_window: null } } });
+    for (const command of ["install", "status"]) assert.doesNotMatch(f.run(command).stderr, /shares the Manager/);
+    for (const model of manager_models) assert.ok(!("autoCompactWindow" in f.json(claude).modelSettings[model]));
+    assert.equal(f.json(claude).autoCompactWindow, 300000);
   });
 
   test("native missing directory and override validation", () => {
@@ -1380,7 +1449,7 @@ describe("workbench setup", () => {
     f.installOrchestration({ policy: { context: { max_tokens: 500000, gateway_window: null } } });
     fs.rmdirSync(path.join(f.home, ".codex"));
     f.run("install");
-    assert.deepEqual(f.json(path.join(f.home, ".claude/settings.json")).env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "500000" });
+    assert.equal(f.json(path.join(f.home, ".claude/settings.json")).autoCompactWindow, 500000);
     assert.ok(!("codex" in f.stateJson().native));
   });
 
@@ -1425,7 +1494,7 @@ select:
     assert.equal(bundle.profile, "codex");
     assert.equal(bundle.select[0].path, fs.realpathSync(work));
     assert.equal(bundle.profiles.corporate.policy.context.max_tokens, 12345);
-    assert.equal(f.json(path.join(f.home, ".claude/settings.json")).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "300000");
+    assert.equal(f.json(path.join(f.home, ".claude/settings.json")).autoCompactWindow, 300000);
     f.run("uninstall");
     assert.ok(!exists(path.join(f.state, "workers.json")));
     assert.ok(!exists(f.agent("glm")));
@@ -1472,6 +1541,8 @@ select:
     const invalid = [
       "version: 1", "roles: {}", "sol_weekly_brake_percent: 100", "tiers: []",
       "defaults: {timeout_s: false}", "policy: {context: {oops: 1}}",
+      "policy: {context: {manager_window: 100000.0}}", "policy: {context: {manager_window: -1}}",
+      "policy: {context: {manager_models: opus}}", "policy: {context: {manager_models: [opus, 5]}}",
       "select: [{path: ~/work, profile: missing}]", "select: {}", "profile: missing",
       "profiles: {unused: {tiers: {luna: {effort: false}}}}",
       "profiles: {unused: {roles: {}}}", "tiers: {luna: {cli: codex}}",
