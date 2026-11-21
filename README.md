@@ -14,7 +14,7 @@ Agent Workbench is a set of portable skills for Codex and Claude Code that helps
 Coding agents work best when one session keeps the plan and cheaper ones do the work. Without rules, an agent picks the most expensive model for small jobs, loses track of what you approved, and leaves half-finished branches behind. Agent Workbench gives your session a working routine:
 
 - **Your session plans, Workers build.** The session you talk to is the Manager. It splits the task, sends each piece to a Worker subagent and checks the result before telling you it's done.
-- **Start small, escalate when needed.** L1 uses a small, fast, low-cost model for bounded work. L2 uses a capable general model for research, spikes, and architecture. L3 uses the strongest model and needs your approval for each task. The default Claude mapping is Haiku, Sonnet, and Opus; an optional Codex profile maps Luna + Haiku to L1, Sol + Sonnet to L2, and Opus to L3. You can map any models from a gateway or another harness in `workers.yml`.
+- **Start small, escalate when needed.** L1 uses a small, fast, low-cost model for bounded work. L2 uses a capable general model for research, spikes, and architecture. L3 uses the strongest model and needs your approval for each task. The default Claude mapping is Haiku, Sonnet, and Opus; an optional Codex profile maps Luna + Haiku to L1, Sol + Sonnet to L2, and Opus to L3. Gateway and CC Switch users can select the [neutral profile](docs/reference.md#neutral-profile-for-provider-switching) to dispatch by slot and follow provider model aliases. You can map any models from a gateway or another harness in `workers.yml`.
 - **Questions you can answer quickly.** When the agent needs a decision, it asks with your harness's question tool and puts its recommended option first.
 - **Handoffs survive.** The Manager records what you asked for and what you approved, so a later session or another machine can pick up the task.
 
@@ -47,7 +47,7 @@ Setup writes only to your home directory and never to your repositories.
 | `~/.agents/skills`, `~/.claude/skills` | The skills listed below |
 | `~/.agents/AGENTS.md` | [Shared instructions](skills/workbench-setup/assets/AGENTS.md), imported from `~/.claude/CLAUDE.md` and added as a marked block to `~/.codex/AGENTS.md`. Your own text in those files stays. |
 | `~/.claude/settings.json`, `~/.codex/hooks.json` | A policy hook (see below) and a 300,000-token auto-compact window |
-| `~/.claude/agents` | `haiku`, `sonnet` and `opus` Worker subagents |
+| `~/.claude/agents` | Worker subagents for all shipped profiles and configured routes |
 | `~/.local/bin` | The `agent-workbench` launcher |
 
 Once installed, the policy hook will:

@@ -10,7 +10,9 @@ Tier names are configurable. Each tier identifies its client with `harness` (`co
 
 `claude_route` is a Codex tier's model ID for dispatch from Claude Code. Null leaves it as a [Codex Worker](codex-workers.md). Claude tiers use their `model` directly. The optional `codex` profile leaves Luna, Terra and Sol routes null. Users may supply gateway IDs; gateway routing relies on workbench-setup's absolute compaction window and `policy.context.gateway_window`. Without them, Claude Code assumes 200k for those IDs, and routed Codex subagents can compact early, thrash autocompact, and stop using tools.
 
-Run `agent-workbench install` after editing the override. Setup generates the union of routable tiers across the base and all profiles in `~/.claude/agents`. A name must keep the same model, route and effort across profiles; rename tiers that differ. Removing a route removes its generated file when no other profile needs it.
+For provider switching, set `profile: neutral` or select it with a directory rule. Its `l1-a`, `l2-a`, and `l3` tiers use frontmatter aliases that follow `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_OPUS_MODEL` in Claude Code. Use a full model ID to pin the route Claude Code requests. Add `l1-b` or `l2-b` and list it after the `a` slot in the ladder when your provider offers a second choice.
+
+When migrating tier names, change the tier keys, ladder entries, and dispatch references together. Run `agent-workbench install` after editing the override and start a new session. Setup generates the union of routable tiers across the base and all profiles in `~/.claude/agents`. A name must keep the same model, route and effort across profiles; rename tiers that differ. Removing a route removes its generated file when no other profile needs it.
 
 Unknown keys and invalid configuration fail installation without changing managed files. Setup preserves private instructions outside its managed block.
 
@@ -22,4 +24,4 @@ Unknown keys and invalid configuration fail installation without changing manage
 
 When applied by workbench-setup, Claude Code PreToolUse hooks ask approval according to the profile selected by the dispatch event's working directory and always for `model: opus`. Missing or unreadable resolved policy asks for approval on every Agent/Task dispatch and requests reinstall. Hooks deny built-in Agent/Task types without an explicit model, named agent types with a `model` override, and T3 `delegate_task` calls without `target.model`. A Stop hook blocks turns ending in a prose question so the Manager can ask through AskUserQuestion. Supply Worker effort in `target.options` for T3 delegation.
 
-A workbench-setup PostToolUse check compares completed Agent/Task runs with the effective tier model. It warns about requested-model overrides or transcript model mismatches so the Manager can report the model that actually ran; it never blocks completed work.
+A workbench-setup PostToolUse check compares the resolved Agent/Task route with the configured tier at async launch. For completed runs it also checks transcript models. It compares an alias against its `ANTHROPIC_DEFAULT_*_MODEL` target when the hook environment supplies one. With an unknown alias target, it reports the observed model without a mismatch warning.

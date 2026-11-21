@@ -49,6 +49,19 @@ describe("worker configuration", () => {
     }
   });
 
+  test("neutral profile uses one alias slot per level without changing the default", () => {
+    assert.equal(bundle.profile, null);
+    const neutral = bundle.profiles.neutral;
+    assert.deepEqual(neutral.ladder, [
+      { level: "L1", tiers: ["l1-a"] },
+      { level: "L2", tiers: ["l2-a"], start_for: ["spike", "research", "architecture"] },
+      { level: "L3", tiers: ["l3"], approval: "required" },
+    ]);
+    assert.deepEqual(Object.fromEntries(Object.entries(neutral.tiers).map(([name, tier]) => [name, [tier.harness, tier.model]])), {
+      "l1-a": ["claude", "haiku"], "l2-a": ["claude", "sonnet"], l3: ["claude", "opus"],
+    });
+  });
+
   test("schema rejects bad resolved values", () => {
     const mutations = [
       (c) => { c.tiers.luna.timeout_s = true; },

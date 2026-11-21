@@ -127,14 +127,14 @@ describe("policy hook", () => {
     const subagents = path.join(directory, "manager", "subagents");
     fs.mkdirSync(subagents, { recursive: true });
     const workerTranscript = path.join(subagents, "agent-worker-1.jsonl");
-    const invokePost = (agentType, resolvedModel, models = [resolvedModel]) => {
+    const invokePost = (agentType, resolvedModel, models = [resolvedModel], env) => {
       fs.writeFileSync(workerTranscript, models.map((model) => JSON.stringify({
         type: "assistant", message: { model },
       })).join("\n") + "\n");
       return invoke(JSON.stringify({
         hook_event_name: "PostToolUse", tool_name: "Agent", transcript_path: transcript, cwd: directory,
         tool_response: { status: "completed", agentId: "worker-1", agentType, resolvedModel },
-      }));
+      }), env);
     };
     assert.equal(invokePost("haiku", "claude-haiku-5-5", ["group/auto-claude-haiku-5-5"]), null);
     assert.match(invokePost("haiku", "claude-sonnet-5-5").additionalContext, /expected claude-haiku-5-5/);
@@ -147,6 +147,15 @@ describe("policy hook", () => {
     assert.match(invokePost("luna", "onsager/codex/gpt-6-luna", ["group/auto-claude-sonnet-5-5"]).additionalContext,
       /claude-sonnet-5-5/);
     assert.equal(invokePost("unknown", "model"), null);
+    bundle.select = [{ path: directory, profile: "neutral" }];
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    const route = "gateway/general";
+    const env = { ANTHROPIC_DEFAULT_SONNET_MODEL: route };
+    assert.equal(invokePost("l2-a", route, ["general"], env), null);
+    assert.match(invokePost("l2-a", route, ["other"], env).additionalContext,
+      /expected gateway\/general but ran on gateway\/general, other/);
+    assert.equal(invokePost("l2-a", route, [route], {}).additionalContext,
+      "The l2-a Worker reported model(s) gateway/general.");
     fs.rmSync(workerTranscript);
     assert.equal(invoke(JSON.stringify({
       hook_event_name: "PostToolUse", tool_name: "Agent", transcript_path: transcript,
@@ -156,6 +165,38 @@ describe("policy hook", () => {
       hook_event_name: "PostToolUse", tool_name: "Task", transcript_path: transcript,
       tool_response: { status: "running", agentId: "worker-1", agentType: "haiku" },
     })), null);
+  });
+
+  test("PostToolUse checks the requested route at async launch without a transcript", () => {
+    const route = "gateway/general";
+    bundle.select = [{ path: directory, profile: "neutral" }];
+    bundle.profiles.neutral.tiers["l1-a"].model = "gateway/small";
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    const launch = (subagentType, resolvedModel, env = {}) => invoke(JSON.stringify({
+      hook_event_name: "PostToolUse", tool_name: "Agent", cwd: directory,
+      tool_input: { subagent_type: subagentType },
+      tool_response: { status: "async_launched", agentId: "worker-1", resolvedModel },
+    }), env);
+    const env = { ANTHROPIC_DEFAULT_SONNET_MODEL: route };
+    assert.equal(launch("l2-a", route, env), null);
+    assert.equal(launch("l2-a", route).additionalContext, "The l2-a Worker launched with resolved model gateway/general.");
+    assert.match(launch("l2-a", "other/general", env).additionalContext, /expected gateway\/general but launched with resolved model other\/general/);
+    assert.equal(launch("l1-a", "gateway/small"), null);
+    assert.match(launch("l1-a", "other/small").additionalContext, /expected gateway\/small but launched with resolved model other\/small/);
+    assert.equal(launch("l2-a", undefined, env), null);
+    assert.equal(launch("unknown", route), null);
+  });
+
+  test("neutral profile keeps L3 approval and disallows named model overrides", () => {
+    bundle.profile = "neutral";
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    const dispatch = (subagentType, model) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", tool_name: "Agent",
+      tool_input: { subagent_type: subagentType, model },
+    }));
+    assert.equal(dispatch("l2-a"), null);
+    assert.equal(dispatch("l2-a", "sonnet").permissionDecision, "deny");
+    assert.equal(dispatch("l3").permissionDecision, "ask");
   });
 
   test("opus requires approval", () => {
