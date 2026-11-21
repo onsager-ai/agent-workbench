@@ -18,6 +18,19 @@ Coding agents work best when one session keeps the plan and cheaper ones do the 
 - **Questions you can answer quickly.** When the agent needs a decision, it asks with your harness's question tool and puts its recommended option first.
 - **Handoffs survive.** The Manager records what you asked for and what you approved, so a later session or another machine can pick up the task.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/how-it-works-dark.svg">
+    <img src="docs/media/how-it-works-light.svg" alt="You talk to a Manager session. It sends work to Haiku, Sonnet or Opus Workers, checks their results and hands tasks over to other Managers. A policy hook checks every step." width="720">
+  </picture>
+</p>
+
+For what you get, how it works and how it compares with similar projects, see the [overview](docs/overview.md).
+
+A real Claude Code session after setup: the Manager sends a bug fix to a Haiku Worker, then checks the diff, the commit and the tests itself before reporting.
+
+<img src="docs/media/session.gif" alt="Claude Code session: asked to have a Worker fix an off-by-one bug, the Manager writes a brief, a Haiku Worker commits the fix on a task branch, and the Manager verifies the diff, commit and tests before reporting." width="720">
+
 ## Quick start
 
 1. Set up Agent Workbench:
@@ -27,6 +40,8 @@ Coding agents work best when one session keeps the plan and cheaper ones do the 
    ```
 
    This installs the skills and applies the shared global instructions and setup tools.
+
+   <img src="docs/media/demo.svg" alt="Terminal demo: setup installs the skills, Worker subagents and policy hook. In an agent session the hook then blocks a commit on main and CI polling, asks before an Opus Worker, and sends a prose question back." width="720">
 
 2. If you use Codex, review and trust its hooks once:
 
