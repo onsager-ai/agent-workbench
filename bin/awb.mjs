@@ -52,8 +52,8 @@ if (command === "help" || command === "--help" || command === "-h") {
 }
 
 const script = path.join(home, ".agents", "skills", "workbench-setup", "scripts", "workbench.mjs");
-const run = (executable, parameters) => {
-  const result = spawnSync(executable, parameters, { stdio: "inherit" });
+const run = (executable, parameters, options = {}) => {
+  const result = spawnSync(executable, parameters, { ...options, stdio: "inherit" });
   if (result.error) {
     console.error(`awb: ${result.error.message}`);
     return 1;
@@ -77,7 +77,7 @@ if (command === "setup") {
   const result = run(skillArgs[0], [
     ...skillArgs.slice(1), "add", "onsager-ai/agent-workbench", "-g", "-a", "codex",
     "-a", "claude-code", "--skill", "*", "-y",
-  ]);
+  ], { env: { ...process.env, HOME: home } });
   if (result !== 0) process.exit(result);
   const installResult = runWorkbench(["install"]);
   if (installResult !== 0) process.exit(installResult);
