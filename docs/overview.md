@@ -43,6 +43,12 @@ It is plain Markdown skills plus one Node script for the hook. It never writes i
 
 Model tiers, efforts, timeouts and optional cost caps live in one YAML file, and you can override them per user or per work directory. See the [reference](reference.md).
 
+### In T3 Code
+
+The same request in T3 Code, run in a throwaway project after setup. The Manager hands the fix to a Haiku Worker, which shows up as its own agent in the thread. The Manager then reruns the tests and reports the branch, commit and diff (shown at 6x speed).
+
+<img src="media/t3-session.gif" alt="T3 Code thread: the user asks for a Worker to fix an off-by-one bug. A Haiku Worker commits the fix on a task branch, and the Manager reports the commit, the test result and the two changed files." width="720">
+
 ## How it compares
 
 Most tools in this space do one of three things: run many agents side by side, ship a large catalog of prompts, or teach a development method. Agent Workbench is a thin rules layer for one Manager session and its native subagents.
