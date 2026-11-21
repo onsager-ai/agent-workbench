@@ -419,23 +419,28 @@ function protectedBranchGit(command, event) {
   return null;
 }
 
+function transcriptTail(file, maxBytes) {
+  const descriptor = fs.openSync(file, "r");
+  try {
+    const size = fs.fstatSync(descriptor).size;
+    const length = Math.min(size, maxBytes);
+    const offset = size - length;
+    const tail = Buffer.alloc(length);
+    const bytes = fs.readSync(descriptor, tail, 0, length, offset);
+    return { text: tail.toString("utf8", 0, bytes), truncated: offset > 0 };
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 function lastAssistantText(event) {
   const message = event.last_assistant_message;
   if (typeof message === "string") return message;
   const file = event.transcript_path;
   if (typeof file !== "string") return "";
-  let tail;
-  const descriptor = fs.openSync(file, "r");
-  try {
-    const size = fs.fstatSync(descriptor).size;
-    const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
-    tail = Buffer.alloc(length);
-    fs.readSync(descriptor, tail, 0, length, size - length);
-  } finally {
-    fs.closeSync(descriptor);
-  }
+  const { text } = transcriptTail(file, TRANSCRIPT_TAIL_BYTES);
   const entries = [];
-  for (const line of tail.toString("utf8").split(/\r\n|\r|\n/)) {
+  for (const line of text.split(/\r\n|\r|\n/)) {
     let entry;
     try {
       entry = JSON.parse(line);
@@ -535,6 +540,67 @@ function selectWorkerProfile(bundle, event) {
   return { config, profile, cwd };
 }
 
+const HANDOVER_TAIL_BYTES = 64 * 1024;
+const HANDOVER_STEP = 10_000;
+const tokenCount = (value) => Number.isSafeInteger(value) && value >= 0;
+
+function lastInputTokens(file, codex) {
+  const { text, truncated } = transcriptTail(file, HANDOVER_TAIL_BYTES);
+  const lines = text.split("\n");
+  if (truncated) lines.shift();
+  for (const line of lines.reverse()) {
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (codex) {
+      if (entry?.type !== "event_msg" || entry.payload?.type !== "token_count") continue;
+      const input = entry.payload.info?.last_token_usage?.input_tokens;
+      if (tokenCount(input) && input > 0) return input;
+    } else {
+      if (entry?.type === "system" && entry.subtype === "compact_boundary") return;
+      if (entry?.type !== "assistant" || entry.isSidechain || entry.message?.model === "<synthetic>") continue;
+      const usage = entry.message?.usage;
+      if (!usage) continue;
+      const counts = [usage.input_tokens,
+        usage.cache_read_input_tokens === undefined ? 0 : usage.cache_read_input_tokens,
+        usage.cache_creation_input_tokens === undefined ? 0 : usage.cache_creation_input_tokens];
+      if (!counts.every(tokenCount)) continue;
+      const input = counts.reduce((sum, count) => sum + count, 0);
+      if (tokenCount(input) && input > 0) return input;
+    }
+  }
+}
+
+function managerHandoverContext(workers, event, codex) {
+  if (!workers || Object.hasOwn(event, "agent_id") || process.env.AWB_ROLE === "worker" ||
+      typeof event.transcript_path !== "string" || typeof event.session_id !== "string" || !event.session_id) return;
+  const bundle = JSON.parse(fs.readFileSync(workers, "utf8"));
+  const threshold = selectWorkerProfile(bundle, event).config.policy.context?.manager_handover_tokens;
+  if (!tokenCount(threshold) || threshold === 0) return;
+  const input = lastInputTokens(event.transcript_path, codex);
+  if (input === undefined) return;
+
+  const directory = path.join(path.dirname(workers), "manager-handover");
+  const key = crypto.createHash("sha256").update(event.session_id).digest("hex");
+  const state = path.join(directory, key);
+  if (input < threshold && !fs.existsSync(state)) return;
+  fs.mkdirSync(directory, { recursive: true });
+  return withLock(`${state}.lock`, () => {
+    if (input < threshold) {
+      fs.rmSync(state, { force: true });
+      return;
+    }
+    let previous = 0;
+    try { previous = Number(fs.readFileSync(state, "utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (previous > 0 && input - previous < HANDOVER_STEP) return;
+    const temporary = `${state}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, String(input), { mode: 0o600 });
+    fs.renameSync(temporary, state);
+    return `Manager context is about ${Math.round(input / 1000)}k tokens (threshold ${threshold / 1000}k). ` +
+      "At the next phase boundary, write the lane state with manage-lane's handover and continue in a fresh session.";
+  });
+}
+
 function dispatchApproval(file, event, tier) {
   try {
     if (file === null) throw new Error("missing workers path");
@@ -618,6 +684,12 @@ async function main() {
   try {
     const event = JSON.parse(fs.readFileSync(0, "utf8"));
     if (!isDict(event)) return;
+    const name = event.hook_event_name;
+    if (name === "UserPromptSubmit" || (!codex && name === "PostToolBatch")) {
+      const context = managerHandoverContext(workers, event, codex);
+      if (context) emit({ hookSpecificOutput: { hookEventName: name, additionalContext: context } });
+      return;
+    }
     if (event.hook_event_name === "PostToolUse") {
       if (event.tool_name !== "Agent" && event.tool_name !== "Task") return;
       const context = postToolModelContext(workers, event);

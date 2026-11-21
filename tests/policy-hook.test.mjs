@@ -67,6 +67,103 @@ describe("policy hook", () => {
     child.stdin.end(JSON.stringify(event));
   });
 
+  const claudeUsage = (input_tokens, extra = {}) => ({
+    type: "assistant", message: { usage: { input_tokens, ...extra } },
+  });
+  const codexUsage = (input_tokens) => ({ type: "event_msg", payload: { type: "token_count", info: {
+    total_token_usage: { input_tokens: 400_000 },
+    last_token_usage: { input_tokens, cached_input_tokens: 30_000, total_tokens: input_tokens + 5_000 },
+  } } });
+
+  function handover(records, { event = {}, host = "claude", role = "" } = {}) {
+    const transcript = path.join(directory, "transcript.jsonl");
+    if (records !== null) fs.writeFileSync(transcript, records.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    const result = run(JSON.stringify({
+      hook_event_name: "UserPromptSubmit", session_id: "manager", transcript_path: transcript, ...event,
+    }), { env: { ...process.env, AWB_ROLE: role }, args: ["--workers", workers, "--host", host] });
+    return result.stdout ? JSON.parse(result.stdout) : null;
+  }
+
+  test("Claude Manager handover counts all input buckets and repeats after 10,000 more tokens", () => {
+    assert.equal(handover([claudeUsage(99_999)]), null);
+    const threshold = [claudeUsage(12_000, { cache_read_input_tokens: 80_000, cache_creation_input_tokens: 8_000 })];
+    assert.deepEqual(handover(threshold, { event: { hook_event_name: "PostToolBatch", agent_type: "root" } }), {
+      hookSpecificOutput: {
+        hookEventName: "PostToolBatch",
+        additionalContext: "Manager context is about 100k tokens (threshold 100k). At the next phase boundary, write the lane state with manage-lane's handover and continue in a fresh session.",
+      },
+    });
+    assert.equal(handover(threshold), null);
+    assert.equal(handover([claudeUsage(109_999)]), null);
+    assert.match(handover([claudeUsage(110_000)]).hookSpecificOutput.additionalContext, /about 110k tokens/);
+    assert.equal(handover([claudeUsage(119_999)]), null);
+    const fresh = handover(threshold, { event: { session_id: "fresh" } });
+    assert.match(fresh.hookSpecificOutput.additionalContext, /about 100k tokens/);
+  });
+
+  test("handover skips native subagents and explicitly labeled Workers on both hosts", () => {
+    for (const [host, row] of [["claude", claudeUsage(101_000)], ["codex", codexUsage(101_000)]]) {
+      assert.equal(handover([row], { host, event: { agent_id: "child" } }), null);
+      assert.equal(handover([row], { host, role: "worker" }), null);
+    }
+    assert.ok(!fs.existsSync(path.join(directory, "manager-handover")));
+  });
+
+  test("Claude handover ignores usage before compaction and waits for fresh root usage", () => {
+    const rows = [claudeUsage(150_000), { type: "system", subtype: "compact_boundary" }];
+    assert.equal(handover(rows), null);
+    rows.push({ ...claudeUsage(150_000), isSidechain: true });
+    const synthetic = claudeUsage(150_000);
+    synthetic.message.model = "<synthetic>";
+    rows.push(synthetic, claudeUsage("150000"));
+    assert.equal(handover(rows), null);
+    rows.push(claudeUsage(102_000));
+    assert.match(handover(rows).hookSpecificOutput.additionalContext, /about 102k tokens/);
+  });
+
+  test("a fresh below-threshold sample clears the session's last reminder after compaction", () => {
+    const rows = [claudeUsage(105_000)];
+    assert.match(handover(rows).hookSpecificOutput.additionalContext, /about 105k tokens/);
+    rows.push({ type: "system", subtype: "compact_boundary" });
+    assert.equal(handover(rows), null);
+    assert.equal(handover([...rows, claudeUsage(100_000)]), null);
+    rows.push(claudeUsage(99_999));
+    assert.equal(handover(rows), null);
+    rows.push(claudeUsage(100_000));
+    assert.match(handover(rows).hookSpecificOutput.additionalContext, /about 100k tokens/);
+  });
+
+  test("handover returns silently when usage is absent or outside the transcript tail", () => {
+    assert.equal(handover(null), null);
+    assert.equal(handover([{ type: "assistant" }]), null);
+    assert.equal(handover([
+      claudeUsage(150_000), { type: "user", message: "x".repeat(64 * 1024) },
+    ]), null);
+    fs.appendFileSync(path.join(directory, "transcript.jsonl"), "{truncated");
+    assert.equal(handover(null), null);
+  });
+
+  test("Codex handover uses the last request input from rollout token_count events", () => {
+    assert.equal(handover([codexUsage(99_999)], { host: "codex" }), null);
+    const rows = [codexUsage(115_000), codexUsage(104_000), { type: "event_msg", payload: { type: "token_count", info: null } }];
+    assert.equal(handover(rows, { host: "codex", event: { hook_event_name: "PostToolBatch" } }), null);
+    const result = handover(rows, { host: "codex" });
+    assert.deepEqual(Object.keys(result), ["hookSpecificOutput"]);
+    assert.equal(result.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+    assert.match(result.hookSpecificOutput.additionalContext, /about 104k tokens/);
+  });
+
+  test("handover uses the effective profile threshold and null disables it", () => {
+    bundle.profiles.no_reminder = structuredClone(bundle.base);
+    bundle.profiles.no_reminder.policy.context.manager_handover_tokens = null;
+    bundle.select = [{ path: directory, profile: "no_reminder" }];
+    bundle.base.policy.context.manager_handover_tokens = 120_000;
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    const rows = [claudeUsage(121_000)];
+    assert.equal(handover(rows, { event: { cwd: directory } }), null);
+    assert.match(handover(rows).hookSpecificOutput.additionalContext, /threshold 120k/);
+  });
+
   function t3Env(thread = "mcp:launch:5f9a6b10-be25-429c-abb6-1ebd74859825") {
     const home = path.join(directory, "t3");
     fs.mkdirSync(path.join(home, "userdata"), { recursive: true });

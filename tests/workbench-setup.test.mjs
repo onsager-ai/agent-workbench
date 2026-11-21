@@ -921,6 +921,8 @@ describe("workbench setup", () => {
     }]);
     const stopEntry = settings.hooks.Stop.at(-1);
     assert.deepEqual(stopEntry, { hooks: [{ type: "command", command: f.hookCommand }] });
+    assert.deepEqual(settings.hooks.PostToolBatch, [stopEntry]);
+    assert.deepEqual(settings.hooks.UserPromptSubmit, [stopEntry]);
     for (const entry of entries.slice(1)) {
       assert.deepEqual(entry.hooks, [{ type: "command", command: f.hookCommand }]);
       fs.accessSync(f.hook, fs.constants.X_OK);
@@ -928,12 +930,14 @@ describe("workbench setup", () => {
     assert.deepEqual(f.stateJson().hooks, [
       ...entries.slice(1).map((entry) => ({ ...entry, key: `PreToolUse:${entry.matcher}` })),
       { ...settings.hooks.PostToolUse[0], key: "PostToolUse:Agent|Task" },
+      { ...stopEntry, key: "PostToolBatch" },
+      { ...stopEntry, key: "UserPromptSubmit" },
       { ...stopEntry, key: "Stop" },
     ]);
     assert.deepEqual(JSON.parse(f.run("status").stdout).hooks, {
       "Agent|Task": "applied", Bash: "applied",
       "PostToolUse:Agent|Task": "applied", "mcp__t3-code__delegate_task": "applied",
-      "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
+      "mcp__t3-code__t3_thread_send": "applied", PostToolBatch: "applied", UserPromptSubmit: "applied", Stop: "applied",
     });
     const postEntry = settings.hooks.PostToolUse[0];
     settings.hooks.PostToolUse = [];
@@ -946,7 +950,7 @@ describe("workbench setup", () => {
     assert.deepEqual(f.snapshot(), before);
     f.run("uninstall");
     settings = f.json(settingsPath);
-    assert.deepEqual(settings.hooks, { PreToolUse: [foreign], PostToolUse: [], Stop: [{ hooks: [] }] });
+    assert.deepEqual(settings.hooks, { PreToolUse: [foreign], PostToolUse: [], PostToolBatch: [], UserPromptSubmit: [], Stop: [{ hooks: [] }] });
     assert.equal(settings.model, "personal");
     assert.deepEqual(settings.env, { OTHER: "yes" });
   });
@@ -960,16 +964,18 @@ describe("workbench setup", () => {
     const fresh = f.stateJson();
     const settings = f.json(settingsPath);
     const post = fresh.hooks.find((entry) => entry.key === "PostToolUse:Agent|Task");
-    const older = fresh.hooks.filter((entry) => entry !== post).map(({ key, ...entry }) => {
+    const older = fresh.hooks.filter((entry) => entry !== post && !["PostToolBatch", "UserPromptSubmit"].includes(entry.key)).map(({ key, ...entry }) => {
       if (key === "PreToolUse:Agent|Task") return { ...entry, key: "Agent|Task" };
       if (key === "Stop") return { ...entry, key };
       return entry;
     });
     const olderSettings = { ...settings.hooks };
     delete olderSettings.PostToolUse;
+    delete olderSettings.PostToolBatch;
+    delete olderSettings.UserPromptSubmit;
     for (const split of [false, true]) {
       f.write(statePath, JSON.stringify({ ...fresh, hooks: older, ...(split ? { post_hooks: [post] } : {}) }));
-      f.write(settingsPath, JSON.stringify({ ...settings, hooks: split ? settings.hooks : olderSettings }));
+      f.write(settingsPath, JSON.stringify({ ...settings, hooks: split ? { ...olderSettings, PostToolUse: settings.hooks.PostToolUse } : olderSettings }));
       const status = JSON.parse(f.run("status").stdout).hooks;
       assert.equal(status["Agent|Task"], "applied");
       assert.equal(status.Stop, "applied");
@@ -1005,7 +1011,7 @@ describe("workbench setup", () => {
     fs.writeFileSync(settingsPath, JSON.stringify(settings));
     assert.deepEqual(JSON.parse(f.run("status").stdout).hooks, {
       "Agent|Task": "missing", Bash: "applied", "PostToolUse:Agent|Task": "applied",
-      "mcp__t3-code__delegate_task": "applied", "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
+      "mcp__t3-code__delegate_task": "applied", "mcp__t3-code__t3_thread_send": "applied", PostToolBatch: "applied", UserPromptSubmit: "applied", Stop: "applied",
     });
     f.run("install");
     const reapplied = f.json(settingsPath).hooks.PreToolUse;
@@ -1021,7 +1027,7 @@ describe("workbench setup", () => {
     f.run("install");
     const settingsPath = path.join(f.home, ".claude/settings.json");
     const settings = f.json(settingsPath);
-    for (const event of ["PreToolUse", "PostToolUse"]) {
+    for (const event of ["PreToolUse", "PostToolUse", "PostToolBatch", "UserPromptSubmit"]) {
       settings.hooks[event].push(settings.hooks[event][0]);
       fs.writeFileSync(settingsPath, JSON.stringify(settings));
       const data = read(settingsPath);
@@ -1041,7 +1047,7 @@ describe("workbench setup", () => {
     const saved = f.stateJson().hooks;
     assert.deepEqual(saved.map((entry) => entry.key), [
       "PreToolUse:Agent|Task", "PreToolUse:mcp__t3-code__delegate_task", "PreToolUse:mcp__t3-code__t3_thread_send",
-      "PostToolUse:Agent|Task", "Stop",
+      "PostToolUse:Agent|Task", "PostToolBatch", "UserPromptSubmit", "Stop",
     ]);
     f.run("uninstall");
     const hooks = f.json(settingsPath).hooks;
@@ -1057,7 +1063,7 @@ describe("workbench setup", () => {
     f.run("install");
     assert.deepEqual(f.stateJson().hooks, []);
     assert.deepEqual(f.json(path.join(f.home, ".claude/settings.json")).hooks,
-      { PreToolUse: [], PostToolUse: [], Stop: [] });
+      { PreToolUse: [], PostToolUse: [], PostToolBatch: [], UserPromptSubmit: [], Stop: [] });
   });
 
   test("policy hooks invalid configuration conflicts without writes", () => {
@@ -1082,24 +1088,49 @@ describe("workbench setup", () => {
     f.run("install");
     let file = f.json(f.codexHooksPath);
     assert.deepEqual(Object.keys(file), ["note", "hooks"]);
-    assert.deepEqual(Object.keys(file.hooks), ["PreToolUse", "SessionStart", "Stop"]);
+    assert.deepEqual(Object.keys(file.hooks), ["PreToolUse", "SessionStart", "Stop", "UserPromptSubmit"]);
     assert.deepEqual(file.hooks.PreToolUse[0], foreign);
     assert.deepEqual(file.hooks.PreToolUse.slice(1).map((entry) => entry.matcher), CODEX_MATCHERS);
     for (const entry of file.hooks.PreToolUse.slice(1)) assert.deepEqual(entry.hooks, [codexHandler(f)]);
     assert.deepEqual(file.hooks.Stop, [{ hooks: [codexHandler(f)] }]);
-    assert.deepEqual(f.stateJson().codex_hooks, [...file.hooks.PreToolUse.slice(1), file.hooks.Stop[0]]);
-    assert.deepEqual(f.stateJson().hooks.length, 6);
+    assert.deepEqual(file.hooks.UserPromptSubmit, [{ hooks: [codexHandler(f)] }]);
+    assert.deepEqual(f.stateJson().codex_hooks, [
+      ...file.hooks.PreToolUse.slice(1).map((entry) => ({ ...entry, event: "PreToolUse" })),
+      { ...file.hooks.Stop[0], event: "Stop" },
+      { ...file.hooks.UserPromptSubmit[0], event: "UserPromptSubmit" },
+    ]);
+    assert.equal(f.stateJson().hooks.length, 8);
     assert.deepEqual(JSON.parse(f.run("status").stdout).codex_hooks, {
       "Agent|spawn_agent": "applied", Bash: "applied", mcp__t3_code__delegate_task: "applied",
-      mcp__t3_code__t3_thread_send: "applied", Stop: "applied",
+      mcp__t3_code__t3_thread_send: "applied", Stop: "applied", UserPromptSubmit: "applied",
     });
     const before = f.snapshot();
     assert.match(f.run("install").stdout, /no-op/);
     assert.deepEqual(f.snapshot(), before);
     f.run("uninstall");
     file = f.json(f.codexHooksPath);
-    assert.deepEqual(file.hooks, { PreToolUse: [foreign], SessionStart: [], Stop: [] });
+    assert.deepEqual(file.hooks, { PreToolUse: [foreign], SessionStart: [], Stop: [], UserPromptSubmit: [] });
     assert.equal(file.note, "keep");
+  });
+
+  test("older Codex hook ownership upgrades on reinstall", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    const statePath = path.join(f.state, "state.json");
+    const fresh = f.stateJson();
+    const file = f.json(f.codexHooksPath);
+    const { UserPromptSubmit, ...hooks } = file.hooks;
+    const older = fresh.codex_hooks.filter((entry) => entry.event !== "UserPromptSubmit")
+      .map(({ event, ...entry }) => entry);
+    f.write(statePath, JSON.stringify({ ...fresh, codex_hooks: older }));
+    f.write(f.codexHooksPath, JSON.stringify({ hooks }));
+    const status = JSON.parse(f.run("status").stdout).codex_hooks;
+    assert.equal(status.Stop, "applied");
+    assert.equal(status.UserPromptSubmit, undefined);
+    f.run("install");
+    assert.deepEqual(f.stateJson().codex_hooks, fresh.codex_hooks);
+    assert.deepEqual(f.json(f.codexHooksPath).hooks.UserPromptSubmit, UserPromptSubmit);
   });
 
   test("codex hooks are skipped without a codex directory or orchestration", () => {
@@ -1184,6 +1215,7 @@ describe("workbench setup", () => {
     assert.equal(codexHookHash("PostToolUse", "^Bash$", { type: "command", command }),
       "sha256:9eef43ad6f26b1f9b94f318a50445f8bb62c363da08152a2966b73d308bf42ba");
     assert.equal(codexHookKey("/h/.codex/hooks.json", "PreToolUse", 2), "/h/.codex/hooks.json:pre_tool_use:2:0");
+    assert.equal(codexHookKey("/h/.codex/hooks.json", "UserPromptSubmit", 0), "/h/.codex/hooks.json:user_prompt_submit:0:0");
     assert.equal(codexHookKey("/h/.codex/hooks.json", "Stop", 0), "/h/.codex/hooks.json:stop:0:0");
     // Stop ignores the matcher, so the hash does not depend on it.
     assert.equal(codexHookHash("Stop", "x", { command: "c", timeout: 30 }), codexHookHash("Stop", null, { command: "c", timeout: 30 }));
@@ -1221,10 +1253,13 @@ describe("workbench setup", () => {
     const toml = read(config).toString("utf8");
     assert.ok(toml.includes(`[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = "${codexHookHash("PreToolUse", "Bash", handler)}"\n`));
     assert.ok(toml.includes(`${f.codexHooksPath}:stop:0:0`));
-    assert.equal(f.stateJson().codex_trust.length, 5);
+    const promptKey = `${f.codexHooksPath}:user_prompt_submit:0:0`;
+    const promptHash = codexHookHash("UserPromptSubmit", undefined, hooks.UserPromptSubmit[0].hooks[0]);
+    assert.ok(toml.includes(`[hooks.state.${JSON.stringify(promptKey)}]\ntrusted_hash = "${promptHash}"\n`));
+    assert.equal(f.stateJson().codex_trust.length, 6);
     assert.deepEqual(JSON.parse(f.run("status").stdout).codex_trust, {
       "Agent|spawn_agent": "trusted", Bash: "trusted", mcp__t3_code__delegate_task: "trusted",
-      mcp__t3_code__t3_thread_send: "trusted", Stop: "trusted",
+      mcp__t3_code__t3_thread_send: "trusted", Stop: "trusted", UserPromptSubmit: "trusted",
     });
     // A second install neither prompts nor changes anything.
     const before = f.snapshot();
@@ -1246,7 +1281,7 @@ describe("workbench setup", () => {
       { input: "y\n", encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: "" } });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /Trust agent-workbench's Codex hooks now\? \[y\/N\]/);
-    assert.equal(f.stateJson().codex_trust.length, 5);
+    assert.equal(f.stateJson().codex_trust.length, 6);
     assert.equal(JSON.parse(f.run("status").stdout).codex_trust.Bash, "trusted");
   });
 
@@ -1284,7 +1319,7 @@ describe("workbench setup", () => {
     const lines = quiet(() => trustSetup.trust());
     assert.ok(lines.some((line) => line.includes("foreign") && line.includes(foreignKey)));
     assert.equal(JSON.parse(f.run("status").stdout).codex_trust["Agent|spawn_agent"], "modified");
-    assert.equal(f.stateJson().codex_trust.length, 4);
+    assert.equal(f.stateJson().codex_trust.length, 5);
     // Edit one owned table: uninstall keeps it and removes the rest.
     const edited = read(config).toString("utf8").replace(/(pre_tool_use:1:0"\]\ntrusted_hash = ")sha256:[0-9a-f]+/, "$1sha256:edited");
     fs.writeFileSync(config, edited);
@@ -1293,6 +1328,7 @@ describe("workbench setup", () => {
     assert.ok(left.includes("sha256:foreign"));
     assert.ok(left.includes("sha256:edited"));
     assert.ok(!left.includes("stop:0:0"));
+    assert.ok(!left.includes("user_prompt_submit:0:0"));
   });
 
   test("null settings sections are reported as invalid configuration", () => {
@@ -1397,7 +1433,7 @@ profiles:
     tiers:
       glm: {harness: claude, model: glm, effort: high}
       sonnet: null
-    policy: {context: {max_tokens: 12345}}
+    policy: {context: {max_tokens: 12345, manager_handover_tokens: null}}
     ladder:
       - {level: junior, tiers: [haiku]}
       - {level: senior, tiers: [opus]}
@@ -1425,6 +1461,8 @@ select:
     assert.equal(bundle.profile, "codex");
     assert.equal(bundle.select[0].path, fs.realpathSync(work));
     assert.equal(bundle.profiles.corporate.policy.context.max_tokens, 12345);
+    assert.equal(bundle.profiles.corporate.policy.context.manager_handover_tokens, null);
+    assert.equal(bundle.base.policy.context.manager_handover_tokens, 100000);
     assert.equal(f.json(path.join(f.home, ".claude/settings.json")).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "300000");
     f.run("uninstall");
     assert.ok(!exists(path.join(f.state, "workers.json")));
@@ -1472,6 +1510,8 @@ select:
     const invalid = [
       "version: 1", "roles: {}", "sol_weekly_brake_percent: 100", "tiers: []",
       "defaults: {timeout_s: false}", "policy: {context: {oops: 1}}",
+      "policy: {context: {manager_handover_tokens: 0}}", "policy: {context: {manager_handover_tokens: -1}}",
+      "policy: {context: {manager_handover_tokens: 100000.0}}", "policy: {context: {manager_handover_tokens: false}}",
       "select: [{path: ~/work, profile: missing}]", "select: {}", "profile: missing",
       "profiles: {unused: {tiers: {luna: {effort: false}}}}",
       "profiles: {unused: {roles: {}}}", "tiers: {luna: {cli: codex}}",

@@ -22,6 +22,8 @@ Model IDs, efforts, timeouts, optional monetary caps, rework policy, and context
 
 Worker configuration is YAML loaded with the vendored `yaml` package without `npm install` or network access. Put partial overrides in `~/.config/agent-workbench/workers.yml` (or the absolute `$XDG_CONFIG_HOME` equivalent). Mappings merge, lists replace, and null tiers are deleted. Run `agent-workbench workers --cwd PATH` to inspect the selected profile and resolved configuration, then `agent-workbench install` to apply agent and hook changes.
 
+`policy.context.manager_handover_tokens` sets the Manager handover reminder threshold in input tokens. It accepts a positive integer or `null` to disable it and defaults to `100000`. The hook uses the effective profile and repeats after another 10,000 tokens above the last reminder in the same session. A fresh sample below the threshold resets the reminder. Workers keep native compaction at `policy.context.max_tokens`.
+
 For a corporate setup, add a profile and select it for your work directory:
 
 ```yaml
@@ -186,11 +188,12 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 | `~/.codex/AGENTS.md` | Native Codex symlink to the shared file |
 | `~/.claude/CLAUDE.md` | Existing Claude text plus native `@~/.agents/AGENTS.md` import |
 | `~/.local/bin/agent-workbench` | Thin launcher for the installed setup skill |
-| `~/.local/state/agent-workbench/workers.json` | Owned resolved base and profile policy used by the dispatch hook |
+| `~/.local/state/agent-workbench/workers.json` | Owned resolved base and profile policy used by the policy hook |
 | `~/.claude/agents/<tier>.md` | Generated Claude Code subagents, one per routable Worker tier when `orchestrate-harnesses` is installed |
 | `~/.claude/settings.json` → `hooks.PreToolUse` | Owned hooks for L3 approval (Opus by default), GitHub polling policy, and protection of local `main`/`master` branches when `orchestrate-harnesses` is installed |
-| `~/.codex/hooks.json` and `[hooks.state]` in `~/.codex/config.toml` | Owned Codex policy hooks and, after you confirm, their trust entries when `orchestrate-harnesses` is installed and `~/.codex` exists |
-| `~/.local/state/agent-workbench/` | Ownership, hashes, exclusive lock, private backups |
+| `~/.claude/settings.json` → `hooks.PostToolBatch`, `hooks.UserPromptSubmit` | Manager handover reminders from the transcript tail |
+| `~/.codex/hooks.json` and `[hooks.state]` in `~/.codex/config.toml` | Owned Codex policy hooks, including the `UserPromptSubmit` Manager handover reminder, and their trust entries after you confirm when `orchestrate-harnesses` is installed and `~/.codex` exists |
+| `~/.local/state/agent-workbench/` | Ownership, hashes, exclusive lock, private backups, and the last reminder token count per session |
 
 ## Managed files and ownership
 
@@ -240,7 +243,7 @@ Install Node.js 22.20 or newer, then run the global install command above. To ke
 | --- | --- |
 | `skills/workbench-setup/scripts/workbench.mjs` | Optional install/update/status/uninstall of shared global instructions, launcher, and private backups |
 | `skills/workbench-setup/scripts/workbench.py` | Four-line shim handing off to `workbench.mjs`, so launchers installed before the Node port can still update; may be removed in a later release |
-| `skills/orchestrate-harnesses/scripts/policy-hook` | Claude hook entry point (`policy-hook.mjs` holds the logic) |
+| `skills/orchestrate-harnesses/scripts/policy-hook` | Claude and Codex hook entry point (`policy-hook.mjs` holds the logic) |
 | `tests/*.test.mjs` | `node --test` checks for package layout, model defaults, the hook, and installer behavior; no orchestration service |
 
 ## Releasing @onsager/awb
