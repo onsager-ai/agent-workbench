@@ -39,7 +39,7 @@ const CODEX_HOOK_TIMEOUT = 30;
 
 export class Conflict extends Error {}
 
-const INTEGER_KEYS = new Set(["version", "timeout_s", "max_auto_rework", "max_tokens", "gateway_window", "codex_window"]);
+const INTEGER_KEYS = new Set(["version", "timeout_s", "max_auto_rework", "max_tokens", "gateway_window", "codex_window", "manager_handover_tokens"]);
 
 // Parse like PyYAML's safe_load: YAML 1.1, repeated keys keep the last value, keys must be strings
 // (YAML 1.1 reads `no`, `on` and `null` as non-strings), and floats are not accepted in integer fields.
@@ -193,7 +193,7 @@ function validateWorkerShape(config, { profile = false } = {}) {
       }
     }
     if (has(config.policy, "context")) {
-      keys(config.policy.context, ["max_tokens", "gateway_window", "codex_window"], "policy.context");
+      keys(config.policy.context, ["max_tokens", "gateway_window", "codex_window", "manager_handover_tokens"], "policy.context");
     }
   }
   if (has(config, "ladder")) {
@@ -262,7 +262,7 @@ export function resolveWorkerConfig(config) {
     throw new Conflict("policy.max_auto_rework must be a nonnegative integer; correct it in workers.yml");
   }
   const context = policy.context ?? {};
-  for (const key of ["max_tokens", "gateway_window", "codex_window"]) {
+  for (const key of ["max_tokens", "gateway_window", "codex_window", "manager_handover_tokens"]) {
     const value = context[key];
     if (key !== "max_tokens" && value == null) continue;
     if (!isInt(value) || value <= 0) {
