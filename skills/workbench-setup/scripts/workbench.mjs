@@ -791,7 +791,8 @@ export class Setup {
         agents[name] = Buffer.from("---\n" + `name: ${name}\n` + `description: ${dumps(description)}\n` +
           `model: ${dumps(model)}\n` + `effort: ${dumps(tier.effort)}\n---\n` +
           "<!-- Managed by agent-workbench; ownership is recorded in state.json. -->\n\n" + body);
-        targets[name] = [model, tier.effort];
+        // A frontmatter alias resolves in the Claude session, so catalog checks use literal IDs only.
+        if (!/^(haiku|sonnet|opus|fable)$/.test(model)) targets[name] = [model, tier.effort];
       }
     }
     if (warn) this.warnCatalog(targets);

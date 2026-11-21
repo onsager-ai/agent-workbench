@@ -38,6 +38,8 @@ Coding agents work best when one session keeps the plan and cheaper ones do the 
 
 For manual skill installation, updates, project-local installs, `awb prune` cleanup, and detailed configuration, see the [reference](docs/reference.md). If you installed the old `thermal` launcher or the former `thermal-guard` or `disk-cleanup` skill, follow the [upgrade steps](docs/reference.md#upgrade-to-host-ops). Setup does not install agent tools or authenticate harnesses.
 
+Gateway and CC Switch users can copy the [neutral Worker profile](docs/reference.md#neutral-profile-for-provider-switching) to use plain Worker names and follow provider model aliases.
+
 ## What setup changes
 
 Setup writes only to your home directory and never to your repositories.

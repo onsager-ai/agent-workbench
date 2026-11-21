@@ -801,6 +801,30 @@ describe("workbench setup", () => {
     assert.ok(!warnings.includes("is not listed"));
   });
 
+  test("the documented neutral override generates aliases and supports a pinned fallback", () => {
+    const f = new Fixture();
+    const snippet = read(path.join(ROOT, "tests/fixtures/neutral-workers.yml")).toString("utf8");
+    f.installOrchestration();
+    f.write(f.overridePath, snippet);
+    f.run("install");
+    const workers = JSON.parse(f.run("workers").stdout);
+    assert.equal(workers.profile, "neutral");
+    const aliases = { fast: "haiku", standard: "sonnet", expert: "opus" };
+    for (const [name, alias] of Object.entries(aliases)) {
+      assert.ok(fs.readFileSync(f.agent(name), "utf8").includes(`model: "${alias}"\neffort: "medium"\n`));
+    }
+    assert.deepEqual(Object.keys(f.stateJson().agents).sort(), ["expert", "fast", "haiku", "opus", "sonnet", "standard"]);
+    const { warnings } = inspectCatalog(f, { stdout: ["haiku", "sonnet", "opus"]
+      .map((alias) => `auto/claude-${alias}-5-5  Claude ${alias}  low/medium`).join("\n") });
+    assert.equal(warnings, "");
+    f.write(f.overridePath, snippet
+      .replace("    ladder:", "      standard-backup: {harness: claude, model: gateway/fallback}\n    ladder:")
+      .replace("tiers: [standard]", "tiers: [standard, standard-backup]"));
+    f.run("install");
+    assert.deepEqual(JSON.parse(f.run("workers").stdout).ladder[1].tiers, ["standard", "standard-backup"]);
+    assert.ok(fs.readFileSync(f.agent("standard-backup"), "utf8").includes('model: "gateway/fallback"\n'));
+  });
+
   test("catalog validation skips when magpie is absent", () => {
     const f = new Fixture();
     f.installOrchestration();

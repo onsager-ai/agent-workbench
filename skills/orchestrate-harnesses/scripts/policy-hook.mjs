@@ -460,21 +460,28 @@ function normalizeModel(model) {
   return model.replace(/\[1m\]$/, "").split("/").at(-1).replace(/^auto-/, "");
 }
 
-function postToolModelWarning(workers, event) {
+function postToolModelContext(workers, event) {
   try {
     const response = dict(event.tool_response);
-    if (response.status !== "completed" || typeof response.agentId !== "string" ||
-        !/^[a-zA-Z0-9_-]+$/.test(response.agentId)) return null;
-    if (typeof response.agentType !== "string" || typeof event.transcript_path !== "string") return null;
-    if (workers === null) return null;
+    const launched = response.status === "async_launched";
+    if (!launched && (response.status !== "completed" || typeof response.agentId !== "string" ||
+        !/^[a-zA-Z0-9_-]+$/.test(response.agentId) || typeof event.transcript_path !== "string")) return null;
+    const agentType = launched ? event.tool_input?.subagent_type : response.agentType;
+    if (typeof agentType !== "string" || workers === null) return null;
     const bundle = JSON.parse(fs.readFileSync(workers, "utf8"));
     const { config } = selectWorkerProfile(bundle, event);
-    const tier = config.tiers[response.agentType];
+    const tier = config.tiers[agentType];
     if (!tier) return null;
-    const expected = tier.harness === "codex" ? tier.claude_route : tier.model;
-    if (expected == null) return null;
-    const mismatches = [];
-    if (response.resolvedModel !== expected) mismatches.push(response.resolvedModel ?? "unknown requested model");
+    const configured = tier.harness === "codex" ? tier.claude_route : tier.model;
+    if (configured == null) return null;
+    const alias = /^(haiku|sonnet|opus|fable)$/.test(configured);
+    const expected = alias ? process.env[`ANTHROPIC_DEFAULT_${configured.toUpperCase()}_MODEL`]?.trim() || null : configured;
+    if (launched) {
+      const model = response.resolvedModel;
+      if (typeof model !== "string" || !model || model === expected) return null;
+      if (expected === null) return `The ${agentType} Worker launched with resolved model ${model}.`;
+      return `The ${agentType} Worker expected ${expected} but launched with resolved model ${model}; report the resolved model.`;
+    }
     const transcript = event.transcript_path.replace(/\.jsonl$/, "") +
       `/subagents/agent-${response.agentId}.jsonl`;
     const descriptor = fs.openSync(transcript, "r");
@@ -497,11 +504,14 @@ function postToolModelWarning(workers, event) {
       } catch {}
     }
     const actual = [...new Set([response.resolvedModel, ...models].filter((model) => typeof model === "string"))];
+    if (expected === null) return actual.length ? `The ${agentType} Worker reported model(s) ${actual.join(", ")}.` : null;
+    const mismatches = [];
+    if (response.resolvedModel !== expected) mismatches.push(response.resolvedModel ?? "unknown requested model");
     for (const model of models) {
       if (normalizeModel(model) !== normalizeModel(expected) && !mismatches.includes(model)) mismatches.push(model);
     }
     if (!mismatches.length) return null;
-    return `The ${response.agentType} Worker expected ${expected} but ran on ${actual.join(", ") || mismatches.join(", ")}; report the real model.`;
+    return `The ${agentType} Worker expected ${expected} but ran on ${actual.join(", ") || mismatches.join(", ")}; report the real model.`;
   } catch {
     return null;
   }
@@ -610,8 +620,8 @@ async function main() {
     if (!isDict(event)) return;
     if (event.hook_event_name === "PostToolUse") {
       if (event.tool_name !== "Agent" && event.tool_name !== "Task") return;
-      const warning = postToolModelWarning(workers, event);
-      if (warning) emit({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: warning } });
+      const context = postToolModelContext(workers, event);
+      if (context) emit({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: context } });
       return;
     }
     if (event.hook_event_name === "Stop") {

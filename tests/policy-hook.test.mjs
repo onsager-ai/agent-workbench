@@ -11,6 +11,8 @@ import { workerBundle } from "../skills/workbench-setup/scripts/workbench.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = path.join(ROOT, "skills/orchestrate-harnesses/scripts/policy-hook");
+const WORKERS = path.join(ROOT, "skills/orchestrate-harnesses/workers.yml");
+const NEUTRAL_OVERRIDE = path.join(ROOT, "tests/fixtures/neutral-workers.yml");
 const temporaries = [];
 
 const tmp = () => {
@@ -30,7 +32,7 @@ describe("policy hook", () => {
   beforeEach(() => {
     directory = tmp();
     workers = path.join(directory, "workers.json");
-    bundle = workerBundle(path.join(ROOT, "skills/orchestrate-harnesses/workers.yml"));
+    bundle = workerBundle(WORKERS);
     fs.writeFileSync(workers, JSON.stringify(bundle));
   });
 
@@ -127,14 +129,14 @@ describe("policy hook", () => {
     const subagents = path.join(directory, "manager", "subagents");
     fs.mkdirSync(subagents, { recursive: true });
     const workerTranscript = path.join(subagents, "agent-worker-1.jsonl");
-    const invokePost = (agentType, resolvedModel, models = [resolvedModel]) => {
+    const invokePost = (agentType, resolvedModel, models = [resolvedModel], env) => {
       fs.writeFileSync(workerTranscript, models.map((model) => JSON.stringify({
         type: "assistant", message: { model },
       })).join("\n") + "\n");
       return invoke(JSON.stringify({
         hook_event_name: "PostToolUse", tool_name: "Agent", transcript_path: transcript, cwd: directory,
         tool_response: { status: "completed", agentId: "worker-1", agentType, resolvedModel },
-      }));
+      }), env);
     };
     assert.equal(invokePost("haiku", "claude-haiku-5-5", ["group/auto-claude-haiku-5-5"]), null);
     assert.match(invokePost("haiku", "claude-sonnet-5-5").additionalContext, /expected claude-haiku-5-5/);
@@ -147,6 +149,17 @@ describe("policy hook", () => {
     assert.match(invokePost("luna", "onsager/codex/gpt-6-luna", ["group/auto-claude-sonnet-5-5"]).additionalContext,
       /claude-sonnet-5-5/);
     assert.equal(invokePost("unknown", "model"), null);
+    bundle = workerBundle(WORKERS, [NEUTRAL_OVERRIDE]);
+    bundle.profile = null;
+    bundle.select = [{ path: directory, profile: "neutral" }];
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    const route = "gateway/general";
+    const env = { ANTHROPIC_DEFAULT_SONNET_MODEL: route };
+    assert.equal(invokePost("standard", route, ["general"], env), null);
+    assert.match(invokePost("standard", route, ["other"], env).additionalContext,
+      /expected gateway\/general but ran on gateway\/general, other/);
+    assert.equal(invokePost("standard", route, [route], {}).additionalContext,
+      "The standard Worker reported model(s) gateway/general.");
     fs.rmSync(workerTranscript);
     assert.equal(invoke(JSON.stringify({
       hook_event_name: "PostToolUse", tool_name: "Agent", transcript_path: transcript,
@@ -156,6 +169,40 @@ describe("policy hook", () => {
       hook_event_name: "PostToolUse", tool_name: "Task", transcript_path: transcript,
       tool_response: { status: "running", agentId: "worker-1", agentType: "haiku" },
     })), null);
+  });
+
+  test("PostToolUse checks the requested route at async launch without a transcript", () => {
+    const route = "gateway/general";
+    bundle = workerBundle(WORKERS, [NEUTRAL_OVERRIDE]);
+    bundle.profile = null;
+    bundle.select = [{ path: directory, profile: "neutral" }];
+    bundle.profiles.neutral.tiers.fast.model = "gateway/small";
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    const launch = (subagentType, resolvedModel, env = {}) => invoke(JSON.stringify({
+      hook_event_name: "PostToolUse", tool_name: "Agent", cwd: directory,
+      tool_input: { subagent_type: subagentType },
+      tool_response: { status: "async_launched", agentId: "worker-1", resolvedModel },
+    }), env);
+    const env = { ANTHROPIC_DEFAULT_SONNET_MODEL: route };
+    assert.equal(launch("standard", route, env), null);
+    assert.equal(launch("standard", route).additionalContext, "The standard Worker launched with resolved model gateway/general.");
+    assert.match(launch("standard", "other/general", env).additionalContext, /expected gateway\/general but launched with resolved model other\/general/);
+    assert.equal(launch("fast", "gateway/small"), null);
+    assert.match(launch("fast", "other/small").additionalContext, /expected gateway\/small but launched with resolved model other\/small/);
+    assert.equal(launch("standard", undefined, env), null);
+    assert.equal(launch("unknown", route), null);
+  });
+
+  test("neutral profile keeps L3 approval and disallows named model overrides", () => {
+    bundle = workerBundle(WORKERS, [NEUTRAL_OVERRIDE]);
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    const dispatch = (subagentType, model) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", tool_name: "Agent",
+      tool_input: { subagent_type: subagentType, model },
+    }));
+    assert.equal(dispatch("standard"), null);
+    assert.equal(dispatch("standard", "sonnet").permissionDecision, "deny");
+    assert.equal(dispatch("expert").permissionDecision, "ask");
   });
 
   test("opus requires approval", () => {
