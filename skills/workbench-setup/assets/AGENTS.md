@@ -5,7 +5,7 @@
 - Avoid speculative guards, fallbacks, retries, wrappers, abstractions, and compatibility layers. Add defensive code only for realistic failure modes, explicit contracts, or demonstrated risks; preserve essential security, data integrity, and error handling.
 - Trace each design mechanism to a user requirement or stated threat; anything you can't trace is a proposal for the user, not part of the design. Ask the user early about important design choices such as security models, persisted formats and protocol shapes. When fixes keep turning up the same kind of defect, stop and question the design instead of fixing again.
 - Use higher reasoning effort to improve judgment, not increase implementation complexity.
-- Thermal: if a `thermal` command exists, follow the `thermal-guard` skill before CPU-heavy local work and carry the rule into delegations.
+- Follow the `host-ops` skill for host resource rules and carry applicable limits into delegations.
 - If a task contract or role marker assigns Worker or reviewer work, obey that role first; do not act as the user-facing Manager or launch nested harnesses, controllers, or agents.
 - The current user-facing session is the Manager, using its selected model. For substantial engineering or explicit cross-harness work, use `orchestrate-harnesses` to manage Workers, preferring built-in subagents. Coordinate with other Managers through native messaging, through T3 Code when its tools are available, or through the user. Handle small answers and routine edits directly.
 - Keep workflow details, per-role models, and budgets in that skill's own files.

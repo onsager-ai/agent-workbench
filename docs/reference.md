@@ -6,7 +6,7 @@
 | --- | --- |
 | Node.js 22.20 or newer | Skills CLI, optional setup installer, and Claude policy hook |
 | Linux or macOS | Optional setup installer |
-| User systemd and a supported package-temperature sensor (optional) | thermal-guard background logger |
+| User systemd and a supported package-temperature sensor (optional) | `host-ops` temperature logger |
 
 Engineering work uses the installed and authenticated native harness. T3 Code tools are optional; distributing skills does not install those tools or provide credentials.
 
@@ -82,7 +82,7 @@ npx skills add onsager-ai/agent-workbench -g -a codex -a claude-code --skill '*'
 Or install only the core skills:
 
 ```sh
-npx skills add onsager-ai/agent-workbench -g -a codex -a claude-code --skill manage-lane orchestrate-harnesses prompt-for-decisions thermal-guard workbench-setup -y
+npx skills add onsager-ai/agent-workbench -g -a codex -a claude-code --skill host-ops manage-lane orchestrate-harnesses prompt-for-decisions workbench-setup -y
 ```
 
 Update globally with:
@@ -98,6 +98,21 @@ For a project-local install, omit `-g` and use `--copy` to install independent c
 ```sh
 npx skills add onsager-ai/agent-workbench -a codex -a claude-code --skill '*' --copy -y
 ```
+
+## Upgrade to `host-ops`
+
+`host-ops` replaces `thermal-guard` and `disk-cleanup`. The skills CLI updates installed names, so install the new name explicitly. If you installed the old `thermal` launcher or logger, run the first command while the old skill is still present and no gated commands are starting. Remove only the old skills you installed.
+
+```sh
+~/.agents/skills/thermal-guard/scripts/thermal uninstall
+npx skills remove -g thermal-guard disk-cleanup
+npx skills add onsager-ai/agent-workbench -g -a codex -a claude-code --skill host-ops -y
+agent-workbench update
+```
+
+If you manage the skills without the setup installer, update them with the skills CLI and use the bundled `host-ops/scripts/thermal install` to apply the thermal setup. Use the same agent selections you used for the original install. For project-local copies, remove and add the skills from the project without `-g`.
+
+On supported hosts, the new install links the same `thermal` command to `host-ops` and enables `host-ops-thermal.service` when user systemd is available. Existing logs and the admission lock stay in `${XDG_STATE_HOME:-$HOME/.local/state}/thermal-guard`.
 
 ## Personal configuration across machines
 
@@ -121,7 +136,7 @@ Private repos work through `gh` authentication or SSH. To change shared personal
 
 ## Apply shared global instructions
 
-The optional setup installer supports Linux and macOS and needs only Node.js 22.20 or newer. When a supported Linux package-temperature sensor and user systemd are available, setup installs thermal-guard's launcher and background logger; otherwise the thermal rule does not apply. No separate npm package, compiled binary, or shell configuration is installed.
+The optional setup installer supports Linux and macOS and needs only Node.js 22.20 or newer. When a supported Linux package-temperature sensor is available and `host-ops` is installed, setup installs the `thermal` launcher. With user systemd it also installs the background logger. No separate npm package, compiled binary, or shell configuration is installed.
 
 After distributing the skills globally, apply their public instruction template:
 
