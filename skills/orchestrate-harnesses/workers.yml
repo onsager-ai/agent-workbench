@@ -28,7 +28,7 @@ policy:
     max_tokens: 300000
     gateway_window: null
     codex_window: null
-    manager_window: 100000
+    manager_window: 200000
     manager_models: [claude-opus-5-5]
   # Optional local Magpie classifier for the Stop hook; null keeps the question-mark check.
   stop_classifier: null
