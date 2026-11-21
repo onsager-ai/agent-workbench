@@ -36,7 +36,7 @@ Delegate substantial work to native Workers by default and parallelize independe
 
 ## Design and stuck checkpoints
 
-Prefer the simplest design that meets the stated requirements. Before adopting a design, contract or plan, whether a Worker's or your own, trace each mechanism in it (a lock, retry, recovery path, extra state, format field or delivery guarantee) to a user requirement or a stated threat, and have it say what it deliberately leaves out. A mechanism you cannot trace is a proposal: drop it, or ask the user before adopting it. Bring important design decisions to the user early as options with a recommendation, using prompt-for-decisions: security and trust models, persisted or wire formats, protocol and API shapes, delivery guarantees, and anything else costly to reverse. Your acceptance or a reviewer's does not settle these.
+Prefer the simplest design that meets the stated requirements. Before adopting a design, contract or plan, whether a Worker's or your own, trace each mechanism in it (a lock, retry, recovery path, extra state, format field or delivery guarantee) to a user requirement or a stated threat, and have it say what it deliberately leaves out. A mechanism you cannot trace is a proposal: drop it, or ask the user before adopting it. Bring important design decisions to the user early as options with a recommendation, using prompt-for-decisions: security and trust models, persisted or wire formats, protocol and API shapes, delivery guarantees, and anything else costly to reverse. For hard or complicated decisions, follow prompt-for-decisions' compact-visual guidance before asking. Your acceptance or a reviewer's does not settle these.
 
 You are stuck when any of these happens:
 
