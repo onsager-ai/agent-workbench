@@ -62,7 +62,7 @@ gate() {
         case "$1" in
             --max-seconds) max=${2:-}; shift 2 ;;
             --) shift; break ;;
-            *) die "usage: thermal gate [--max-seconds N] -- <command...>" 64 ;;
+            *) die "usage: awb ops thermal gate [--max-seconds N] -- <command...>" 64 ;;
         esac
     done
     [ $# -gt 0 ] || die "no command given" 64
@@ -143,11 +143,6 @@ watch() {
     done
 }
 
-script_path() {
-    dirname "$(readlink -f "$0")"
-}
-
-launcher_path=$HOME/.local/bin/thermal
 service_name=host-ops-thermal.service
 service_path=$HOME/.config/systemd/user/$service_name
 service_text() {
@@ -156,7 +151,7 @@ service_text() {
 Description=Host Ops thermal logger
 
 [Service]
-ExecStart=$launcher_path watch
+ExecStart=/bin/sh "%h/.agents/skills/workbench-setup/scripts/thermal" watch
 Restart=always
 RestartSec=5
 Nice=19
@@ -173,17 +168,12 @@ install() {
         echo "thermal guard unsupported on this machine: no Intel package or AMD Tctl sensor found"
         return 0
     fi
-    target="$(script_path)/thermal"
-    if [ -e "$launcher_path" ] || [ -L "$launcher_path" ]; then
-        [ -L "$launcher_path" ] && [ "$(readlink "$launcher_path")" = "$target" ] || die "foreign launcher: $launcher_path"
-    else
-        mkdir -p "${launcher_path%/*}" || die "cannot create launcher directory"
-        ln -s "$target" "$launcher_path" || die "cannot install launcher"
-    fi
     if ! systemctl --user show-environment >/dev/null 2>&1; then
-        echo "thermal launcher installed; systemctl --user is unavailable, service not installed"
+        echo "systemctl --user is unavailable, service not installed"
         return 0
     fi
+    [ -r "$HOME/.agents/skills/workbench-setup/scripts/thermal" ] ||
+        die "install Workbench skills first: npx @onsager/awb setup"
     wanted=$(service_text)
     if [ -e "$service_path" ] || [ -L "$service_path" ]; then
         [ ! -L "$service_path" ] && same_file "$service_path" "$wanted" || die "foreign service: $service_path"
@@ -192,14 +182,10 @@ install() {
         printf '%s\n' "$wanted" > "$service_path" || die "cannot write service"
     fi
     systemctl --user daemon-reload && systemctl --user enable --now "$service_name" || die "could not enable $service_name"
-    echo "thermal launcher and service installed"
+    echo "thermal service installed"
 }
 
 uninstall() {
-    target="$(script_path)/thermal"
-    if [ -e "$launcher_path" ] || [ -L "$launcher_path" ]; then
-        [ -L "$launcher_path" ] && [ "$(readlink "$launcher_path")" = "$target" ] || die "foreign launcher: $launcher_path"
-    fi
     wanted=$(service_text)
     if [ -e "$service_path" ] || [ -L "$service_path" ]; then
         [ ! -L "$service_path" ] && same_file "$service_path" "$wanted" || die "foreign service: $service_path"
@@ -207,7 +193,6 @@ uninstall() {
         rm "$service_path" || die "cannot remove service"
         systemctl --user daemon-reload >/dev/null 2>&1 || true
     fi
-    [ ! -L "$launcher_path" ] || rm "$launcher_path" || die "cannot remove launcher"
     echo "thermal guard uninstalled"
 }
 
@@ -235,11 +220,11 @@ status() {
 }
 
 case "${1:-}" in
-    now) [ $# -eq 1 ] || die "usage: thermal now" 64; now ;;
+    now) [ $# -eq 1 ] || die "usage: awb ops thermal now" 64; now ;;
     gate) shift; gate "$@" ;;
-    watch) [ $# -eq 1 ] || die "usage: thermal watch" 64; watch ;;
-    install) [ $# -eq 1 ] || die "usage: thermal install" 64; install ;;
-    uninstall) [ $# -eq 1 ] || die "usage: thermal uninstall" 64; uninstall ;;
-    status) [ $# -eq 1 ] || die "usage: thermal status" 64; status ;;
-    *) die "usage: thermal {now|gate|watch|install|uninstall|status}" 64 ;;
+    watch) [ $# -eq 1 ] || die "usage: awb ops thermal watch" 64; watch ;;
+    install) [ $# -eq 1 ] || die "usage: awb ops thermal install" 64; install ;;
+    uninstall) [ $# -eq 1 ] || die "usage: awb ops thermal uninstall" 64; uninstall ;;
+    status) [ $# -eq 1 ] || die "usage: awb ops thermal status" 64; status ;;
+    *) die "usage: awb ops thermal {now|gate|status|install|uninstall}" 64 ;;
 esac

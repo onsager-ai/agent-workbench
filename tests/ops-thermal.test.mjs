@@ -6,10 +6,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const THERMAL = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../skills/host-ops/scripts/thermal");
+const AWB = fileURLToPath(new URL("../bin/awb.mjs", import.meta.url));
+const THERMAL_ARGS = [AWB, "ops", "thermal"];
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-describe("thermal guard", () => {
+describe("awb ops thermal", () => {
   let root;
   let sysfs;
   let home;
@@ -36,14 +37,14 @@ describe("thermal guard", () => {
     return temp;
   }
 
-  const environment = (extra = {}) => ({ ...process.env, HOME: home, THERMAL_SYSFS: sysfs, ...extra });
+  const environment = (extra = {}) => ({ ...process.env, HOME: home, XDG_STATE_HOME: "", THERMAL_SYSFS: sysfs, ...extra });
 
   function thermal(args, { timeout = 8000, extraEnv = {} } = {}) {
-    return spawnSync(THERMAL, args, { encoding: "utf8", env: environment(extraEnv), timeout });
+    return spawnSync(process.execPath, [...THERMAL_ARGS, ...args], { encoding: "utf8", env: environment(extraEnv), timeout });
   }
 
   function start(args, extraEnv = {}) {
-    const child = spawn(THERMAL, args, { env: environment(extraEnv), stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [...THERMAL_ARGS, ...args], { env: environment(extraEnv), stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     const done = new Promise((resolve) => child.on("close", (code) => resolve({ code, stderr })));
@@ -88,7 +89,7 @@ describe("thermal guard", () => {
 
   test("gate runs when cool, refuses unsupported and stops a hot group", async () => {
     const temp = sensor("52000\n");
-    const cool = thermal(["gate", "--", "sh", "-c", "exit 7"]);
+    const cool = thermal(["gate", "--max-seconds", "5", "--", "sh", "-c", 'test "$1" = --home && exit 7', "sh", "--home"]);
     assert.equal(cool.status, 7, cool.stderr);
 
     fs.rmSync(sysfs, { recursive: true });
@@ -124,7 +125,7 @@ describe("thermal guard", () => {
     assert.ok(!fs.existsSync(path.join(home, ".local/bin/thermal")));
   });
 
-  test("install keeps the launcher when systemctl fails", () => {
+  test("install skips the logger when systemctl is unavailable", () => {
     sensor("52000\n");
     const fakeBin = path.join(root, "bin");
     fs.mkdirSync(fakeBin);
@@ -132,8 +133,7 @@ describe("thermal guard", () => {
     const result = thermal(["install"], { extraEnv: { PATH: `${fakeBin}:${process.env.PATH}` } });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /service not installed/);
-    const launcher = path.join(home, ".local/bin/thermal");
-    assert.ok(fs.lstatSync(launcher).isSymbolicLink());
-    assert.equal(fs.realpathSync(launcher), fs.realpathSync(THERMAL));
+    assert.ok(!fs.existsSync(path.join(home, ".local/bin/thermal")));
+    assert.ok(!fs.existsSync(path.join(home, ".config/systemd/user/host-ops-thermal.service")));
   });
 });

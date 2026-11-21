@@ -6,7 +6,7 @@
 | --- | --- |
 | Node.js 22.20 or newer | Skills CLI, optional setup installer, and Claude policy hook |
 | Linux or macOS | Optional setup installer |
-| User systemd and a supported package-temperature sensor (optional) | `host-ops` temperature logger |
+| User systemd and a supported package-temperature sensor (optional) | `awb ops thermal` logger |
 
 Engineering work uses the installed and authenticated native harness. T3 Code tools are optional; distributing skills does not install those tools or provide credentials.
 
@@ -101,18 +101,22 @@ npx skills add onsager-ai/agent-workbench -a codex -a claude-code --skill '*' --
 
 ## Upgrade to `host-ops`
 
-`host-ops` replaces `thermal-guard` and `disk-cleanup`. The skills CLI updates installed names, so install the new name explicitly. If you installed the old `thermal` launcher or logger, run the first command while the old skill is still present and no gated commands are starting. Remove only the old skills you installed.
+If you installed the old `thermal` launcher or logger, let running gated commands finish, then run `thermal uninstall` before updating or removing the old skill. If the launcher is off your PATH, use `~/.local/bin/thermal uninstall`. If you have the old skill script but lack the launcher, run `uninstall` through that script (under `host-ops/scripts/thermal` or `thermal-guard/scripts/thermal` in the installed skills directory).
+
+`host-ops` replaces the earlier `thermal-guard` and `disk-cleanup` skill names. If you still have either earlier skill, remove the names you installed and add `host-ops` explicitly. Use the same agent selections as your original install. For project-local copies, run from the project without `-g` and add with `--copy`.
 
 ```sh
-~/.agents/skills/thermal-guard/scripts/thermal uninstall
 npx skills remove -g thermal-guard disk-cleanup
 npx skills add onsager-ai/agent-workbench -g -a codex -a claude-code --skill host-ops -y
-agent-workbench update
 ```
 
-If you manage the skills without the setup installer, update them with the skills CLI and use the bundled `host-ops/scripts/thermal install` to apply the thermal setup. Use the same agent selections you used for the original install. For project-local copies, remove and add the skills from the project without `-g`.
+Run `agent-workbench update` to refresh the installed skills and setup. If you manage skills directly, update `workbench-setup` and `host-ops` through the skills CLI. Update `@onsager/awb` too if you use the npm CLI.
 
-On supported hosts, the new install links the same `thermal` command to `host-ops` and enables `host-ops-thermal.service` when user systemd is available. Existing logs and the admission lock stay in `${XDG_STATE_HOME:-$HOME/.local/state}/thermal-guard`.
+## Thermal operations
+
+Use `awb ops thermal now`, `awb ops thermal gate -- <command>` and `awb ops thermal status` on supported Linux machines. For frequent calls, use `agent-workbench ops thermal` through `~/.local/bin` without `npx`. See the [thermal rules](../skills/host-ops/references/thermal.md) for thresholds and exit codes.
+
+After setup, run `awb ops thermal install` only on machines where you want the background logger. It uses the installed Workbench skill and enables `host-ops-thermal.service` when a supported sensor and user systemd are available. Run `awb ops thermal uninstall` to remove the service. Existing logs and the admission lock stay in `${XDG_STATE_HOME:-$HOME/.local/state}/thermal-guard` across the upgrade.
 
 ## Personal configuration across machines
 
@@ -136,7 +140,7 @@ Private repos work through `gh` authentication or SSH. To change shared personal
 
 ## Apply shared global instructions
 
-The optional setup installer supports Linux and macOS and needs only Node.js 22.20 or newer. When a supported Linux package-temperature sensor is available and `host-ops` is installed, setup installs the `thermal` launcher. With user systemd it also installs the background logger. No separate npm package, compiled binary, or shell configuration is installed.
+The optional setup installer supports Linux and macOS and needs only Node.js 22.20 or newer. Set up the [optional thermal logger](#thermal-operations) separately on supported Linux machines.
 
 After distributing the skills globally, apply their public instruction template:
 

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { runOps } from "../skills/workbench-setup/scripts/ops.mjs";
 
 const commands = ["install", "update", "status", "trust", "uninstall", "workers", "prune"];
 const usage = `Usage: awb <command> [options]
@@ -17,6 +18,7 @@ Commands:
   uninstall  Remove managed setup
   workers    Show effective Worker configuration
   prune      Remove local worktrees and branches with merged PRs
+  ops        Run host operations
   help       Show this help`;
 
 const argv = process.argv.slice(2);
@@ -24,7 +26,9 @@ let home = os.homedir();
 let skillsCmd;
 const args = [];
 for (let i = 0; i < argv.length; i += 1) {
-  if (argv[i] === "--home") {
+  if (!args.length && argv[i] === "ops") {
+    process.exit(runOps(argv.slice(i + 1), home));
+  } else if (argv[i] === "--home") {
     if (!argv[i + 1]) {
       console.error("awb: --home requires a path");
       process.exit(2);

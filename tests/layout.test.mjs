@@ -57,7 +57,6 @@ describe("public layout", () => {
       "docs/notes.md",
       "skills/host-ops/references/disk.md",
       "skills/host-ops/references/thermal.md",
-      "skills/host-ops/scripts/thermal",
       "skills/manage-lane/references/handover.md",
       "skills/orchestrate-harnesses/workers.yml",
       "skills/orchestrate-harnesses/references/manager.md",
@@ -71,6 +70,8 @@ describe("public layout", () => {
       "skills/orchestrate-harnesses/scripts/policy-hook.mjs",
       "skills/workbench-setup/assets/AGENTS.md",
       "skills/workbench-setup/scripts/workbench.mjs",
+      "skills/workbench-setup/scripts/ops.mjs",
+      "skills/workbench-setup/scripts/thermal",
       "skills/workbench-setup/scripts/workbench.py",
       "skills/workbench-setup/vendor/yaml/index.js",
       "skills/workbench-setup/vendor/yaml/LICENSE",
@@ -84,7 +85,7 @@ describe("public layout", () => {
   });
 
   test("executable entry points keep their mode", () => {
-    for (const relativePath of ["skills/orchestrate-harnesses/scripts/policy-hook", "skills/host-ops/scripts/thermal"]) {
+    for (const relativePath of ["skills/orchestrate-harnesses/scripts/policy-hook", "skills/workbench-setup/scripts/thermal"]) {
       fs.accessSync(path.join(ROOT, relativePath), fs.constants.X_OK);
     }
   });

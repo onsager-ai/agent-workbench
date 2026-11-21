@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import tty from "node:tty";
 import { isDeepStrictEqual } from "node:util";
+import { runOps, opsHelp } from "./ops.mjs";
 
 const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
 if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 20)) {
@@ -689,7 +690,6 @@ export class Setup {
     this.statePath = path.join(this.root, "state.json");
     this.script = at(".agents/skills/workbench-setup/scripts/workbench.mjs");
     this.template = path.join(path.dirname(this.script), "../assets/AGENTS.md");
-    this.thermal = at(".agents/skills/host-ops/scripts/thermal");
     this.target = "../.agents/AGENTS.md";
     this.agents = at(".claude/agents");
     const orchestration = at(".agents/skills/orchestrate-harnesses");
@@ -718,14 +718,6 @@ export class Setup {
 
   agentPath(name) {
     return path.join(this.agents, name + ".md");
-  }
-
-  thermalCommand(command) {
-    if (!isFile(this.thermal)) return "not installed";
-    const result = spawnSync(this.thermal, [command], { env: { ...process.env, HOME: this.home }, encoding: "utf8" });
-    if (result.error) throw result.error;
-    const output = (result.stdout + result.stderr).trim().replaceAll("\n", "; ");
-    return output || `exited ${result.status}`;
   }
 
   workersBundle() {
@@ -1552,7 +1544,6 @@ export class Setup {
       });
     });
     console.log(changed ? "installed" : "no-op: already installed");
-    console.log(`thermal: ${this.thermalCommand("install")}`);
     const names = Object.keys(desired).sort();
     console.log(`claude agents: ${names.join(", ") || "none"}`);
     if (!names.length) console.log("no Claude agents generated: orchestrate-harnesses is not installed");
@@ -1583,7 +1574,7 @@ export class Setup {
       personal_package: { present: present(this.personal), applied_files: state.personal_files },
       private_bytes: private_.length, shared: this.shared,
       codex: this.codex, claude: this.claude,
-      launcher: this.launcher, thermal: this.thermalCommand("status"),
+      launcher: this.launcher,
       agents: Object.fromEntries(Object.keys(state.agents).sort().map((name) => [name, this.agentPath(name)])),
     };
     const errors = [];
@@ -1618,7 +1609,6 @@ export class Setup {
       line("personal package", report.personal_package.present ? "applied" : "not installed", "install workbench-personal if needed");
       line("instruction template", state.template_hash === report.available_template_hash && state.version === VERSION ? "applied" : "missing", "run agent-workbench install to apply update");
       line(`private instructions (${private_.length} bytes)`, "applied", "");
-      line(`thermal (${report.thermal})`, report.thermal === "not installed" ? "not installed" : "applied", report.thermal === "not installed" ? "install host-ops if needed" : "");
       for (const [name, file] of Object.entries(report.agents)) line(`Claude agent ${name}`, fs.existsSync(file) ? "applied" : "missing", "run agent-workbench install to restore");
       if (report.agents_error) console.log(`conflict  Claude agents: ${report.agents_error}; resolve the file conflict, then run agent-workbench install`);
       if (report.codex_trust_error) console.log(`conflict  Codex trust: ${report.codex_trust_error}; resolve Codex config.toml, then run agent-workbench status --json`);
@@ -1671,7 +1661,6 @@ export class Setup {
       });
     });
     console.log("uninstalled; current private instructions and private backups retained");
-    console.log(`thermal: ${this.thermalCommand("uninstall")}`);
   }
 
   update(command) {
@@ -1734,6 +1723,7 @@ const COMMANDS = {
   trust: "Trust installed Codex policy hooks",
   uninstall: "Remove managed setup while keeping private files",
   workers: "Show effective worker configuration",
+  ops: "Run host operations",
 };
 const USAGE = "usage: workbench.mjs [--home HOME] [--skills-cmd SKILLS_CMD] [--cwd CWD] " +
   `{${Object.keys(COMMANDS).join(",")}}`;
@@ -1762,6 +1752,10 @@ function parseArguments(argv) {
       fail(`unrecognized arguments: ${argv[index]}`);
     } else if (options.command === undefined) {
       options.command = flag;
+      if (flag === "ops") {
+        options.ops = argv.slice(index + 1);
+        break;
+      }
     } else if (options.command === "help") {
       options.helpCommand = flag;
     } else {
@@ -1783,7 +1777,9 @@ function parseArguments(argv) {
 }
 
 function printHelp(command) {
-  if (!command) {
+  if (command === "ops") {
+    console.log(opsHelp);
+  } else if (!command) {
     console.log(`${USAGE}\n\nCommands:`);
     for (const [name, description] of Object.entries(COMMANDS)) console.log(`  ${name.padEnd(10)} ${description}`);
     console.log("\nUse workbench.mjs help <command> for command options.");
@@ -1797,6 +1793,7 @@ export function main(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
   if (args.help) { printHelp(args.helpCommand ?? (args.command === "help" ? undefined : args.command)); return 0; }
   try {
+    if (args.command === "ops") return runOps(args.ops, path.resolve(args.home));
     const setup = new Setup(args.home);
     if (args.command === "workers") setup.workers(args.cwd);
     else if (args.command === "update") return setup.update(args.skillsCmd);
