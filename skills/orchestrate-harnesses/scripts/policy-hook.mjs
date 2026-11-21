@@ -577,13 +577,18 @@ function managerHandoverContext(workers, event, codex) {
   const threshold = selectWorkerProfile(bundle, event).config.policy.context?.manager_handover_tokens;
   if (!tokenCount(threshold) || threshold === 0) return;
   const input = lastInputTokens(event.transcript_path, codex);
-  if (input === undefined || input < threshold) return;
+  if (input === undefined) return;
 
   const directory = path.join(path.dirname(workers), "manager-handover");
-  fs.mkdirSync(directory, { recursive: true });
   const key = crypto.createHash("sha256").update(event.session_id).digest("hex");
   const state = path.join(directory, key);
+  if (input < threshold && !fs.existsSync(state)) return;
+  fs.mkdirSync(directory, { recursive: true });
   return withLock(`${state}.lock`, () => {
+    if (input < threshold) {
+      fs.rmSync(state, { force: true });
+      return;
+    }
     let previous = 0;
     try { previous = Number(fs.readFileSync(state, "utf8")); }
     catch (error) { if (error.code !== "ENOENT") throw error; }

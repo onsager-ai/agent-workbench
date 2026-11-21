@@ -121,6 +121,18 @@ describe("policy hook", () => {
     assert.match(handover(rows).hookSpecificOutput.additionalContext, /about 102k tokens/);
   });
 
+  test("a fresh below-threshold sample clears the session's last reminder after compaction", () => {
+    const rows = [claudeUsage(105_000)];
+    assert.match(handover(rows).hookSpecificOutput.additionalContext, /about 105k tokens/);
+    rows.push({ type: "system", subtype: "compact_boundary" });
+    assert.equal(handover(rows), null);
+    assert.equal(handover([...rows, claudeUsage(100_000)]), null);
+    rows.push(claudeUsage(99_999));
+    assert.equal(handover(rows), null);
+    rows.push(claudeUsage(100_000));
+    assert.match(handover(rows).hookSpecificOutput.additionalContext, /about 100k tokens/);
+  });
+
   test("handover returns silently when usage is absent or outside the transcript tail", () => {
     assert.equal(handover(null), null);
     assert.equal(handover([{ type: "assistant" }]), null);

@@ -22,7 +22,7 @@ Model IDs, efforts, timeouts, optional monetary caps, rework policy, and context
 
 Worker configuration is YAML loaded with the vendored `yaml` package without `npm install` or network access. Put partial overrides in `~/.config/agent-workbench/workers.yml` (or the absolute `$XDG_CONFIG_HOME` equivalent). Mappings merge, lists replace, and null tiers are deleted. Run `agent-workbench workers --cwd PATH` to inspect the selected profile and resolved configuration, then `agent-workbench install` to apply agent and hook changes.
 
-`policy.context.manager_handover_tokens` sets the Manager handover reminder threshold in input tokens. It accepts a positive integer or `null` to disable it and defaults to `100000`. The hook uses the effective profile and repeats after another 10,000 tokens above the last reminder in the same session. Workers keep native compaction at `policy.context.max_tokens`.
+`policy.context.manager_handover_tokens` sets the Manager handover reminder threshold in input tokens. It accepts a positive integer or `null` to disable it and defaults to `100000`. The hook uses the effective profile and repeats after another 10,000 tokens above the last reminder in the same session. A fresh sample below the threshold resets the reminder. Workers keep native compaction at `policy.context.max_tokens`.
 
 For a corporate setup, add a profile and select it for your work directory:
 

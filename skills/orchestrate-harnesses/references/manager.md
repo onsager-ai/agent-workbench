@@ -8,7 +8,7 @@ Give each Worker a bounded brief containing original requirements/amendments, na
 
 ## Reduce Manager calls
 
-At a phase boundary, use `manage-lane` to write the lane handover and continue in a fresh session when the current context has grown large. The reminder starts at 100,000 input tokens by default and repeats after another 10,000 tokens in the same session. The threshold comes from `policy.context.manager_handover_tokens` for the selected profile. Workers keep native compaction at `policy.context.max_tokens`.
+At a phase boundary, use `manage-lane` to write the lane handover and continue in a fresh session when the current context has grown large. The reminder starts at 100,000 input tokens by default and repeats after another 10,000 tokens above the last reminder in the same session. If measured usage drops below the threshold, the reminder starts over. The threshold comes from `policy.context.manager_handover_tokens` for the selected profile. Workers keep native compaction at `policy.context.max_tokens`.
 
 ## Brief checklist
 
