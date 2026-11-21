@@ -15,7 +15,9 @@
   },
   "files": [
     "bin/awb.mjs",
-    "bin/prune.mjs"
+    "bin/prune.mjs",
+    "skills/workbench-setup/scripts/ops.mjs",
+    "skills/workbench-setup/scripts/thermal"
   ],
   "publishConfig": {
     "access": "public"
