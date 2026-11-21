@@ -2,17 +2,19 @@
 
 ## Choose a tier
 
-The distributed default ladder is:
+Choose a level by the work it handles:
 
-| Level | Tier / model / effort |
-| --- | --- |
-| L1 | haiku / claude-haiku-5-5 / medium |
-| L2 | sonnet / claude-sonnet-5-5 / medium |
-| L3 | opus / claude-opus-5-5 / medium, needs approval |
+| Level | Use for | Default Claude mapping |
+| --- | --- | --- |
+| L1 | Bounded work; use a small, fast, low-cost model. | haiku / claude-haiku-5-5 / medium |
+| L2 | Research, spikes, and architecture; use a capable general model. | sonnet / claude-sonnet-5-5 / medium |
+| L3 | Work that needs the strongest model; user approval is required. | opus / claude-opus-5-5 / medium |
+
+Haiku, Sonnet, and Opus are Anthropic's small, mid-size, and largest Claude models. These are defaults: map any models from a gateway or another harness to levels in `workers.yml`.
 
 Always use the resolved ladder from effective configuration. Start at its first level for bounded work. A task kind listed in `start_for` may start at that level; record why. By default, research, spikes, and architecture recommendations start at L2, or can split into narrow L1 probes with L2 synthesis. Give each spike a timebox, typically 20–30 minutes, and accept a partial report with unresolved checks. When a named output such as `FINDINGS.md` is in the brief, it is authorized output. Escalate one level at a time based on actual complexity, defects, or failed attempts. Choose the next level rather than raising effort when more reasoning is needed.
 
-The optional `codex` profile tries Luna then Haiku at L1, Sol then Sonnet at L2, and Opus at L3 with approval. Terra is opt-in outside that ladder for explicit bounded assignments. The maintainer's evaluation history is in [evaluation notes](../../../docs/notes.md).
+The optional `codex` profile maps Luna then Haiku to L1, Sol then Sonnet to L2, and Opus to L3 with approval. Terra is opt-in outside that ladder for explicit bounded assignments. The maintainer's evaluation history is in [evaluation notes](../../../docs/notes.md).
 
 Within each level, try tiers in listed order. Move to the next tier only with a recorded reason, such as unavailable route, exhausted quota, or failed attempt. Escalation starts at the next level's first tier. Ask the user before dispatching a tier in a level with `approval: required`, give evidence for escalation, and continue below that level or hand back until approved. Approval covers that task only. A tier outside the active ladder and not marked `opt_in` needs user approval. In the codex profile, Terra needs an explicit bounded assignment.
 

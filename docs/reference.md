@@ -16,7 +16,7 @@ Agent Workbench covers user and machine instructions and Manager/Worker scope, d
 
 ## Profiles and Worker ladder
 
-Workers use a configurable ladder. The default is **Haiku medium → Sonnet medium → Opus medium**. The optional `codex` profile uses **Luna medium / Haiku medium → Sol medium / Sonnet medium → Opus medium**, with Terra opt-in outside the ladder. A Claude Manager runs Codex tiers through sandboxed `codex exec` unless a user override supplies a gateway route. Each tier's `timeout_s` (7200 s by default) is a ceiling; the Manager sizes each dispatch timeout to the task. Escalation needs evidence; moving to the next listed tier needs a recorded reason; L3 (Opus) needs the user's approval for each task.
+Workers use a configurable ladder. L1 is for bounded work with a small, fast, low-cost model. Research, spikes, and architecture start at L2, which uses a capable general model. L3 is for the strongest model and needs the user's approval for each task. The default Claude mapping is Haiku medium at L1, Sonnet medium at L2, and Opus medium at L3. The optional `codex` profile maps Luna medium and Haiku medium to L1, Sol medium and Sonnet medium to L2, and Opus medium to L3; Terra is opt-in outside the ladder. Haiku, Sonnet, and Opus are Anthropic's small, mid-size, and largest Claude models. Map any models from a gateway or another harness to levels in `workers.yml`. A Claude Manager runs Codex tiers through sandboxed `codex exec` unless a user override supplies a gateway route. Each tier's `timeout_s` (7200 s by default) is a ceiling; the Manager sizes each dispatch timeout to the task. Escalation needs evidence; moving to the next listed tier needs a recorded reason.
 
 Model IDs, efforts, timeouts, optional monetary caps, rework policy, and context targets live in [workers.yml](../skills/orchestrate-harnesses/workers.yml). There is no fixed amount ceiling; `budget_usd: null` adds no monetary cap. See [local model configuration](../skills/orchestrate-harnesses/references/configuration.md) for partial per-user overrides. When the `magpie` CLI is installed, see [Magpie guidance](../skills/orchestrate-harnesses/references/magpie.md) for quota-aware tier choices, catalog warnings, and usage reporting.
 
@@ -63,7 +63,7 @@ Check the route's model metadata and effective context window: an unknown ID can
 
 Workbench has no custom orchestration runtime, task database, or process supervisor. Native runs use their tool IDs, briefs, and existing task/PR evidence; they do not create another task record.
 
-Codex CLI 0.141 or newer (hooks are on by default) gets the same policy hook through `~/.codex/hooks.json` when `~/.codex` exists. Codex hooks cannot ask, so the interactive Opus and ladder approvals become denials that tell the model to get your approval and retry, and the built-in-agent model inheritance rule is not applied. Codex runs hooks only after you trust them. Install leaves them untrusted and says so; run `agent-workbench trust` (it asks before recording trust hashes in `~/.codex/config.toml`) or run `/hooks` in Codex once. `agent-workbench status` shows `codex_hooks` and `codex_trust`.
+Codex CLI 0.141 or newer (hooks are on by default) gets the same policy hook through `~/.codex/hooks.json` when `~/.codex` exists. Codex hooks cannot ask, so the interactive L3 and approval-required tier approvals become denials that tell the model to get your approval and retry, and the built-in-agent model inheritance rule is not applied. Codex runs hooks only after you trust them. Install leaves them untrusted and says so; run `agent-workbench trust` (it asks before recording trust hashes in `~/.codex/config.toml`) or run `/hooks` in Codex once. `agent-workbench status` shows `codex_hooks` and `codex_trust`.
 
 ## Install and update
 
@@ -155,7 +155,7 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 | `~/.local/bin/agent-workbench` | Thin launcher for the installed setup skill |
 | `~/.local/state/agent-workbench/workers.json` | Owned resolved base and profile policy used by the dispatch hook |
 | `~/.claude/agents/<tier>.md` | Generated Claude Code subagents, one per routable Worker tier when `orchestrate-harnesses` is installed |
-| `~/.claude/settings.json` → `hooks.PreToolUse` | Owned hooks for Opus approval, GitHub polling policy, and protection of local `main`/`master` branches when `orchestrate-harnesses` is installed |
+| `~/.claude/settings.json` → `hooks.PreToolUse` | Owned hooks for L3 approval (Opus by default), GitHub polling policy, and protection of local `main`/`master` branches when `orchestrate-harnesses` is installed |
 | `~/.codex/hooks.json` and `[hooks.state]` in `~/.codex/config.toml` | Owned Codex policy hooks and, after you confirm, their trust entries when `orchestrate-harnesses` is installed and `~/.codex` exists |
 | `~/.local/state/agent-workbench/` | Ownership, hashes, exclusive lock, private backups |
 
