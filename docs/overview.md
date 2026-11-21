@@ -49,6 +49,10 @@ The same request in T3 Code, run in a throwaway project after setup. The Manager
 
 <img src="media/t3-session.gif" alt="T3 Code thread: the user asks for a Worker to fix an off-by-one bug. A Haiku Worker commits the fix on a task branch, and the Manager reports the commit, the test result and the two changed files." width="720">
 
+From the maintainer's own Manager thread on November 20, unedited apart from cropping to the chat column. Two Luna Workers report back on PRs #67 and #68, and the Manager then checks CI on all three PRs and sends the two that failed back to their Workers.
+
+<img src="media/real-parallel-workers.png" alt="Real T3 Code thread: the user says to continue with the UX plan. Two Luna Workers report pushed fixes, and the Manager checks CI on PRs 67, 68 and 69 and sends the two failing PRs back to their Workers." width="680">
+
 ## How it compares
 
 Most tools in this space do one of three things: run many agents side by side, ship a large catalog of prompts, or teach a development method. Agent Workbench is a thin rules layer for one Manager session and its native subagents.
