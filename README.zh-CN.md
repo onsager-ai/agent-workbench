@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-# Agent Workbench 技能
+# Agent Workbench
 
 Agent Workbench 为 Codex 和 Claude Code 提供一组可移植的 skill，帮助 Manager（负责规划和验收的主会话）把工程任务分配给 Worker（执行任务的子会话），并跟踪跨会话、跨机器的交接。
 
@@ -31,7 +31,7 @@ Agent Workbench 为 Codex 和 Claude Code 提供一组可移植的 skill，帮�
 
 这是设置完成后的真实 Claude Code 会话：Manager 把一个 bug 修复交给 Haiku Worker，之后自行检查 diff、提交和测试。
 
-<img src="docs/media/session.gif" alt="Claude Code 会话：用户要求 Worker 修复一个差一错误，Manager 写出任务说明，Haiku Worker 在任务分支上提交修复，Manager 检查 diff、提交和测试后汇报。" width="720">
+<img src="docs/media/session.gif" alt="Claude Code 会话：用户要求 Worker 修复一个 off-by-one 错误，Manager 写出任务说明，Haiku Worker 在任务分支上提交修复，Manager 检查 diff、提交和测试后汇报。" width="720">
 
 ## 快速开始
 
@@ -43,7 +43,7 @@ Agent Workbench 为 Codex 和 Claude Code 提供一组可移植的 skill，帮�
 
    这会安装 skill，并应用共享全局说明和设置工具。
 
-   <img src="docs/media/demo.svg" alt="终端演示：setup 安装 skill、Worker subagent 和策略 hook。在智能体会话中，hook 会阻止在 main 上提交和轮询 CI，在启动 Opus Worker 前询问，并把用散文写的问题转为提问。" width="720">
+   <img src="docs/media/demo.svg" alt="终端演示：setup 安装 skill、Worker subagent 和策略 hook。在智能体会话中，hook 会阻止在 main 上提交和轮询 CI，在启动 Opus Worker 前询问，并让它改用提问工具，而不是在正文里提问。" width="720">
 
 2. 如果你使用 Codex，先检查并信任它的 hook：
 
@@ -55,7 +55,7 @@ Agent Workbench 为 Codex 和 Claude Code 提供一组可移植的 skill，帮�
 
 手动安装 skill、更新、安装到项目本地、使用 `awb prune` 清理以及详细配置，见[参考文档](docs/reference.md)。如果安装过旧版 `thermal` 启动器，或旧的 `thermal-guard`、`disk-cleanup` skill，请按[升级步骤](docs/reference.md#upgrade-to-host-ops)操作。设置过程不会安装智能体工具，也不会为 harness 完成身份验证。
 
-Gateway 和 CC Switch 用户可以复制[通用 Worker 配置](docs/reference.md#neutral-profile-for-provider-switching)，使用普通 Worker 名称，并遵循服务商提供的模型别名。
+使用网关或 CC Switch 的用户，可以复制[通用 Worker 配置](docs/reference.md#neutral-profile-for-provider-switching)，使用普通 Worker 名称，并遵循服务商提供的模型别名。
 
 ## 设置会修改什么
 
@@ -74,7 +74,7 @@ Gateway 和 CC Switch 用户可以复制[通用 Worker 配置](docs/reference.md
 - 阻止切换到本地 `main` 或 `master` 分支，以及在这些分支上提交或推送，确保工作在任务分支上进行；
 - 在派发 L3 Worker（默认是 Opus）前询问；
 - 阻止轮询 GitHub，例如运行 `gh pr checks --watch` 或围绕 `gh` 使用 `sleep` 循环；
-- 如果智能体用散文写出问题后结束当前轮次，会要求它改用提问工具。
+- 如果智能体在正文里提问就结束当前轮次，会让它改用提问工具。
 
 在装有受支持传感器的 Linux 机器上，进行高负载本地工作前运行 `awb ops thermal now`，并用 `awb ops thermal gate -- <command>` 执行任务。频繁调用时，可使用已安装的 `agent-workbench ops thermal` 启动器，无需运行 `npx`。如果机器使用用户级 systemd，完成设置后可运行 `awb ops thermal install` 启用后台日志记录。
 
