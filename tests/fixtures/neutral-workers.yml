@@ -1,0 +1,14 @@
+profiles:
+  neutral:
+    tiers:
+      haiku: null
+      sonnet: null
+      opus: null
+      fast: {harness: claude, model: haiku}
+      standard: {harness: claude, model: sonnet}
+      expert: {harness: claude, model: opus}
+    ladder:
+      - {level: L1, tiers: [fast]}
+      - {level: L2, tiers: [standard], start_for: [spike, research, architecture]}
+      - {level: L3, tiers: [expert], approval: required}
+profile: neutral

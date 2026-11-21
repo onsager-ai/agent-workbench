@@ -41,19 +41,6 @@ profiles:
       - {level: L1, tiers: [luna, haiku]}
       - {level: L2, tiers: [sol, sonnet], start_for: [spike, research, architecture]}
       - {level: L3, tiers: [opus], approval: required}
-  neutral:
-    # One alias per level. Add b slots to the ladder when a provider has fallbacks.
-    tiers:
-      haiku: null
-      sonnet: null
-      opus: null
-      l1-a: {harness: claude, model: haiku}
-      l2-a: {harness: claude, model: sonnet}
-      l3: {harness: claude, model: opus}
-    ladder:
-      - {level: L1, tiers: [l1-a]}
-      - {level: L2, tiers: [l2-a], start_for: [spike, research, architecture]}
-      - {level: L3, tiers: [l3], approval: required}
 # Default profile when no select rule matches; null uses the base config.
 profile: null
 # First matching ancestor path wins, e.g. [{path: ~/work, profile: corporate}].

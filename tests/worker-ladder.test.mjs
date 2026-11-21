@@ -1,5 +1,6 @@
 // Distributed Worker configuration and schema validation contract.
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -49,16 +50,24 @@ describe("worker configuration", () => {
     }
   });
 
-  test("neutral profile uses one alias slot per level without changing the default", () => {
+  test("the documented neutral profile works as a user override", () => {
+    const override = path.join(ROOT, "tests/fixtures/neutral-workers.yml");
+    const snippet = fs.readFileSync(override, "utf8");
+    for (const file of ["docs/reference.md", "skills/orchestrate-harnesses/references/configuration.md"]) {
+      assert.ok(fs.readFileSync(path.join(ROOT, file), "utf8").includes("```yaml\n" + snippet + "```"), file);
+    }
     assert.equal(bundle.profile, null);
-    const neutral = bundle.profiles.neutral;
+    assert.equal(bundle.profiles.neutral, undefined);
+    const selected = workerBundle(WORKERS, [override]);
+    assert.equal(selected.profile, "neutral");
+    const neutral = selected.profiles.neutral;
     assert.deepEqual(neutral.ladder, [
-      { level: "L1", tiers: ["l1-a"] },
-      { level: "L2", tiers: ["l2-a"], start_for: ["spike", "research", "architecture"] },
-      { level: "L3", tiers: ["l3"], approval: "required" },
+      { level: "L1", tiers: ["fast"] },
+      { level: "L2", tiers: ["standard"], start_for: ["spike", "research", "architecture"] },
+      { level: "L3", tiers: ["expert"], approval: "required" },
     ]);
     assert.deepEqual(Object.fromEntries(Object.entries(neutral.tiers).map(([name, tier]) => [name, [tier.harness, tier.model]])), {
-      "l1-a": ["claude", "haiku"], "l2-a": ["claude", "sonnet"], l3: ["claude", "opus"],
+      fast: ["claude", "haiku"], standard: ["claude", "sonnet"], expert: ["claude", "opus"],
     });
   });
 

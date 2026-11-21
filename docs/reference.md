@@ -67,14 +67,28 @@ Codex CLI 0.141 or newer (hooks are on by default) gets the same policy hook thr
 
 ### Neutral profile for provider switching
 
-For a gateway or CC Switch setup, add `profile: neutral` to your local `workers.yml` override. To select it only for a directory, use a rule such as the following.
+For a gateway or CC Switch setup, copy this profile into `~/.agents/skills/workbench-personal/workers.yml` or `~/.config/agent-workbench/workers.yml`. If the file already has a `profiles` mapping, add `neutral` under it.
 
 ```yaml
-select:
-  - {path: ~/work, profile: neutral}
+profiles:
+  neutral:
+    tiers:
+      haiku: null
+      sonnet: null
+      opus: null
+      fast: {harness: claude, model: haiku}
+      standard: {harness: claude, model: sonnet}
+      expert: {harness: claude, model: opus}
+    ladder:
+      - {level: L1, tiers: [fast]}
+      - {level: L2, tiers: [standard], start_for: [spike, research, architecture]}
+      - {level: L3, tiers: [expert], approval: required}
+profile: neutral
 ```
 
-The profile maps `l1-a` to `haiku`, `l2-a` to `sonnet`, and `l3` to `opus`. Each level ships with one alias. If your provider has a second choice for L1 or L2, define `l1-b` or `l2-b` under `profiles.neutral.tiers` and list it after the `a` slot in that level's ladder. An override replaces the whole ladder, so include all three levels and keep L3 approval.
+To use `neutral` only for a directory, replace `profile: neutral` with `select: [{path: ~/work, profile: neutral}]`, or add that entry to your existing `select` list.
+
+If your provider has a fallback, define a tier such as `fast-backup` or `standard-backup` under `profiles.neutral.tiers` and list it after `fast` or `standard` in that level. When overriding a ladder, include all three levels and keep L3 approval.
 
 In Claude Code frontmatter, aliases follow the provider's `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_OPUS_MODEL` settings. A full model ID pins the route Claude Code requests. The provider may still choose its own upstream for that ID.
 
@@ -184,7 +198,7 @@ The package's `AGENTS.md` is applied immediately after the public block, inside 
 
 The exact public markers are `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->`. Put machine-local personal rules outside both managed blocks in `~/.agents/AGENTS.md`. On first installation, existing Codex regular-file bytes are kept outside the block unchanged. Existing Claude text stays in place. Neither npx distribution nor this setup changes project instructions, other agent settings, credentials, model configuration, or native permissions.
 
-Generated agents let a Claude Manager dispatch each tier as `subagent_type: haiku`, `sonnet`, and so on. A tier is generated when its role has `harness: claude` or a non-null `claude_route`. Setup generates the union across profiles, including `haiku`, `sonnet`, `opus`, `l1-a`, `l2-a`, and `l3` from the shipped configuration. A Claude Manager uses `codex exec` for Codex tiers whose routes are null. Gateway prefixes are installation-specific; set `profiles.codex.tiers.luna.claude_route: <your-gateway>/gpt-6-luna` and `policy.context.gateway_window` in your partial override to generate that route. Rerun `agent-workbench install` after editing the override. Generated files are owned by hash: setup refuses to overwrite a foreign or edited file, leaves other files in `~/.claude/agents` alone, and `uninstall` removes only unmodified owned files.
+Generated agents let a Claude Manager dispatch each tier as `subagent_type: haiku`, `sonnet`, and so on. A tier is generated when its role has `harness: claude` or a non-null `claude_route`. Setup generates the union across profiles. The shipped configuration generates `haiku`, `sonnet`, and `opus`. A Claude Manager uses `codex exec` for Codex tiers whose routes are null. Gateway prefixes are installation-specific; set `profiles.codex.tiers.luna.claude_route: <your-gateway>/gpt-6-luna` and `policy.context.gateway_window` in your partial override to generate that route. Rerun `agent-workbench install` after editing the override. Generated files are owned by hash: setup refuses to overwrite a foreign or edited file, leaves other files in `~/.claude/agents` alone, and `uninstall` removes only unmodified owned files.
 
 Setup applies the configured compaction target to owned Claude and Codex config keys when their config directories exist, preserving existing provider routing. Compaction is advisory, not a hard request-token cap; restart running sessions to pick up changes. Setup preserves personal text outside its managed block.
 

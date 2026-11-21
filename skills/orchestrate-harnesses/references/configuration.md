@@ -10,7 +10,28 @@ Tier names are configurable. Each tier identifies its client with `harness` (`co
 
 `claude_route` is a Codex tier's model ID for dispatch from Claude Code. Null leaves it as a [Codex Worker](codex-workers.md). Claude tiers use their `model` directly. The optional `codex` profile leaves Luna, Terra and Sol routes null. Users may supply gateway IDs; gateway routing relies on workbench-setup's absolute compaction window and `policy.context.gateway_window`. Without them, Claude Code assumes 200k for those IDs, and routed Codex subagents can compact early, thrash autocompact, and stop using tools.
 
-For provider switching, set `profile: neutral` or select it with a directory rule. Its `l1-a`, `l2-a`, and `l3` tiers use frontmatter aliases that follow `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_OPUS_MODEL` in Claude Code. Use a full model ID to pin the route Claude Code requests. Add `l1-b` or `l2-b` and list it after the `a` slot in the ladder when your provider offers a second choice.
+For gateway or CC Switch setups, copy this `neutral` profile into `~/.agents/skills/workbench-personal/workers.yml` or `~/.config/agent-workbench/workers.yml`. If the file already has a `profiles` mapping, add `neutral` under it.
+
+```yaml
+profiles:
+  neutral:
+    tiers:
+      haiku: null
+      sonnet: null
+      opus: null
+      fast: {harness: claude, model: haiku}
+      standard: {harness: claude, model: sonnet}
+      expert: {harness: claude, model: opus}
+    ladder:
+      - {level: L1, tiers: [fast]}
+      - {level: L2, tiers: [standard], start_for: [spike, research, architecture]}
+      - {level: L3, tiers: [expert], approval: required}
+profile: neutral
+```
+
+To use `neutral` only for a directory, replace `profile: neutral` with `select: [{path: ~/work, profile: neutral}]`, or add that entry to your existing `select` list. Define `fast-backup` or `standard-backup` under `profiles.neutral.tiers` and put it after the primary tier if your provider offers a fallback. Ladder overrides replace the whole list.
+
+The aliases follow `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_OPUS_MODEL` in Claude Code. Use a full model ID to pin the route Claude Code requests.
 
 When migrating tier names, change the tier keys, ladder entries, and dispatch references together. Run `agent-workbench install` after editing the override and start a new session. Setup generates the union of routable tiers across the base and all profiles in `~/.claude/agents`. A name must keep the same model, route and effort across profiles; rename tiers that differ. Removing a route removes its generated file when no other profile needs it.
 

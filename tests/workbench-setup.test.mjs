@@ -733,18 +733,14 @@ describe("workbench setup", () => {
     f.installOrchestration();
     f.run("install");
     const names = (directory) => fs.readdirSync(directory).map((name) => path.basename(name, ".md")).sort();
-    const expected = ["haiku", "l1-a", "l2-a", "l3", "opus", "sonnet"];
-    assert.deepEqual(names(path.dirname(f.agent("x"))), expected);
+    assert.deepEqual(names(path.dirname(f.agent("x"))), ["haiku", "opus", "sonnet"]);
     const text = fs.readFileSync(f.agent("haiku"), "utf8");
     const worker = fs.readFileSync(path.join(ORCHESTRATION, "references/worker.md"), "utf8");
     assert.ok(text.startsWith("---\nname: haiku\n"));
     assert.ok(text.includes('model: "claude-haiku-5-5"\neffort: "medium"\n---\n'));
     assert.ok(text.includes("Managed by agent-workbench"));
     assert.ok(text.endsWith(worker));
-    for (const [name, alias] of [["l1-a", "haiku"], ["l2-a", "sonnet"], ["l3", "opus"]]) {
-      assert.ok(fs.readFileSync(f.agent(name), "utf8").includes(`model: "${alias}"\neffort: "medium"\n`));
-    }
-    assert.deepEqual(Object.keys(f.stateJson().agents).sort(), expected);
+    assert.deepEqual(Object.keys(f.stateJson().agents).sort(), ["haiku", "opus", "sonnet"]);
     assert.ok("haiku" in JSON.parse(f.run("status").stdout).agents);
     assert.match(f.run("install").stdout, /no-op/);
   });
@@ -805,25 +801,28 @@ describe("workbench setup", () => {
     assert.ok(!warnings.includes("is not listed"));
   });
 
-  test("neutral profile generates pinned fallback slots and rejects conflicting definitions", () => {
+  test("the documented neutral override generates aliases and supports a pinned fallback", () => {
     const f = new Fixture();
-    const override = { profile: "neutral", profiles: { neutral: {
-      tiers: { "l2-b": { harness: "claude", model: "gateway/fallback" } },
-      ladder: [
-        { level: "L1", tiers: ["l1-a"] },
-        { level: "L2", tiers: ["l2-a", "l2-b"], start_for: ["spike", "research", "architecture"] },
-        { level: "L3", tiers: ["l3"], approval: "required" },
-      ],
-    } } };
-    f.installOrchestration(override);
+    const snippet = read(path.join(ROOT, "tests/fixtures/neutral-workers.yml")).toString("utf8");
+    f.installOrchestration();
+    f.write(f.overridePath, snippet);
     f.run("install");
-    assert.deepEqual(JSON.parse(f.run("workers").stdout).ladder[1].tiers, ["l2-a", "l2-b"]);
-    assert.ok(fs.readFileSync(f.agent("l2-b"), "utf8").includes('model: "gateway/fallback"\n'));
-    override.profiles.codex = { tiers: { "l2-a": { harness: "claude", model: "gateway/other" } } };
-    f.write(f.overridePath, JSON.stringify(override));
-    const before = f.snapshot();
-    assert.match(f.run("install", [], false).stderr, /tier l2-a has different model\/route\/effort across profiles/);
-    assert.deepEqual(f.snapshot(), before);
+    const workers = JSON.parse(f.run("workers").stdout);
+    assert.equal(workers.profile, "neutral");
+    const aliases = { fast: "haiku", standard: "sonnet", expert: "opus" };
+    for (const [name, alias] of Object.entries(aliases)) {
+      assert.ok(fs.readFileSync(f.agent(name), "utf8").includes(`model: "${alias}"\neffort: "medium"\n`));
+    }
+    assert.deepEqual(Object.keys(f.stateJson().agents).sort(), ["expert", "fast", "haiku", "opus", "sonnet", "standard"]);
+    const { warnings } = inspectCatalog(f, { stdout: ["haiku", "sonnet", "opus"]
+      .map((alias) => `auto/claude-${alias}-5-5  Claude ${alias}  low/medium`).join("\n") });
+    assert.equal(warnings, "");
+    f.write(f.overridePath, snippet
+      .replace("    ladder:", "      standard-backup: {harness: claude, model: gateway/fallback}\n    ladder:")
+      .replace("tiers: [standard]", "tiers: [standard, standard-backup]"));
+    f.run("install");
+    assert.deepEqual(JSON.parse(f.run("workers").stdout).ladder[1].tiers, ["standard", "standard-backup"]);
+    assert.ok(fs.readFileSync(f.agent("standard-backup"), "utf8").includes('model: "gateway/fallback"\n'));
   });
 
   test("catalog validation skips when magpie is absent", () => {
@@ -853,7 +852,7 @@ describe("workbench setup", () => {
     f.installOrchestration({ profile: "codex" });
     f.run("install");
     const names = () => fs.readdirSync(path.dirname(f.agent("x"))).map((name) => path.basename(name, ".md")).sort();
-    assert.deepEqual(names(), ["haiku", "l1-a", "l2-a", "l3", "opus", "sonnet"]);
+    assert.deepEqual(names(), ["haiku", "opus", "sonnet"]);
     const route = "gateway/gpt-6-luna";
     f.write(f.overridePath, JSON.stringify({ profile: "codex", profiles: { codex: { tiers: { luna: { claude_route: route } } } } }));
     f.run("install");
