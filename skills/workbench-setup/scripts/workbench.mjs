@@ -31,10 +31,16 @@ const ROLE = /^[a-z][a-z0-9-]*$/;
 const CLAUDE_HOOK_MATCHERS = {
   PreToolUse: ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"],
   PostToolUse: ["Agent|Task"],
+  PostToolBatch: [undefined],
+  UserPromptSubmit: [undefined],
   Stop: [undefined],
 };
 const claudeHookKey = (event, matcher) => matcher === undefined ? event : `${event}:${matcher}`;
-const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send"];
+const CODEX_HOOK_MATCHERS = {
+  PreToolUse: ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send"],
+  Stop: [undefined],
+  UserPromptSubmit: [undefined],
+};
 const CODEX_HOOK_TIMEOUT = 30;
 
 export class Conflict extends Error {}
@@ -335,7 +341,7 @@ const digest = (data) => crypto.createHash("sha256").update(data).digest("hex");
 // Codex 0.170.0 trust identity (codex-rs hooks/src/engine/discovery.rs hook_hash and
 // config/src/fingerprint.rs version_for_toml): sha256 of the compact JSON of the sorted-key
 // {event_name, hooks: [normalized handler], matcher}, with the command timeout defaulting to 600.
-const CODEX_EVENT_LABELS = { PreToolUse: "pre_tool_use", PostToolUse: "post_tool_use", Stop: "stop" };
+const CODEX_EVENT_LABELS = { PreToolUse: "pre_tool_use", PostToolUse: "post_tool_use", Stop: "stop", UserPromptSubmit: "user_prompt_submit" };
 const sortedJson = (value) => (Array.isArray(value) ? value.map(sortedJson)
   : isDict(value) ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortedJson(value[key])])) : value);
 
@@ -939,7 +945,7 @@ export class Setup {
     const hooks = has(parsed, "hooks") ? parsed.hooks : {};
     const events = Object.entries(CLAUDE_HOOK_MATCHERS);
     if (!isDict(hooks) || events.some(([event]) => has(hooks, event) && !Array.isArray(hooks[event]))) {
-      throw new Conflict("invalid Claude hooks.PreToolUse, hooks.PostToolUse, or hooks.Stop configuration; correct settings.json, then rerun agent-workbench install");
+      throw new Conflict("invalid Claude hooks configuration; correct settings.json, then rerun agent-workbench install");
     }
     let command = null;
     if (!uninstall && present(this.models) && present(this.worker)) {
@@ -1001,71 +1007,61 @@ export class Setup {
       throw new Conflict(`invalid Codex hooks configuration: ${this.codexHooks}; correct hooks.json, then rerun agent-workbench install`);
     }
     const hooks = isDict(parsed) && has(parsed, "hooks") ? parsed.hooks : {};
-    const current = isDict(hooks) && has(hooks, "PreToolUse") ? hooks.PreToolUse : [];
-    const currentStop = isDict(hooks) && has(hooks, "Stop") ? hooks.Stop : [];
-    if (!isDict(parsed) || !isDict(hooks) || !Array.isArray(current) || !Array.isArray(currentStop)) {
-      throw new Conflict("invalid Codex hooks.PreToolUse or hooks.Stop configuration; correct hooks.json, then rerun agent-workbench install");
+    const events = Object.entries(CODEX_HOOK_MATCHERS);
+    if (!isDict(parsed) || !isDict(hooks) || events.some(([event]) => has(hooks, event) && !Array.isArray(hooks[event]))) {
+      throw new Conflict("invalid Codex hooks configuration; correct hooks.json, then rerun agent-workbench install");
     }
-    const contains = (list, entry) => list.some((item) => isDeepStrictEqual(item, entry));
-    for (const entry of owned) {
-      const collection = has(entry, "matcher") ? current : currentStop;
-      if (collection.filter((item) => isDeepStrictEqual(item, entry)).length > 1) {
-        throw new Conflict("owned Codex hook is duplicated; remove the duplicate entry, then rerun agent-workbench install");
-      }
-    }
-    let desired = [];
-    let desiredStop = [];
+    let handler = null;
     if (!uninstall && available && present(this.models) && present(this.worker)) {
       inspect(this.policyHook, this.home);
       if (!isFile(this.policyHook)) {
         throw new Conflict("missing canonical policy hook; distribute orchestrate-harnesses first, then rerun agent-workbench install");
       }
       const command = [this.policyHook, "--host", "codex", "--workers", this.workersPath].map(shellQuote).join(" ");
-      const handler = { type: "command", command, timeout: CODEX_HOOK_TIMEOUT };
-      desired = CODEX_HOOK_MATCHERS.map((matcher) => ({ matcher, hooks: [{ ...handler }] }));
-      desiredStop = [{ hooks: [{ ...handler }] }];
+      handler = { type: "command", command, timeout: CODEX_HOOK_TIMEOUT };
     }
+    const contains = (list, entry) => list.some((item) => isDeepStrictEqual(item, entry));
     const report = {};
-    for (const entry of owned) if (has(entry, "matcher")) report[entry.matcher] = contains(current, entry) ? "applied" : "missing";
-    for (const entry of owned) if (!has(entry, "matcher")) report.Stop = contains(currentStop, entry) ? "applied" : "missing";
-    if (status) return [owned, report, { PreToolUse: current, Stop: currentStop }];
-    const updated = [...current];
-    const updatedStop = [...currentStop];
-    const remove = (list, entry) => {
-      const index = list.findIndex((item) => isDeepStrictEqual(item, entry));
-      if (index !== -1) list.splice(index, 1);
-    };
-    for (const entry of owned) {
-      const collection = has(entry, "matcher") ? updated : updatedStop;
-      if (!contains(has(entry, "matcher") ? desired : desiredStop, entry)) remove(collection, entry);
-    }
     const record = [];
-    for (const entry of desired) {
-      if (contains(owned, entry) || !contains(updated, entry)) record.push(entry);
-      if (!contains(updated, entry)) updated.push(entry);
+    const lists = {};
+    const changes = {};
+    for (const [event, matchers] of events) {
+      const current = hooks[event] ?? [];
+      const previous = owned.filter((entry) => entry.event === event).map(({ event: _, ...entry }) => entry);
+      const desired = handler === null ? [] : matchers.map((matcher) => ({
+        ...(matcher === undefined ? {} : { matcher }), hooks: [{ ...handler }],
+      }));
+      const updated = [...current];
+      lists[event] = updated;
+      for (const entry of previous) {
+        const matches = current.filter((item) => isDeepStrictEqual(item, entry));
+        if (matches.length > 1) throw new Conflict("owned Codex hook is duplicated; remove the duplicate entry, then rerun agent-workbench install");
+        report[entry.matcher ?? event] = matches.length ? "applied" : "missing";
+        if (!status && matches.length && !contains(desired, entry)) updated.splice(updated.indexOf(matches[0]), 1);
+      }
+      if (status) continue;
+      for (const entry of desired) {
+        const exists = contains(updated, entry);
+        if (!exists || contains(previous, entry)) record.push({ ...entry, event });
+        if (!exists) updated.push(entry);
+      }
+      if (!isDeepStrictEqual(updated, current)) changes[event] = updated;
     }
-    for (const entry of desiredStop) {
-      if (contains(owned, entry) || !contains(updatedStop, entry)) record.push(entry);
-      if (!contains(updatedStop, entry)) updatedStop.push(entry);
-    }
-    if (!isDeepStrictEqual(updated, current) || !isDeepStrictEqual(updatedStop, currentStop)) {
-      if (!has(parsed, "hooks")) parsed.hooks = {};
-      parsed.hooks.PreToolUse = updated;
-      parsed.hooks.Stop = updatedStop;
+    if (Object.keys(changes).length) {
+      parsed.hooks = { ...hooks, ...changes };
       plans.set(this.codexHooks, ["file", Buffer.from(dumps(parsed, { indent: 2, ascii: false }) + "\n"), 0o600]);
     }
-    return [record, report, { PreToolUse: updated, Stop: updatedStop }];
+    return [status ? owned : record, report, lists];
   }
 
   // Trust key and hash for each owned hook entry at its position in the hooks.json lists.
   codexTrustItems(entries, lists) {
     const items = [];
-    for (const entry of entries) {
-      const event = has(entry, "matcher") ? "PreToolUse" : "Stop";
+    for (const { event, ...entry } of entries) {
       const index = lists[event].findIndex((item) => isDeepStrictEqual(item, entry));
       if (index === -1) continue;
       items.push({
-        label: entry.matcher ?? "Stop", key: codexHookKey(this.codexHooks, event, index),
+        label: entry.matcher ?? event, key: codexHookKey(this.codexHooks, event, index),
         hash: codexHookHash(event, entry.matcher, entry.hooks[0]),
       });
     }
@@ -1222,11 +1218,12 @@ export class Setup {
         const { key, ...entry } = saved;
         const names = Object.keys(entry).sort().join(",");
         const { matcher, hooks } = entry;
-        const event = legacyEvent ?? (typeof key === "string" && key.startsWith("PostToolUse:")
-          ? "PostToolUse" : has(entry, "matcher") ? "PreToolUse" : "Stop");
+        const namedEvent = typeof key === "string" ? key.split(":", 1)[0] : null;
+        const event = legacyEvent ?? (has(CLAUDE_HOOK_MATCHERS, namedEvent) ? namedEvent
+          : has(entry, "matcher") ? "PreToolUse" : "Stop");
         const expectedKey = claudeHookKey(event, matcher);
         const bareKey = event === "PreToolUse" && key === matcher;
-        if (names !== (event === "Stop" ? "hooks" : "hooks,matcher") ||
+        if (names !== (matcher === undefined ? "hooks" : "hooks,matcher") ||
             !CLAUDE_HOOK_MATCHERS[event].includes(matcher) || hookKeys.has(expectedKey) ||
             (has(saved, "key") && key !== expectedKey && !bareKey) ||
             !Array.isArray(hooks) || hooks.length !== 1 || !isDict(hooks[0]) ||
@@ -1242,18 +1239,22 @@ export class Setup {
         ...(state.post_hooks ?? []).map((entry) => normalizeHook(entry, "PostToolUse")),
       ];
       if (has(state, "codex_hooks") && !Array.isArray(state.codex_hooks)) throw invalid("invalid Codex hook ownership metadata");
-      for (const entry of state.codex_hooks ?? []) {
-        const names = isDict(entry) ? Object.keys(entry).sort().join(",") : "";
-        const inner = isDict(entry) ? entry.hooks : null;
-        if (!["hooks,matcher", "hooks"].includes(names)
-            || (has(entry, "matcher") && !CODEX_HOOK_MATCHERS.includes(entry.matcher))
+      state.codex_hooks = (state.codex_hooks ?? []).map((saved) => {
+        if (!isDict(saved)) throw invalid("invalid Codex hook ownership metadata");
+        // Older records distinguish PreToolUse from Stop by the presence of a matcher.
+        const { event = has(saved, "matcher") ? "PreToolUse" : "Stop", ...entry } = saved;
+        const names = Object.keys(entry).sort().join(",");
+        const { hooks: inner, matcher } = entry;
+        if (!has(CODEX_HOOK_MATCHERS, event) || !CODEX_HOOK_MATCHERS[event].includes(matcher)
+            || names !== (matcher === undefined ? "hooks" : "hooks,matcher")
             || !Array.isArray(inner) || inner.length !== 1 || !isDict(inner[0])
             || Object.keys(inner[0]).sort().join(",") !== "command,timeout,type"
             || inner[0].type !== "command" || typeof inner[0].command !== "string"
             || !isInt(inner[0].timeout)) {
           throw invalid("invalid Codex hook ownership metadata");
         }
-      }
+        return { ...entry, event };
+      });
       if (has(state, "codex_trust") && !Array.isArray(state.codex_trust)) throw invalid("invalid Codex trust ownership metadata");
       for (const entry of state.codex_trust ?? []) {
         if (!isDict(entry) || Object.keys(entry).sort().join(",") !== "hash,key,text"
@@ -1563,7 +1564,7 @@ export class Setup {
     catch (error) { hookStatus = { error: error.message }; }
     let codexOwned = [];
     let codexHookStatus = {};
-    let codexLists = { PreToolUse: [], Stop: [] };
+    let codexLists = {};
     try { [codexOwned, codexHookStatus, codexLists] = this.codexHookPlans(state, new Map(), { status: true }); }
     catch (error) { codexHookStatus = { error: error.message }; }
     const report = {
