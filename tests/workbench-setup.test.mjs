@@ -58,11 +58,11 @@ class Fixture {
     fs.writeFileSync(file, data);
   }
 
-  run(command, args = [], ok = true) {
+  run(command, args = [], ok = true, env = {}) {
     assert.notEqual(this.home, os.homedir());
     const result = spawnSync(process.execPath, [this.script, "--home", this.home, command, ...args,
       ...(command === "status" && !args.includes("--json") ? ["--json"] : [])],
-      { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: "" } });
+      { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: "", ...env } });
     assert.equal(result.status === 0, ok, result.stdout + result.stderr);
     return result;
   }
@@ -94,7 +94,7 @@ class Fixture {
   nativeLock() {
     const lock = { version: 3, skills: {
       "workbench-setup": { source: "onsager-ai/agent-workbench", sourceType: "github" },
-      "disk-cleanup": { source: "onsager-ai/agent-workbench", sourceType: "github" },
+      "host-ops": { source: "onsager-ai/agent-workbench", sourceType: "github" },
       unrelated: { source: "another/project", sourceType: "github" },
     } };
     this.write(path.join(this.home, ".agents/.skill-lock.json"), JSON.stringify(lock));
@@ -180,6 +180,47 @@ describe("workbench setup", () => {
     for (const name of fs.readdirSync(path.join(f.state, "backups"))) assert.equal(mode(path.join(f.state, "backups", name)), 0o600);
     assert.match(read(f.launcher).toString(), /^#!\/bin\/sh\n/);
     assert.equal(mode(f.launcher), 0o700);
+  });
+
+  test("host-ops installs and removes the thermal launcher and logger while keeping logs", () => {
+    const f = new Fixture();
+    const thermal = path.join(f.home, ".agents/skills/host-ops/scripts/thermal");
+    f.write(thermal, read(path.join(ROOT, "skills/host-ops/scripts/thermal")));
+    fs.chmodSync(thermal, 0o700);
+    const sysfs = path.join(f.temporary, "sys");
+    const zone = path.join(sysfs, "class/thermal/thermal_zone0");
+    f.write(path.join(zone, "type"), "x86_pkg_temp\n");
+    f.write(path.join(zone, "temp"), "52000\n");
+    const bin = path.join(f.temporary, "bin");
+    const systemctl = path.join(bin, "systemctl");
+    const calls = path.join(f.temporary, "systemctl.log");
+    f.write(systemctl, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$SYSTEMCTL_LOG"\n[ "$2" != is-active ] || echo active\n');
+    fs.chmodSync(systemctl, 0o700);
+    const env = { PATH: `${bin}:${process.env.PATH}`, THERMAL_SYSFS: sysfs, XDG_STATE_HOME: "", SYSTEMCTL_LOG: calls };
+    const launcher = path.join(f.home, ".local/bin/thermal");
+    const unit = "host-ops-thermal.service";
+    const service = path.join(f.home, ".config/systemd/user", unit);
+    const log = path.join(f.home, ".local/state/thermal-guard/temps.log");
+    f.write(log, "previous reading\n");
+
+    assert.match(f.run("install", [], true, env).stdout, /thermal launcher and service installed/);
+    assert.equal(fs.readlinkSync(launcher), thermal);
+    assert.ok(read(service).includes(`ExecStart=${launcher} watch\n`));
+    const status = JSON.parse(f.run("status", [], true, env).stdout).thermal;
+    assert.match(status, /temperature=52C; service=active; last_log_age=\d+s/);
+    assert.match(f.run("uninstall", [], true, env).stdout, /thermal guard uninstalled/);
+    assert.ok(!exists(launcher));
+    assert.ok(!exists(service));
+    assert.equal(read(log).toString(), "previous reading\n");
+    assert.deepEqual(read(calls).toString().trim().split("\n"), [
+      "--user show-environment",
+      "--user daemon-reload",
+      `--user enable --now ${unit}`,
+      "--user show-environment",
+      `--user is-active ${unit}`,
+      `--user disable --now ${unit}`,
+      "--user daemon-reload",
+    ]);
   });
 
   test("first install keeps existing bytes and is idempotent", () => {
@@ -495,7 +536,7 @@ describe("workbench setup", () => {
       `s = s.replace("process.exitCode = main();", ${JSON.stringify(`fs.writeFileSync(${JSON.stringify(marker)}, "fresh"); process.exitCode = main();`)});\n` +
       `fs.writeFileSync(${JSON.stringify(f.script)}, s);\n`);
     f.run("update", ["--skills-cmd", command]);
-    assert.deepEqual(f.json(log), ["update", "disk-cleanup", "workbench-setup", "-g", "-y"]);
+    assert.deepEqual(f.json(log), ["update", "host-ops", "workbench-setup", "-g", "-y"]);
     assert.equal(read(marker).toString(), "fresh");
     assert.ok(read(f.shared).includes("new public template"));
   });
@@ -516,7 +557,7 @@ describe("workbench setup", () => {
       `fs.mkdirSync(path.dirname(${JSON.stringify(personal)}), { recursive: true });\n` +
       `fs.writeFileSync(${JSON.stringify(personal)}, "updated personal rules");\n`);
     f.run("update", ["--skills-cmd", command]);
-    assert.deepEqual(f.json(log), ["update", "disk-cleanup", "workbench-personal", "workbench-setup", "-g", "-y"]);
+    assert.deepEqual(f.json(log), ["update", "host-ops", "workbench-personal", "workbench-setup", "-g", "-y"]);
     assert.ok(read(f.shared).includes("updated personal rules"));
   });
 

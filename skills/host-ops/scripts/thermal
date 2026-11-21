@@ -2,6 +2,7 @@
 # Portable Linux package-temperature guard for local CPU-heavy commands.
 set -u
 
+# Keep the existing thermal logs and admission lock across skill upgrades.
 STATE=${XDG_STATE_HOME:-"$HOME/.local/state"}/thermal-guard
 SYSFS=${THERMAL_SYSFS:-/sys}
 EX_UNAVAILABLE=69
@@ -147,11 +148,12 @@ script_path() {
 }
 
 launcher_path=$HOME/.local/bin/thermal
-service_path=$HOME/.config/systemd/user/thermal-guard.service
+service_name=host-ops-thermal.service
+service_path=$HOME/.config/systemd/user/$service_name
 service_text() {
     cat <<EOF
 [Unit]
-Description=Thermal guard logger
+Description=Host Ops thermal logger
 
 [Service]
 ExecStart=$launcher_path watch
@@ -189,7 +191,7 @@ install() {
         mkdir -p "${service_path%/*}" || die "cannot create systemd user directory"
         printf '%s\n' "$wanted" > "$service_path" || die "cannot write service"
     fi
-    systemctl --user daemon-reload && systemctl --user enable --now thermal-guard.service || die "could not enable thermal-guard service"
+    systemctl --user daemon-reload && systemctl --user enable --now "$service_name" || die "could not enable $service_name"
     echo "thermal launcher and service installed"
 }
 
@@ -201,7 +203,7 @@ uninstall() {
     wanted=$(service_text)
     if [ -e "$service_path" ] || [ -L "$service_path" ]; then
         [ ! -L "$service_path" ] && same_file "$service_path" "$wanted" || die "foreign service: $service_path"
-        systemctl --user disable --now thermal-guard.service >/dev/null 2>&1 || true
+        systemctl --user disable --now "$service_name" >/dev/null 2>&1 || true
         rm "$service_path" || die "cannot remove service"
         systemctl --user daemon-reload >/dev/null 2>&1 || true
     fi
@@ -217,7 +219,7 @@ status() {
     value=$(temp)
     echo "sensor=$SENSOR temperature=${value:-unreadable}C"
     if systemctl --user show-environment >/dev/null 2>&1; then
-        echo "service=$(systemctl --user is-active thermal-guard.service 2>/dev/null || true)"
+        echo "service=$(systemctl --user is-active "$service_name" 2>/dev/null || true)"
     else
         echo "service=unavailable"
     fi

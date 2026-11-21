@@ -36,7 +36,7 @@ Coding agents work best when one session keeps the plan and cheaper ones do the 
 
 3. Start a new Manager session. Use the native subagent tools in your harness to delegate work; setup details and configuration are in the [reference](docs/reference.md).
 
-For manual skill installation, updates, project-local installs, `awb prune` cleanup, and detailed configuration, see the [reference](docs/reference.md). Setup does not install agent tools or authenticate harnesses.
+For manual skill installation, updates, project-local installs, `awb prune` cleanup, and detailed configuration, see the [reference](docs/reference.md). If you installed the former `thermal-guard` or `disk-cleanup` skill, follow the [upgrade steps](docs/reference.md#upgrade-to-host-ops). Setup does not install agent tools or authenticate harnesses.
 
 ## What setup changes
 
@@ -66,16 +66,16 @@ awb uninstall                       # restore instructions, settings and hooks; 
 npx skills remove -g --all          # remove installed skills (this removes every global skill)
 ```
 
-To remove only these skills, name them: `npx skills remove -g manage-lane orchestrate-harnesses prompt-for-decisions thermal-guard workbench-setup disk-cleanup review-storybook`.
+To remove only these skills, name them: `npx skills remove -g manage-lane orchestrate-harnesses prompt-for-decisions host-ops workbench-setup review-storybook`.
 
 ## Skills
 
 - **manage-lane** — maintain task intent, authorization, and handovers.
 - **orchestrate-harnesses** — coordinate native Workers and T3 Code Managers.
 - **prompt-for-decisions** — surface unresolved choices with evidence and trade-offs.
-- **thermal-guard** — gate CPU-heavy work using a supported package temperature sensor.
+- **host-ops** — gate CPU-heavy work on supported machines and inspect or reclaim local disk space.
 - **workbench-setup** — apply shared global instructions while preserving personal text.
-- **disk-cleanup** and **review-storybook** are optional skills.
+- **review-storybook** is optional.
 
 ## License
 

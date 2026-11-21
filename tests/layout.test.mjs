@@ -6,12 +6,11 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const EXPECTED_SKILLS = [
-  "disk-cleanup",
+  "host-ops",
   "manage-lane",
   "orchestrate-harnesses",
   "prompt-for-decisions",
   "review-storybook",
-  "thermal-guard",
   "workbench-setup",
 ];
 
@@ -56,7 +55,9 @@ describe("public layout", () => {
   test("bundled resources are present", () => {
     const required = [
       "docs/notes.md",
-      "skills/disk-cleanup/references/targets.md",
+      "skills/host-ops/references/disk.md",
+      "skills/host-ops/references/thermal.md",
+      "skills/host-ops/scripts/thermal",
       "skills/manage-lane/references/handover.md",
       "skills/orchestrate-harnesses/workers.yml",
       "skills/orchestrate-harnesses/references/manager.md",
@@ -68,7 +69,6 @@ describe("public layout", () => {
       "skills/orchestrate-harnesses/references/magpie.md",
       "skills/orchestrate-harnesses/scripts/policy-hook",
       "skills/orchestrate-harnesses/scripts/policy-hook.mjs",
-      "skills/thermal-guard/scripts/thermal",
       "skills/workbench-setup/assets/AGENTS.md",
       "skills/workbench-setup/scripts/workbench.mjs",
       "skills/workbench-setup/scripts/workbench.py",
@@ -84,7 +84,7 @@ describe("public layout", () => {
   });
 
   test("executable entry points keep their mode", () => {
-    for (const relativePath of ["skills/orchestrate-harnesses/scripts/policy-hook", "skills/thermal-guard/scripts/thermal"]) {
+    for (const relativePath of ["skills/orchestrate-harnesses/scripts/policy-hook", "skills/host-ops/scripts/thermal"]) {
       fs.accessSync(path.join(ROOT, relativePath), fs.constants.X_OK);
     }
   });
@@ -94,7 +94,7 @@ describe("public layout", () => {
     for (const removed of ["## Writing for the user", "- When you need the user's answer", "- For a device or browser login"]) {
       assert.ok(!template.includes(removed), removed);
     }
-    for (const retained of ["preserve unrelated work", "Thermal:", "Worker or reviewer", "native permission settings remain authoritative", "when its tools are available"]) {
+    for (const retained of ["preserve unrelated work", "Follow the `host-ops` skill", "Worker or reviewer", "native permission settings remain authoritative", "when its tools are available"]) {
       assert.ok(template.includes(retained), retained);
     }
   });

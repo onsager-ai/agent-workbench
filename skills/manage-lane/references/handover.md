@@ -34,4 +34,4 @@ Reuse existing records rather than copying entire transcripts or creating anothe
 
 Read applicable repository instructions and manage-lane. Load orchestrate-harnesses for an orchestrated task and only the role references needed for the next action. Consult a historical ruling only when a specific task hold cites it. Keep the existing interactive model and permission policy; Worker routing comes from the orchestration skill's current configuration.
 
-Carry applicable resource and verification rules from the current host and repository instructions into any further delegation or resume, with their source. Do not assume a shared thermal threshold, local-check restriction or telemetry path from a prior task. Keep local parsing and searches bounded to the limits in force for the current task.
+Follow `host-ops` for host resource rules and carry applicable limits into delegations and resumes. Carry current host and repository verification rules into delegations and resumes with their source. Do not assume a local-check restriction or telemetry path from a prior task. Keep local parsing and searches bounded to the limits in force for the current task.

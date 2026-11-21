@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const THERMAL = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../skills/thermal-guard/scripts/thermal");
+const THERMAL = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../skills/host-ops/scripts/thermal");
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 describe("thermal guard", () => {
@@ -16,7 +16,7 @@ describe("thermal guard", () => {
   const children = [];
 
   beforeEach(() => {
-    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "thermal-guard-")));
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "host-ops-thermal-")));
     sysfs = path.join(root, "sys");
     home = path.join(root, "home");
     fs.mkdirSync(home);

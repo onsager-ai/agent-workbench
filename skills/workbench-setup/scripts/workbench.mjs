@@ -689,7 +689,7 @@ export class Setup {
     this.statePath = path.join(this.root, "state.json");
     this.script = at(".agents/skills/workbench-setup/scripts/workbench.mjs");
     this.template = path.join(path.dirname(this.script), "../assets/AGENTS.md");
-    this.thermal = at(".agents/skills/thermal-guard/scripts/thermal");
+    this.thermal = at(".agents/skills/host-ops/scripts/thermal");
     this.target = "../.agents/AGENTS.md";
     this.agents = at(".claude/agents");
     const orchestration = at(".agents/skills/orchestrate-harnesses");
@@ -1618,7 +1618,7 @@ export class Setup {
       line("personal package", report.personal_package.present ? "applied" : "not installed", "install workbench-personal if needed");
       line("instruction template", state.template_hash === report.available_template_hash && state.version === VERSION ? "applied" : "missing", "run agent-workbench install to apply update");
       line(`private instructions (${private_.length} bytes)`, "applied", "");
-      line(`thermal (${report.thermal})`, report.thermal === "not installed" ? "not installed" : "applied", report.thermal === "not installed" ? "install thermal-guard if needed" : "");
+      line(`thermal (${report.thermal})`, report.thermal === "not installed" ? "not installed" : "applied", report.thermal === "not installed" ? "install host-ops if needed" : "");
       for (const [name, file] of Object.entries(report.agents)) line(`Claude agent ${name}`, fs.existsSync(file) ? "applied" : "missing", "run agent-workbench install to restore");
       if (report.agents_error) console.log(`conflict  Claude agents: ${report.agents_error}; resolve the file conflict, then run agent-workbench install`);
       if (report.codex_trust_error) console.log(`conflict  Codex trust: ${report.codex_trust_error}; resolve Codex config.toml, then run agent-workbench status --json`);
