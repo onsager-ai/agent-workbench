@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 const target = path.join(process.env.AWB_TEST_HOME, '.agents', 'skills', 'workbench-setup');
 fs.mkdirSync(path.dirname(target), { recursive: true });
+fs.writeFileSync(path.join(path.dirname(target), 'skills-home'), process.env.HOME);
 fs.cpSync(process.env.AWB_TEST_SOURCE, target, { recursive: true });
 `, { mode: 0o755 });
   return { dir, home, skillsCmd, env: { ...process.env, AWB_TEST_HOME: home, AWB_TEST_SOURCE: path.join(root, "skills", "workbench-setup") } };
@@ -75,6 +76,7 @@ test("setup installs skills, then applies and reports setup", (t) => {
   const result = run(f.home, ["--skills-cmd", f.skillsCmd, "setup"], f.env);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^ok  setup: applied$/m);
+  assert.equal(fs.readFileSync(path.join(f.home, ".agents", "skills", "skills-home"), "utf8"), f.home);
   assert.ok(fs.existsSync(path.join(f.home, ".local", "bin", "agent-workbench")));
 });
 
