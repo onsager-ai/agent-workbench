@@ -14,7 +14,7 @@ Agent Workbench is a set of portable skills for Codex and Claude Code that helps
 Coding agents work best when one session keeps the plan and cheaper ones do the work. Without rules, an agent picks the most expensive model for small jobs, loses track of what you approved, and leaves half-finished branches behind. Agent Workbench gives your session a working routine:
 
 - **Your session plans, Workers build.** The session you talk to is the Manager. It splits the task, sends each piece to a Worker subagent and checks the result before telling you it's done.
-- **Cheap models first.** Workers start on Haiku and move up to Sonnet when the task needs it. Opus runs only after you approve it for that task. You can add Codex models or your own.
+- **Start small, escalate when needed.** L1 uses a small, fast, low-cost model for bounded work. L2 uses a capable general model for research, spikes, and architecture. L3 uses the strongest model and needs your approval for each task. The default Claude mapping is Haiku, Sonnet, and Opus; an optional Codex profile maps Luna + Haiku to L1, Sol + Sonnet to L2, and Opus to L3. You can map any models from a gateway or another harness in `workers.yml`.
 - **Questions you can answer quickly.** When the agent needs a decision, it asks with your harness's question tool and puts its recommended option first.
 - **Handoffs survive.** The Manager records what you asked for and what you approved, so a later session or another machine can pick up the task.
 
@@ -53,7 +53,7 @@ Setup writes only to your home directory and never to your repositories.
 Once installed, the policy hook will:
 
 - block checking out, committing to or pushing a local `main` or `master` branch, so work happens on task branches;
-- ask before dispatching an Opus Worker;
+- ask before dispatching an L3 Worker (Opus by default);
 - block GitHub polling, such as `gh pr checks --watch` or `sleep` loops around `gh`;
 - send the agent back when it ends a turn with a question written as prose, so it asks with the question tool.
 
