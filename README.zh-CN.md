@@ -53,7 +53,7 @@ Agent Workbench 为 Codex 和 Claude Code 提供一组可移植的 skill，帮�
 
 3. 启动新的 Manager 会话。使用 harness 自带的 subagent 工具分配工作；设置和配置说明见[参考文档](docs/reference.md)。
 
-手动安装 skill、更新、安装到项目本地、使用 `awb prune` 清理以及详细配置，见[参考文档](docs/reference.md)。如果安装过旧版 `thermal` 启动器，或旧的 `thermal-guard`、`disk-cleanup` skill，请按[升级步骤](docs/reference.md#upgrade-to-host-ops)操作。设置过程不会安装智能体工具，也不会为 harness 完成身份验证。
+手动安装 skill、更新、安装到项目本地、使用 `awb prune` 清理以及详细配置，见[参考文档](docs/reference.md)。设置过程不会安装智能体工具，也不会为 harness 完成身份验证。
 
 使用网关或 CC Switch 的用户，可以复制[通用 Worker 配置](docs/reference.md#neutral-profile-for-provider-switching)，使用普通 Worker 名称，并遵循服务商提供的模型别名。
 
