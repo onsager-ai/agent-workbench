@@ -23,7 +23,13 @@ policy:
   max_auto_rework: 2
   # Absolute compaction target and optional native window overrides.
   # Gateway users set gateway_window to their gateway's advertised window.
-  context: {max_tokens: 300000, gateway_window: null, codex_window: null}
+  # Sessions on manager_models use manager_window in Claude Code.
+  context:
+    max_tokens: 300000
+    gateway_window: null
+    codex_window: null
+    manager_window: 100000
+    manager_models: [claude-opus-5-5]
   # Optional local Magpie classifier for the Stop hook; null keeps the question-mark check.
   stop_classifier: null
 # Profiles overlay the merged base config; null deletes a tier.

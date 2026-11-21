@@ -39,7 +39,8 @@ const CODEX_HOOK_TIMEOUT = 30;
 
 export class Conflict extends Error {}
 
-const INTEGER_KEYS = new Set(["version", "timeout_s", "max_auto_rework", "max_tokens", "gateway_window", "codex_window"]);
+const CONTEXT_INTEGER_KEYS = ["max_tokens", "gateway_window", "codex_window", "manager_window"];
+const INTEGER_KEYS = new Set(["version", "timeout_s", "max_auto_rework", ...CONTEXT_INTEGER_KEYS]);
 
 // Parse like PyYAML's safe_load: YAML 1.1, repeated keys keep the last value, keys must be strings
 // (YAML 1.1 reads `no`, `on` and `null` as non-strings), and floats are not accepted in integer fields.
@@ -193,7 +194,7 @@ function validateWorkerShape(config, { profile = false } = {}) {
       }
     }
     if (has(config.policy, "context")) {
-      keys(config.policy.context, ["max_tokens", "gateway_window", "codex_window"], "policy.context");
+      keys(config.policy.context, [...CONTEXT_INTEGER_KEYS, "manager_models"], "policy.context");
     }
   }
   if (has(config, "ladder")) {
@@ -262,13 +263,18 @@ export function resolveWorkerConfig(config) {
     throw new Conflict("policy.max_auto_rework must be a nonnegative integer; correct it in workers.yml");
   }
   const context = policy.context ?? {};
-  for (const key of ["max_tokens", "gateway_window", "codex_window"]) {
+  for (const key of CONTEXT_INTEGER_KEYS) {
     const value = context[key];
     if (key !== "max_tokens" && value == null) continue;
     if (!isInt(value) || value <= 0) {
       throw new Conflict(`policy.context.${key} must be a positive integer` + (key !== "max_tokens" ? " or null" : "") + "; correct it in workers.yml");
     }
   }
+  if (has(context, "manager_models") && (!Array.isArray(context.manager_models) ||
+      context.manager_models.some((model) => !nonEmptyString(model) || !model.trim()))) {
+    throw new Conflict("policy.context.manager_models must be a list of model strings; correct it in workers.yml");
+  }
+  if (!has(context, "manager_models")) context.manager_models = ["claude-opus-5-5"];
   return result;
 }
 
@@ -677,6 +683,33 @@ const NATIVE_TYPES = {
   codex: { model_auto_compact_token_limit: "int", model_context_window: "int" },
 };
 const nativeTypeOk = (type, value) => (type === "string" ? typeof value === "string" : isInt(value));
+const MODEL_SETTINGS_PREFIX = "modelSettings.";
+const AUTO_COMPACT_SUFFIX = ".autoCompactWindow";
+const claudeModelWindow = (key) => key.startsWith(MODEL_SETTINGS_PREFIX) && key.endsWith(AUTO_COMPACT_SUFFIX) &&
+  key.length > MODEL_SETTINGS_PREFIX.length + AUTO_COMPACT_SUFFIX.length;
+const claudeWindow = (key) => key === "autoCompactWindow" || claudeModelWindow(key);
+
+function claudeSettingPath(key) {
+  if (key === "autoCompactWindow") return [key];
+  if (claudeModelWindow(key)) {
+    return ["modelSettings", key.slice(MODEL_SETTINGS_PREFIX.length, -AUTO_COMPACT_SUFFIX.length), "autoCompactWindow"];
+  }
+  return ["env", key];
+}
+
+function claudeSettingParent(settings, segments, { create = false } = {}) {
+  let parent = settings;
+  for (const segment of segments.slice(0, -1)) {
+    if (!has(parent, segment)) {
+      if (!create) return undefined;
+      // Model IDs are literal JSON keys, including names inherited from Object.prototype.
+      Object.defineProperty(parent, segment, { value: {}, enumerable: true, configurable: true, writable: true });
+    }
+    parent = parent[segment];
+    if (!isDict(parent)) return null;
+  }
+  return parent;
+}
 
 export class Setup {
   constructor(home) {
@@ -804,14 +837,28 @@ export class Setup {
     if (bundle === null) return null;
     const context = bundle.base.policy.context;
     const target = context.max_tokens;
-    const values = { claude: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(target) },
-      codex: { model_auto_compact_token_limit: target } };
+    const values = { claude: { autoCompactWindow: target }, codex: { model_auto_compact_token_limit: target } };
+    if (context.manager_window != null) {
+      for (const model of context.manager_models) {
+        values.claude[`${MODEL_SETTINGS_PREFIX}${model}${AUTO_COMPACT_SUFFIX}`] = context.manager_window;
+      }
+      const sharedModels = new Map();
+      for (const config of [bundle.base, ...Object.values(bundle.profiles)]) {
+        for (const [name, tier] of Object.entries(config.tiers)) {
+          const model = tier.harness === "claude" ? tier.model : tier.claude_route;
+          if (context.manager_models.includes(model)) sharedModels.set(name, model);
+        }
+      }
+      for (const [name, model] of sharedModels) {
+        console.error(`warning: ${name} tier uses Claude model '${model}' and shares the Manager's ${context.manager_window}-token compaction window`);
+      }
+    }
     if (context.gateway_window != null) values.claude.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(context.gateway_window);
     if (context.codex_window != null) values.codex.model_context_window = context.codex_window;
     return values;
   }
 
-  nativeConfig(kind) {
+  nativeConfig(kind, settingKeys = []) {
     const file = kind === "claude" ? this.claudeSettings : this.codexSettings;
     inspect(path.dirname(file), this.home, { directory: true });
     if (!present(path.dirname(file))) return [null, null];
@@ -822,7 +869,15 @@ export class Setup {
         const parsed = present(file) ? JSON.parse(utf8(data)) : {};
         const env = isDict(parsed) && has(parsed, "env") ? parsed.env : {};
         if (!isDict(parsed) || !isDict(env)) throw new TypeError("settings and env must be objects");
-        return [data, env];
+        const current = {};
+        for (const key of settingKeys) {
+          const segments = claudeSettingPath(key);
+          const parent = claudeSettingParent(parsed, segments);
+          const leaf = segments.at(-1);
+          if (parent === null) current[key] = null;
+          else if (parent && has(parent, leaf)) current[key] = parent[leaf];
+        }
+        return [data, current];
       }
       return [data, parseToml(utf8(data))];
     } catch {
@@ -834,10 +889,12 @@ export class Setup {
     if (!Object.keys(changes).length) return data;
     if (kind === "claude") {
       const parsed = data.length ? JSON.parse(data.toString("utf8")) : {};
-      if (!has(parsed, "env")) parsed.env = {};
       for (const [key, value] of Object.entries(changes)) {
-        if (value === null) delete parsed.env[key];
-        else parsed.env[key] = value;
+        const segments = claudeSettingPath(key);
+        const parent = claudeSettingParent(parsed, segments, { create: value !== null });
+        const leaf = segments.at(-1);
+        if (value === null) delete parent[leaf];
+        else parent[leaf] = value;
       }
       return Buffer.from(dumps(parsed, { indent: 2, ascii: false }) + "\n");
     }
@@ -884,22 +941,23 @@ export class Setup {
     const record = {};
     const report = {};
     for (const kind of ["claude", "codex"]) {
-      const [data, current] = this.nativeConfig(kind);
+      const old = owned[kind] ?? {};
+      const wanted = uninstall || desired === null ? {} : desired[kind];
+      const settingKeys = [...new Set([...Object.keys(old), ...Object.keys(wanted)])].sort();
+      const [data, current] = this.nativeConfig(kind, settingKeys);
       if (data === null) {
         report[kind] = "skipped: config directory missing";
         if (has(owned, kind)) record[kind] = owned[kind];
         continue;
       }
-      const old = owned[kind] ?? {};
       if (status && !has(owned, kind)) {
         report[kind] = "skipped: not applied; run install if config directory is available";
         continue;
       }
-      const wanted = uninstall || desired === null ? {} : desired[kind];
       const changes = {};
       const entries = {};
       report[kind] = {};
-      for (const key of [...new Set([...Object.keys(old), ...Object.keys(wanted)])].sort()) {
+      for (const key of settingKeys) {
         const exists = has(current, key);
         const value = current[key];
         const expected = has(old, key) ? old[key] : wanted[key];
@@ -911,6 +969,8 @@ export class Setup {
           throw new Conflict(`foreign or edited ${kind} setting: ${key}; resolve that value, then run agent-workbench install`);
         }
         if (has(wanted, key)) {
+          // An identical user-set window already works and remains user-owned.
+          if (kind === "claude" && claudeWindow(key) && exists && !has(old, key)) continue;
           entries[key] = wanted[key];
           if (!exists || value !== wanted[key]) changes[key] = wanted[key];
         } else if (exists && has(old, key)) {
@@ -1211,7 +1271,9 @@ export class Setup {
       for (const [kind, entries] of Object.entries(state.native)) {
         if (!has(NATIVE_TYPES, kind) || !isDict(entries)) throw invalid("invalid native ownership metadata");
         for (const [key, value] of Object.entries(entries)) {
-          if (!has(NATIVE_TYPES[kind], key) || !nativeTypeOk(NATIVE_TYPES[kind][key], value)) {
+          const type = kind === "claude" && claudeWindow(key) ? "int" :
+            has(NATIVE_TYPES[kind], key) ? NATIVE_TYPES[kind][key] : null;
+          if (type === null || !nativeTypeOk(type, value)) {
             throw invalid("invalid native ownership metadata");
           }
         }
