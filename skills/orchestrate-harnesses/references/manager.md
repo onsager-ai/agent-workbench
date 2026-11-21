@@ -14,10 +14,6 @@ Prefer native harness subagents for same-harness work. A T3 thread you launch is
 
 Give each Worker a bounded brief containing original requirements/amendments, named paths/worktree, permissions and authorized delivery, acceptance criteria, tier/reason and current resource rules. For PR delivery, supply the [PR CI trigger procedure](pr-ci-trigger.md) inline or at its resolved installed file path, plus recovery authority and the round's remaining push allowance; generated Worker instructions cannot rely on relative links to skill resources. Size each Worker's scope to fit one context where possible; split long inventories by file group. For implementation, give a concrete first step, value partial progress within the timebox, require an early WIP commit or push when authorized, and batch CI fixes per round; see the [Worker ladder](worker-ladder.md). Reuse native run IDs and existing task/PR records. Native tool responses establish launch/status; Worker summaries are evidence to inspect. No task directory, immutable JSON contract or response schema is required.
 
-## Reduce Manager calls
-
-At a phase boundary, use `manage-lane` to write the lane handover and continue in a fresh session when the current context has grown large. The reminder starts at 100,000 input tokens by default and repeats after another 10,000 tokens above the last reminder in the same session. If measured usage drops below the threshold, the reminder starts over. The threshold comes from `policy.context.manager_handover_tokens` for the selected profile. Workers keep native compaction at `policy.context.max_tokens`.
-
 ## Brief checklist
 
 Copy and fill in for each dispatch:
