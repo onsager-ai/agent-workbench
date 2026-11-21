@@ -94,6 +94,12 @@ In Claude Code frontmatter, aliases follow the provider's `ANTHROPIC_DEFAULT_HAI
 
 When migrating an existing configuration, update the tier keys, ladder entries, and any dispatch references such as `subagent_type` together. Run `agent-workbench install`, then start a new Claude Code session. Use `agent-workbench workers --cwd PATH` to confirm which ladder applies to a directory.
 
+## Context windows
+
+Setup reads the base `policy.context` from `workers.yml`. Claude Code uses `max_tokens` for its shared compaction window and `manager_window` (100,000 by default) for models in `manager_models`, which defaults to `[claude-opus-5-5]`. Per-model settings require Claude Code v2.1.288 or later. A Worker using a Manager model shares that window, and install and status warn about the overlap. Set `manager_window: null` to use the shared window for Managers as well.
+
+For a Codex Manager, pass `-c model_auto_compact_token_limit=<manager_window>` in the harness launch arguments, for example in T3 Code's Codex provider launch arguments. Workers launched with `codex exec` keep the shared limit. At the cap, the harness compacts in place in the same thread and the Manager takes no action.
+
 ## Install and update
 
 Install all skills globally with the bootstrap command:
@@ -188,6 +194,8 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 | `~/.local/bin/agent-workbench` | Thin launcher for the installed setup skill |
 | `~/.local/state/agent-workbench/workers.json` | Owned resolved base and profile policy used by the dispatch hook |
 | `~/.claude/agents/<tier>.md` | Generated Claude Code subagents, one per routable Worker tier when `orchestrate-harnesses` is installed |
+| `~/.claude/settings.json` → `autoCompactWindow`, `modelSettings.<model>.autoCompactWindow`, and optional `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` | Shared and per-model compaction windows and optional gateway context size |
+| `~/.codex/config.toml` → `model_auto_compact_token_limit` and optional `model_context_window` | Shared Codex compaction limit and optional context size |
 | `~/.claude/settings.json` → `hooks.PreToolUse` | Owned hooks for L3 approval (Opus by default), GitHub polling policy, and protection of local `main`/`master` branches when `orchestrate-harnesses` is installed |
 | `~/.codex/hooks.json` and `[hooks.state]` in `~/.codex/config.toml` | Owned Codex policy hooks and, after you confirm, their trust entries when `orchestrate-harnesses` is installed and `~/.codex` exists |
 | `~/.local/state/agent-workbench/` | Ownership, hashes, exclusive lock, private backups |
@@ -196,7 +204,7 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 
 The package's `AGENTS.md` is applied immediately after the public block, inside `<!-- BEGIN agent-workbench personal -->` and `<!-- END agent-workbench personal -->`. Keep machine-local private text outside both blocks. Edit personal instructions in the package; edits inside either installed managed instruction block cause a conflict. Install removes the owned personal block if the package or its `AGENTS.md` disappears. Status reports package presence and applied personal files.
 
-The exact public markers are `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->`. Put machine-local personal rules outside both managed blocks in `~/.agents/AGENTS.md`. On first installation, existing Codex regular-file bytes are kept outside the block unchanged. Existing Claude text stays in place. Neither npx distribution nor this setup changes project instructions, other agent settings, credentials, model configuration, or native permissions.
+The exact public markers are `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->`. Put machine-local personal rules outside both managed blocks in `~/.agents/AGENTS.md`. On first installation, existing Codex regular-file bytes are kept outside the block unchanged. Existing Claude text stays in place. Neither npx distribution nor this setup changes project instructions, agent settings outside the managed entries, credentials, or native permissions.
 
 Generated agents let a Claude Manager dispatch each tier as `subagent_type: haiku`, `sonnet`, and so on. A tier is generated when its role has `harness: claude` or a non-null `claude_route`. Setup generates the union across profiles. The shipped configuration generates `haiku`, `sonnet`, and `opus`. A Claude Manager uses `codex exec` for Codex tiers whose routes are null. Gateway prefixes are installation-specific; set `profiles.codex.tiers.luna.claude_route: <your-gateway>/gpt-6-luna` and `policy.context.gateway_window` in your partial override to generate that route. Rerun `agent-workbench install` after editing the override. Generated files are owned by hash: setup refuses to overwrite a foreign or edited file, leaves other files in `~/.claude/agents` alone, and `uninstall` removes only unmodified owned files.
 
