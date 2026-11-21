@@ -1,3 +1,5 @@
+English | [简体中文](README.zh-CN.md)
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/brand/agent-workbench-lockup-dark.svg">
