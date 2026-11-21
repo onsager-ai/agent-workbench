@@ -36,7 +36,7 @@ Coding agents work best when one session keeps the plan and cheaper ones do the 
 
 3. Start a new Manager session. Use the native subagent tools in your harness to delegate work; setup details and configuration are in the [reference](docs/reference.md).
 
-For manual skill installation, updates, project-local installs, `awb prune` cleanup, and detailed configuration, see the [reference](docs/reference.md). If you installed the former `thermal-guard` or `disk-cleanup` skill, follow the [upgrade steps](docs/reference.md#upgrade-to-host-ops). Setup does not install agent tools or authenticate harnesses.
+For manual skill installation, updates, project-local installs, `awb prune` cleanup, and detailed configuration, see the [reference](docs/reference.md). If you installed the old `thermal` launcher or the former `thermal-guard` or `disk-cleanup` skill, follow the [upgrade steps](docs/reference.md#upgrade-to-host-ops). Setup does not install agent tools or authenticate harnesses.
 
 ## What setup changes
 
@@ -48,7 +48,7 @@ Setup writes only to your home directory and never to your repositories.
 | `~/.agents/AGENTS.md` | [Shared instructions](skills/workbench-setup/assets/AGENTS.md), imported from `~/.claude/CLAUDE.md` and added as a marked block to `~/.codex/AGENTS.md`. Your own text in those files stays. |
 | `~/.claude/settings.json`, `~/.codex/hooks.json` | A policy hook (see below) and a 300,000-token auto-compact window |
 | `~/.claude/agents` | `haiku`, `sonnet` and `opus` Worker subagents |
-| `~/.local/bin` | The `agent-workbench` and `thermal` commands |
+| `~/.local/bin` | The `agent-workbench` launcher |
 
 Once installed, the policy hook will:
 
@@ -57,9 +57,11 @@ Once installed, the policy hook will:
 - block GitHub polling, such as `gh pr checks --watch` or `sleep` loops around `gh`;
 - send the agent back when it ends a turn with a question written as prose, so it asks with the question tool.
 
-The shared instructions also tell agents to check CPU temperature before heavy local work. That rule applies only on Linux machines with a supported sensor.
+On Linux machines with a supported sensor, use `awb ops thermal now` before heavy local work and `awb ops thermal gate -- <command>` to run it. Use the installed `agent-workbench ops thermal` launcher for frequent calls without `npx`. To enable background logging on a machine with user systemd, run `awb ops thermal install` after setup.
 
 ## Undo
+
+If you enabled the optional logger, run `awb ops thermal uninstall` before removing the skills. Your thermal logs are retained.
 
 ```sh
 awb uninstall                       # restore instructions, settings and hooks; keep your own edits

@@ -182,11 +182,8 @@ describe("workbench setup", () => {
     assert.equal(mode(f.launcher), 0o700);
   });
 
-  test("host-ops installs and removes the thermal launcher and logger while keeping logs", () => {
+  test("thermal logger is opt-in through the installed launcher and preserves logs", () => {
     const f = new Fixture();
-    const thermal = path.join(f.home, ".agents/skills/host-ops/scripts/thermal");
-    f.write(thermal, read(path.join(ROOT, "skills/host-ops/scripts/thermal")));
-    fs.chmodSync(thermal, 0o700);
     const sysfs = path.join(f.temporary, "sys");
     const zone = path.join(sysfs, "class/thermal/thermal_zone0");
     f.write(path.join(zone, "type"), "x86_pkg_temp\n");
@@ -196,20 +193,37 @@ describe("workbench setup", () => {
     const calls = path.join(f.temporary, "systemctl.log");
     f.write(systemctl, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$SYSTEMCTL_LOG"\n[ "$2" != is-active ] || echo active\n');
     fs.chmodSync(systemctl, 0o700);
-    const env = { PATH: `${bin}:${process.env.PATH}`, THERMAL_SYSFS: sysfs, XDG_STATE_HOME: "", SYSTEMCTL_LOG: calls };
-    const launcher = path.join(f.home, ".local/bin/thermal");
+    const env = {
+      PATH: `${bin}:${path.dirname(process.execPath)}:${process.env.PATH}`,
+      THERMAL_SYSFS: sysfs, XDG_STATE_HOME: "", SYSTEMCTL_LOG: calls,
+    };
+    const legacyLauncher = path.join(f.home, ".local/bin/thermal");
     const unit = "host-ops-thermal.service";
     const service = path.join(f.home, ".config/systemd/user", unit);
     const log = path.join(f.home, ".local/state/thermal-guard/temps.log");
     f.write(log, "previous reading\n");
 
-    assert.match(f.run("install", [], true, env).stdout, /thermal launcher and service installed/);
-    assert.equal(fs.readlinkSync(launcher), thermal);
-    assert.ok(read(service).includes(`ExecStart=${launcher} watch\n`));
-    const status = JSON.parse(f.run("status", [], true, env).stdout).thermal;
-    assert.match(status, /temperature=52C; service=active; last_log_age=\d+s/);
-    assert.match(f.run("uninstall", [], true, env).stdout, /thermal guard uninstalled/);
-    assert.ok(!exists(launcher));
+    const legacyThermal = path.join(f.home, ".agents/skills/host-ops/scripts/thermal");
+    f.write(legacyThermal, '#!/bin/sh\nprintf "legacy %s\\n" "$*" >> "$SYSTEMCTL_LOG"\n');
+    fs.chmodSync(legacyThermal, 0o700);
+    f.run("install", [], true, env);
+    f.nativeLock();
+    f.run("update", ["--skills-cmd", f.fakeCommand("process.exit(0);")], true, env);
+    assert.ok(!exists(calls));
+    assert.ok(!exists(service));
+
+    const ops = (...args) => {
+      const result = spawnSync(f.launcher, ["ops", "thermal", ...args], { encoding: "utf8", env: { ...process.env, ...env } });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout;
+    };
+    assert.match(ops("now"), /52C sensor=/);
+    assert.equal(ops("gate", "--", "printf", "%s", "--json"), "--json");
+    assert.match(ops("install"), /thermal service installed/);
+    assert.ok(!exists(legacyLauncher));
+    assert.ok(read(service).includes('ExecStart=/bin/sh "%h/.agents/skills/workbench-setup/scripts/thermal" watch\n'));
+    assert.match(ops("status"), /temperature=52C\nservice=active\nlast_log_age=\d+s/);
+    assert.match(ops("uninstall"), /thermal guard uninstalled/);
     assert.ok(!exists(service));
     assert.equal(read(log).toString(), "previous reading\n");
     assert.deepEqual(read(calls).toString().trim().split("\n"), [
