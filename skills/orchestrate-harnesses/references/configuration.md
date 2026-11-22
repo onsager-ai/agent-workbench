@@ -41,13 +41,15 @@ Unknown keys and invalid configuration fail installation without changing manage
 
 `policy.max_auto_rework` is nonnegative. A tier's optional `weekly_brake_percent` must be greater than 0 and at most 100. Optional `policy.stop_classifier` is null by default; set it to `{url, model}` to classify the Stop hook's prose-question check. When enabled, every turn's final assistant message is sent to that URL, so point it at the local Magpie gateway. The hook blocks on a confident yes, passes on a confident no, and falls back to the question-mark check when uncertain or when the request fails. Read target values from effective configuration and apply supported native controls. A configured target does not prove a subagent supports it. Report unsupported or unverified model, effort, timeout, budget, and context settings honestly. Native timeout/budget enforcement is used only where exposed; Manager tracking is not a hard runtime limit.
 
-`timeout_s` is a ceiling: size each dispatch to the task, up to the configured value, and state it in the brief. Generated Claude Code subagents carry only model and effort; track elapsed time and stop overruns using native controls.
+`timeout_s` is a ceiling: size each dispatch to the task, up to the configured value, and state it in the brief. Generated Claude Code subagents carry model, effort and `disallowedTools: AskUserQuestion`; track elapsed time and stop overruns using native controls.
 
 ### Context windows
 
 Installation uses the base `policy.context` because native harness settings are shared across directories. `max_tokens` sets Claude Code's `autoCompactWindow` and Codex's `model_auto_compact_token_limit`. `gateway_window` still sets the assumed window for unknown Claude gateway IDs without `[1m]`. `codex_window` optionally sets Codex's `model_context_window`.
 
 `manager_window` is a positive integer and defaults to `200000`. Set it to `null` to disable the Manager override. In Claude Code v2.1.288 or later, setup writes `modelSettings.<model>.autoCompactWindow` for each ID or alias in `manager_models`, which defaults to `[claude-opus-5-5]`. Use the canonical ID for a built-in model and the exact ID for a gateway alias. Claude Code supports configured windows of at least 100,000 tokens. Install and status warn when a Worker uses a configured Manager model because that Worker shares the smaller native window. A `CLAUDE_CODE_AUTO_COMPACT_WINDOW` set outside Workbench takes precedence over these settings.
+
+`worker_window` is null by default; when set, it must be at least `100000` and adds `autoCompactWindow` to every generated Claude subagent. Claude Code applies this frontmatter only to subagents and caps it at the window granted by that model's settings, so it can lower the Worker window but cannot raise it. It does not affect `codex exec` Workers.
 
 To apply the Manager window in Codex, add `-c model_auto_compact_token_limit=<manager_window>` to the Manager's harness launch arguments, for example in T3 Code's Codex provider launch arguments. `codex exec` Workers use the shared limit from `~/.codex/config.toml`.
 
