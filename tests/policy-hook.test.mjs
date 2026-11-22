@@ -499,10 +499,15 @@ describe("policy hook", () => {
   test("Claude Managers delegate CI logs and subagents can read them", () => {
     for (const command of [
       "gh run view 123 --log",
+      "gh run view 123 --log | tail -50",
+      "GH_PAGER=cat gh run view 123 --log | tail -50",
+      "env GH_PAGER=cat timeout 5 gh run view 123 --log",
+      "command gh run view 123 --log",
       "gh run view 123 --job 456 --log-failed > failed.log",
       "cd /tmp && gh run download 123",
       "gh api repos/o/r/actions/jobs/456/logs",
       "gh api '/repos/o/r/actions/runs/123/logs'",
+      "gh api repos/o/r/actions/runs/123/attempts/2/logs",
       "gh api repos/{owner}/{repo}/actions/jobs/456/logs",
       'gh api "repos/$repo/actions/jobs/$job_id/logs"',
     ]) {
@@ -523,6 +528,7 @@ describe("policy hook", () => {
       "until test -f ready; do sleep 30; done",
       "while true; do date; sleep 10; done",
       "gh run list; while true; do date; sleep 10; done",
+      "while true; do date # tick\nsleep 10; done",
     ]) {
       const event = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } };
       for (const agent of [{}, { agent_id: "worker-1" }]) {
@@ -537,7 +543,7 @@ describe("policy hook", () => {
     for (const command of [
       "gh pr view 1 --json headRefOid,statusCheckRollup",
       "gh run list --commit abc --json workflowName,event,status",
-      "gh run view 123", "gh run view 123 --json status,conclusion",
+      "gh run view 123", "gh run view 123 --json status,conclusion", "gh run view 123 --json jobs",
       "gh api repos/o/r/actions/runs/123/jobs",
       "gh api rate_limit", "gh pr checks 1", "sleep 10",
       "while read -r line; do echo do sleep; done < input.txt",

@@ -180,6 +180,7 @@ function shlex(text, whitespaceSplit) {
   const skipLine = () => {
     let character;
     while ((character = read()) !== "" && character !== "\n");
+    if (character === "\n") pushback.push(character);
   };
   for (;;) {
     let state = " ";
@@ -262,6 +263,18 @@ function shlex(text, whitespaceSplit) {
 }
 
 const punctuationOnly = (token) => [...token].every((char) => PUNCTUATION.includes(char));
+const CI_LOG_ENDPOINT = /(?:^|\/)actions\/(?:jobs\/[^/]+|runs\/[^/]+(?:\/attempts\/[^/]+)?)\/logs(?:$|[?\/])/;
+
+function commandWords(words) {
+  let start = 0;
+  while (start < words.length) {
+    const word = words[start];
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word) || word === "env" || word === "command") start++;
+    else if (word === "timeout" && /^\d+(?:\.\d+)?[smhd]?$/.test(words[start + 1])) start += 2;
+    else break;
+  }
+  return words.slice(start);
+}
 
 function shellPolicy(command, manager) {
   if (typeof command !== "string") throw new TypeError("command must be a string");
@@ -284,7 +297,7 @@ function shellPolicy(command, manager) {
     }
     let end = index + 1;
     while (end < tokens.length && (!tokens[end] || !punctuationOnly(tokens[end]))) end++;
-    commands.push([index, tokens.slice(index, end)]);
+    commands.push([index, commandWords(tokens.slice(index, end))]);
     index = end;
   }
   for (const [, words] of commands) {
@@ -296,7 +309,7 @@ function shellPolicy(command, manager) {
     if (manager && (
       (group === "run" && operation === "download") ||
       (group === "run" && operation === "view" && args.some((word) => /^--log(?:-failed)?(?:=|$)/.test(word))) ||
-      (group === "api" && words.slice(2).some((word) => /(?:^|\/)actions\/(?:jobs|runs)\/[^/]+\/logs(?:$|[?\/])/.test(word)))
+      (group === "api" && words.slice(2).some((word) => CI_LOG_ENDPOINT.test(word)))
     )) return CI_LOGS;
   }
   for (const [start, end] of loops) {
