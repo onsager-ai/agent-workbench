@@ -78,6 +78,9 @@ test("lanes reports authored PR checks and local worktree status", (t) => {
 
   const repo = path.join(f.dir, "repo");
   const tree = path.join(f.dir, "task tree");
+  const local = path.join(f.dir, "local-only");
+  const detached = path.join(f.dir, "detached");
+  const remote = path.join(f.dir, "origin.git");
   fs.mkdirSync(repo);
   const git = (cwd, ...args) => {
     const result = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -90,10 +93,21 @@ test("lanes reports authored PR checks and local worktree status", (t) => {
   fs.writeFileSync(path.join(repo, "original"), "base\n");
   git(repo, "add", "original");
   git(repo, "commit", "-m", "base");
-  const head = git(repo, "rev-parse", "HEAD");
+  git(repo, "init", "--bare", "-b", "main", remote);
+  git(repo, "remote", "add", "origin", remote);
+  git(repo, "push", "origin", "main");
+  git(repo, "remote", "set-head", "origin", "main");
   git(repo, "worktree", "add", "-b", "task", tree);
+  git(tree, "commit", "--allow-empty", "-m", "published change");
+  git(tree, "push", "origin", "task");
+  const head = git(tree, "rev-parse", "HEAD");
   git(tree, "branch", "--set-upstream-to=main");
   git(tree, "commit", "--allow-empty", "-m", "local change");
+  git(repo, "worktree", "add", "-b", "local-only", local, "main");
+  git(local, "branch", "--set-upstream-to=task");
+  git(local, "commit", "--allow-empty", "-m", "other local change");
+  git(repo, "worktree", "add", "--detach", detached, "main");
+  fs.appendFileSync(path.join(detached, "original"), "dirty\n");
   git(tree, "mv", "original", "renamed");
   fs.mkdirSync(path.join(tree, "untracked"));
   fs.writeFileSync(path.join(tree, "untracked", "one"), "one\n");
@@ -105,7 +119,7 @@ test("lanes reports authored PR checks and local worktree status", (t) => {
   const unknownHead = "b".repeat(40);
   const prs = [
     {
-      number: 17, isDraft: true, headRefName: "task", headRefOid: head, updatedAt,
+      number: 17, isDraft: true, headRefName: "task", headRefOid: head, updatedAt, isCrossRepository: false,
       statusCheckRollup: [
         { name: "lint", workflowName: "CI", status: "COMPLETED", conclusion: "SUCCESS" },
         { name: "test", workflowName: "CI", status: "COMPLETED", conclusion: "FAILURE" },
@@ -113,10 +127,13 @@ test("lanes reports authored PR checks and local worktree status", (t) => {
         { context: "external", state: "PENDING" },
       ],
     },
-    { number: 18, isDraft: false, headRefName: "remote-only", headRefOid: unknownHead, updatedAt, statusCheckRollup: [] },
+    {
+      number: 18, isDraft: false, headRefName: "local-only", headRefOid: unknownHead, updatedAt,
+      isCrossRepository: true, statusCheckRollup: [],
+    },
   ];
   const ghLog = path.join(f.dir, "gh-calls");
-  const ghArgs = "pr list --author @me --state open --json number,isDraft,headRefName,headRefOid,updatedAt,statusCheckRollup";
+  const ghArgs = "pr list --author @me --state open --limit 100 --json number,isDraft,headRefName,headRefOid,updatedAt,statusCheckRollup,isCrossRepository";
   fs.writeFileSync(path.join(fakeBin, "gh"), `#!/bin/sh
 printf '%s\n' "$PWD $*" >> "$AWB_TEST_GH_LOG"
 [ "$*" = '${ghArgs}' ] || exit 2
@@ -134,7 +151,7 @@ printf '%s\n' '${JSON.stringify(prs)}'
   const [draft, ready] = lanes.pullRequests;
   assert.ok(Number.isInteger(draft.headAgeSeconds));
   assert.deepEqual(draft, {
-    number: 17, draft: true, branch: "task", head, headAgeSeconds: draft.headAgeSeconds, updatedAt,
+    number: 17, draft: true, branch: "task", crossRepository: false, head, headAgeSeconds: draft.headAgeSeconds, updatedAt,
     checks: [
       { name: "CI / lint", state: "pass" },
       { name: "CI / test", state: "fail" },
@@ -143,12 +160,16 @@ printf '%s\n' '${JSON.stringify(prs)}'
     ],
   });
   assert.deepEqual(ready, {
-    number: 18, draft: false, branch: "remote-only", head: unknownHead, headAgeSeconds: null, updatedAt, checks: [],
+    number: 18, draft: false, branch: "local-only", crossRepository: true,
+    head: unknownHead, headAgeSeconds: null, updatedAt, checks: [],
   });
-  assert.deepEqual(lanes.worktrees, [
-    { path: fs.realpathSync(repo), branch: "main", openPr: null, ahead: null, dirtyFiles: 0 },
-    { path: fs.realpathSync(tree), branch: "task", openPr: 17, ahead: 1, dirtyFiles: 3 },
-  ]);
+  assert.equal(lanes.worktrees.length, 4);
+  assert.deepEqual(Object.fromEntries(lanes.worktrees.map((row) => [row.path, row])), {
+    [fs.realpathSync(repo)]: { path: fs.realpathSync(repo), branch: "main", hasRemoteBranch: true, openPr: null, ahead: 0, dirtyFiles: 0 },
+    [fs.realpathSync(tree)]: { path: fs.realpathSync(tree), branch: "task", hasRemoteBranch: true, openPr: 17, ahead: 1, dirtyFiles: 3 },
+    [fs.realpathSync(local)]: { path: fs.realpathSync(local), branch: "local-only", hasRemoteBranch: false, openPr: null, ahead: 1, dirtyFiles: 0 },
+    [fs.realpathSync(detached)]: { path: fs.realpathSync(detached), branch: null, hasRemoteBranch: false, openPr: null, ahead: 0, dirtyFiles: 1 },
+  });
 
   const launcher = path.join(f.home, ".local", "bin", "agent-workbench");
   const text = spawnSync(launcher, ["lanes"], { cwd: repo, encoding: "utf8", env });
@@ -156,6 +177,8 @@ printf '%s\n' '${JSON.stringify(prs)}'
   assert.match(text.stdout, /^PR #17  draft  [\da-f]{8}  head \d+[smhd] old  .*CI \/ lint pass/m);
   assert.match(text.stdout, /^PR #18  ready  bbbbbbbb  head age unknown, PR updated /m);
   assert.match(text.stdout, /^worktree  task  PR #17  1 ahead  3 dirty /m);
+  assert.match(text.stdout, /^worktree  local-only  no matching PR  1 ahead \(no remote branch\)  0 dirty /m);
+  assert.match(text.stdout, /^worktree  \(no branch\)  no matching PR  0 ahead \(no remote branch\)  1 dirty /m);
 
   const unavailable = run(f.home, ["lanes", "--cwd", repo, "--json"], { ...env, AWB_TEST_GH_FAIL: "1" });
   assert.equal(unavailable.status, 0, unavailable.stderr);
@@ -163,6 +186,14 @@ printf '%s\n' '${JSON.stringify(prs)}'
   assert.match(offline.note, /Check GitHub authentication/);
   assert.deepEqual(offline.pullRequests, []);
   assert.deepEqual(offline.worktrees, lanes.worktrees.map((row) => ({ ...row, openPr: null })));
+  const gitOnly = path.join(f.dir, "git-only");
+  fs.mkdirSync(gitOnly);
+  const gitExecutable = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" });
+  assert.equal(gitExecutable.status, 0, gitExecutable.stderr);
+  fs.symlinkSync(gitExecutable.stdout.trim(), path.join(gitOnly, "git"));
+  const missing = run(f.home, ["lanes", "--cwd", repo, "--json"], { ...env, PATH: gitOnly });
+  assert.equal(missing.status, 0, missing.stderr);
+  assert.deepEqual(JSON.parse(missing.stdout), { ...offline, note: "PRs unavailable: gh is not installed." });
   assert.equal(fs.readFileSync(ghLog, "utf8"), ghCall.repeat(3));
 });
 

@@ -27,7 +27,7 @@ Return changed paths and actual artifacts/revision, verification performed, unre
 Include these in every implementation or PR report:
 
 - Branch and full head SHA, whether the remote matches, and counts of unpushed commits and dirty files.
-- CI for that exact SHA. For each required job, give its state and, if it failed, its first failure as `file:line` plus a one-line message (say if the location is unavailable), whether it is new or a known flake, and whether you already reran or fixed it.
+- CI for that exact SHA. For every job on that head, mark whether it is required and give its state and, if it failed, its first failure as `file:line` plus a one-line message (say if the location is unavailable), whether it is new or a known flake, and whether you already reran or fixed it.
 - Verification still missing, including what has yet to compile or run in tests.
 - Changes since your last report in 1–3 lines.
 - Progress as done/total, naming the remaining items and keeping item names consistent across reports.
@@ -39,6 +39,6 @@ End your final message with exactly one line in this format:
 
 `Outcome: completed|blocked|cancelled · PR <url> · head <sha> · checks <state>`
 
-Choose one lowercase outcome and a lowercase state: `green` when all required checks passed, `red` when a required check failed, `running` when checks are pending or in progress, or `none` when no checks are reported for that head. Use the full head SHA. Without a PR, omit the entire suffix, for example `Outcome: completed`. Use literal ` · ` separators and no Markdown or trailing text on the line. This is a cross-project contract: Semon ASI matches the entire line and treats malformed lines as unknown.
+Choose one lowercase outcome. Use `none` if the head has no checks. Otherwise choose the first state that applies: `red` if any job failed, `running` if any job has not finished, or `green` if every job passed. Use the full head SHA. Without a PR, omit the entire suffix, for example `Outcome: completed`. Use literal ` · ` separators and no Markdown or trailing text on the line. This is a cross-project contract: Semon ASI matches the entire line and treats malformed lines as unknown.
 
 Acknowledge material amendments actually read. If interrupted, preserve partial work, report observed state and any uncertain side effects, and let Manager reconcile before redispatch. Never infer model identity, enforced context/budget or stopped processes merely from your own report; native tool metadata and observed state are the evidence.

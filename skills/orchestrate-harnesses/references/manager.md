@@ -47,7 +47,7 @@ You are stuck when any of these happens:
 - Workers keep ending early on the same work after a tier change;
 - two consecutive compile failures reach CI on one branch;
 - a Worker stops or resets three times on one task without a blocker (split the task);
-- the remaining work reported as done/total stays the same across three reports;
+- the remaining count (total minus done) does not shrink across three reports;
 - one PR raises three or more new design decisions.
 
 Watch how many superseded or cancelled CI runs it takes to reach each green head.

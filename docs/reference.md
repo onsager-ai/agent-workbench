@@ -238,7 +238,7 @@ awb prune [--repo PATH] [--json]
 awb prune --apply
 ```
 
-`lanes` uses one GitHub CLI listing of your open PRs (the default limit is 30). It shows the check rollup for each head without required-check metadata. Head age comes from the local commit when available. Worktrees match PRs by branch name and still appear if GitHub is unavailable. Semon ASI will supply Worker state and session stats.
+`lanes` makes one `gh pr list` call for up to 100 of your open PRs. It shows the check rollup for each head without required-check metadata. Head age comes from the local commit when available. Worktrees match same-repository PRs by branch name and count commits ahead of the matching `origin` branch, or `origin/HEAD` when there is no remote branch. Worktrees still appear if GitHub is unavailable. Semon ASI will supply Worker state and session stats.
 
 `update` reads native version-3 skills lock ownership (`~/.agents/.skill-lock.json`, or `$XDG_STATE_HOME/skills/.skill-lock.json` when configured) and delegates to `skills@1.7.4 update` with this repository's installed skill names plus `workbench-personal` when present in the lock, regardless of its source. Owned lock entries whose skill directory under `~/.agents/skills` is gone (skills removed upstream and deleted locally) are dropped from the lock first, so the native update stops warning about them. A failed native update leaves global instruction files unchanged. Updates honor the installed native skill source/ref metadata. `npx skills update -g -y` remains available for ordinary updates across all skills; use `agent-workbench install` afterward to apply any newly distributed instruction template.
 
