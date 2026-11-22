@@ -11,6 +11,8 @@ const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task 
 const PROTECTED_BRANCHES = new Set(["main", "master"]);
 const POLLING = "GitHub polling is disabled. Use watch_pull_request and the single-call status reads " +
   "in orchestrate-harnesses' GitHub API budget section.";
+const SLEEP_LOOP = "Sleep loops are disabled. Use t3_background_wait or Monitor.";
+const CI_LOGS = "Delegate CI logs. Resume the Worker that owns the branch or dispatch an L1 Worker with the run URL.";
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
 const INHERITED_MODEL = "Built-in agents inherit the Manager's model. Use a tier agent " +
@@ -165,6 +167,7 @@ function stampFooter(args, stateDir) {
 // Port of Python shlex (posix mode, punctuation_chars=";|&()\n", whitespace " \t\r", commenters "#").
 const PUNCTUATION = ";|&()\n";
 const WHITESPACE = " \t\r";
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const WORDCHARS = new Set(
   "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" +
   "ßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞ" + "~-./*?=");
@@ -178,6 +181,30 @@ function shlex(text, whitespaceSplit) {
   const skipLine = () => {
     let character;
     while ((character = read()) !== "" && character !== "\n");
+    if (character === "\n") pushback.push(character);
+  };
+  const assignmentExpansion = () => {
+    const open = read();
+    if (open !== "(" && open !== "{") {
+      if (open) pushback.push(open);
+      return "$";
+    }
+    const close = open === "(" ? ")" : "}";
+    let expansion = "$" + open;
+    let depth = 1;
+    let quote = "";
+    while (depth) {
+      const character = read();
+      if (!character) throw new Error("Unclosed assignment expansion");
+      expansion += character;
+      if (character === "\\" && quote !== "'") expansion += read();
+      else if (quote) {
+        if (character === quote) quote = "";
+      } else if (["'", '"', "`"].includes(character)) quote = character;
+      else if (character === open) depth++;
+      else if (character === close) depth--;
+    }
+    return expansion;
   };
   for (;;) {
     let state = " ";
@@ -211,6 +238,8 @@ function shlex(text, whitespaceSplit) {
           token = next;
           break;
         }
+      } else if (!whitespaceSplit && next === "$" && (state === "a" || state === '"') && ASSIGNMENT.test(token)) {
+        token += assignmentExpansion();
       } else if (state === "'" || state === '"') {
         quoted = true;
         if (!next) throw new Error("No closing quotation");
@@ -260,6 +289,37 @@ function shlex(text, whitespaceSplit) {
 }
 
 const punctuationOnly = (token) => [...token].every((char) => PUNCTUATION.includes(char));
+const SHELL_WORD_SEPARATOR = /[\s;|&()$`"']/.source;
+const shellWords = (pattern) => new RegExp(`(?:^|${SHELL_WORD_SEPARATOR})${pattern}(?=$|${SHELL_WORD_SEPARATOR})`);
+const LOOP_WORD = shellWords("(?:while|until)");
+const SLEEP_WORD = shellWords("sleep");
+const GH_WORD = shellWords("gh");
+const GH_RUN_VIEW = shellWords("gh\\s+run\\s+view");
+const GH_RUN_DOWNLOAD = shellWords("gh\\s+run\\s+download");
+
+function textShellPolicy(command, manager) {
+  // Scan the full text, including substitutions. Quoted examples and heredocs can also match.
+  if (manager) {
+    const text = command.replace(/["']/g, "");
+    const view = GH_RUN_VIEW.exec(text);
+    if ((view && /(?<![\w-])--log(?:-failed)?(?![\w-])/.test(text.slice(view.index + view[0].length))) ||
+        GH_RUN_DOWNLOAD.test(text) ||
+        /\bactions\/(?:jobs\/[^/\s]+|runs\/[^/\s]+(?:\/attempts\/[^/\s]+)?)\/logs\b/.test(text)) return CI_LOGS;
+  }
+  if (LOOP_WORD.test(command) && SLEEP_WORD.test(command)) return SLEEP_LOOP;
+  return null;
+}
+
+function commandWords(words) {
+  let start = 0;
+  while (start < words.length) {
+    const word = words[start];
+    if (ASSIGNMENT.test(word) || word === "env" || word === "command") start++;
+    else if (word === "timeout" && /^\d+(?:\.\d+)?[smhd]?$/.test(words[start + 1])) start += 2;
+    else break;
+  }
+  return words.slice(start);
+}
 
 function pollsGithub(command) {
   if (typeof command !== "string") throw new TypeError("command must be a string");
@@ -268,28 +328,42 @@ function pollsGithub(command) {
     if (token && punctuationOnly(token)) tokens.push(...token);
     else tokens.push(token);
   }
-  const separators = new Set([";", "|", "&", "(", ")", "\n", "do", "then", "!", "while", "until"]);
+  const prefixes = new Set(["do", "then", "else", "if", "elif", "!", "while", "until"]);
   const commands = [];
   const loops = [];
   const stack = [];
-  tokens.forEach((token, index) => {
-    if (index === 0 || separators.has(tokens[index - 1])) {
-      if (["while", "until", "for"].includes(token)) stack.push(index);
-      else if (token === "done" && stack.length) loops.push([stack.pop(), index]);
-      let end = index + 1;
-      while (end < tokens.length && !separators.has(tokens[end])) end++;
-      commands.push([index, tokens.slice(index, end)]);
+  for (let index = 0; index < tokens.length;) {
+    const token = tokens[index];
+    if (["while", "until", "for"].includes(token)) stack.push(index);
+    else if (token === "done" && stack.length) loops.push([stack.pop(), index]);
+    if (prefixes.has(token) || (token && punctuationOnly(token))) {
+      index++;
+      continue;
     }
-  });
-  for (const [, words] of commands) {
-    if (words[0] === "gh" && words[1] === "run" && words[2] === "watch") return true;
-    if (words[0] === "gh" && words[1] === "pr" && words[2] === "checks" &&
-        words.slice(3).some((word) => word === "--watch" || word.startsWith("--watch="))) return true;
+    let end = index + 1;
+    while (end < tokens.length && (!tokens[end] || !punctuationOnly(tokens[end]))) end++;
+    commands.push([index, commandWords(tokens.slice(index, end))]);
+    index = end;
   }
-  return loops.some(([start, end]) =>
-    tokens.slice(start, end).includes("do") &&
-    commands.some(([index, words]) => start < index && index < end && words[0] === "sleep") &&
-    commands.some(([index, words]) => start < index && index < end && words[0] === "gh"));
+  for (const [, words] of commands) {
+    const [program, group, operation, ...args] = words;
+    if (program !== "gh") continue;
+    if (group === "run" && operation === "watch") return POLLING;
+    if (group === "pr" && operation === "checks" &&
+        args.some((word) => word === "--watch" || word.startsWith("--watch="))) return POLLING;
+  }
+  if (SLEEP_WORD.test(command) && GH_WORD.test(command)) {
+    for (const [start, end] of loops) {
+      const loopTokens = tokens.slice(start, end);
+      if (!loopTokens.includes("do")) continue;
+      // Assignment tokens can hide commands inside a substitution from the argv check.
+      const contains = (program, word) => commands.some(([index, words]) =>
+        start < index && index < end && words[0] === program) || loopTokens.some((token) =>
+        ASSIGNMENT.test(token) && token.includes("$(") && word.test(token));
+      if (contains("sleep", SLEEP_WORD) && contains("gh", GH_WORD)) return `${POLLING} ${SLEEP_LOOP}`;
+    }
+  }
+  return null;
 }
 
 function shellCommands(command) {
@@ -670,9 +744,16 @@ async function main() {
       else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason] = ["deny", INHERITED_MODEL];
     } else if (tool === "Bash") {
       const command = dict(args).command ?? "";
-      const branchReason = protectedBranchGit(command, event);
-      if (branchReason) [decision, reason] = ["deny", branchReason];
-      else if (pollsGithub(command)) [decision, reason] = ["deny", POLLING];
+      if (typeof command !== "string") return;
+      // Claude Code supplies agent_id for subagents. A top-level --agent also sets agent_type.
+      const manager = !codex && !event.agent_id;
+      reason = textShellPolicy(command, manager);
+      try {
+        reason = protectedBranchGit(command, event) ?? pollsGithub(command) ?? reason;
+      } catch {
+        // A tokenization error leaves the text-based decision in place.
+      }
+      if (reason) decision = "deny";
     }
   } catch {
     return;

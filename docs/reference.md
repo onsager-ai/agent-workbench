@@ -196,7 +196,7 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 | `~/.claude/agents/<tier>.md` | Generated Claude Code subagents, one per routable Worker tier when `orchestrate-harnesses` is installed; each blocks `AskUserQuestion`, and optional `worker_window` sets a minimum-only compaction target for these subagents |
 | `~/.claude/settings.json` → `autoCompactWindow`, `modelSettings.<model>.autoCompactWindow`, and optional `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` | Shared and per-model compaction windows and optional gateway context size |
 | `~/.codex/config.toml` → `model_auto_compact_token_limit` and optional `model_context_window` | Shared Codex compaction limit and optional context size |
-| `~/.claude/settings.json` → `hooks.PreToolUse` | Owned hooks for L3 approval (Opus by default), GitHub polling policy, and protection of local `main`/`master` branches when `orchestrate-harnesses` is installed |
+| `~/.claude/settings.json` → `hooks.PreToolUse` | Owned hooks for L3 approval (Opus by default), GitHub polling and sleep-loop policy, Manager CI log delegation, and protection of local `main`/`master` branches when `orchestrate-harnesses` is installed |
 | `~/.codex/hooks.json` and `[hooks.state]` in `~/.codex/config.toml` | Owned Codex policy hooks and, after you confirm, their trust entries when `orchestrate-harnesses` is installed and `~/.codex` exists |
 | `~/.local/state/agent-workbench/` | Ownership, hashes, exclusive lock, private backups |
 

@@ -487,6 +487,7 @@ describe("policy hook", () => {
       "while true; do gh run list; sleep 30; done",
       "until gh pr view 1; do sleep 10; done",
       "for attempt in 1 2 3; do sleep 10; gh api repos/o/r; done",
+      "for i in 1 2; do X=$(sleep 1); gh run list; done",
       "while true\ndo\ngh run list\nsleep 10\ndone",
     ]) {
       const decision = invoke(JSON.stringify({ tool_name: "Bash", tool_input: { command } }));
@@ -496,17 +497,75 @@ describe("policy hook", () => {
     }
   });
 
+  test("Claude Managers delegate CI logs and subagents can read them", () => {
+    for (const command of [
+      "gh run view 123 --log",
+      "gh run 'view' 123 --log",
+      'gh run "view" 123 --log',
+      "gh run view 123 --log | tail -50",
+      "logs=$(gh run view 123 --log)",
+      "echo 'gh run view 123 --log'", "echo gh run download 123",
+      "GH_PAGER=cat gh run view 123 --log | tail -50",
+      "GH_PAGER=$PAGER gh run view 123 --log",
+      "X=${Y} gh run download 1",
+      "X=$(echo $(date)) gh run download 1",
+      "env GH_PAGER=cat timeout 5 gh run view 123 --log",
+      "command gh run view 123 --log",
+      "gh run view 123 --job 456 --log-failed > failed.log",
+      "cd /tmp && gh run download 123",
+      "gh api repos/o/r/actions/jobs/456/logs",
+      "gh api '/repos/o/r/actions/runs/123/logs'",
+      "gh api repos/o/r/actions/runs/123/attempts/2/logs",
+      "gh api repos/{owner}/{repo}/actions/jobs/456/logs",
+      'gh api "repos/$repo/actions/jobs/$job_id/logs"',
+    ]) {
+      const event = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } };
+      const decision = invoke(JSON.stringify(event));
+      assert.equal(decision?.permissionDecision, "deny", command);
+      assert.match(decision.permissionDecisionReason, /Resume the Worker.*L1 Worker with the run URL/);
+      assert.equal(invoke(JSON.stringify({ ...event, agent_id: "worker-1", agent_type: "standard" })), null, command);
+    }
+    const namedManager = invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "gh run view 123 --log" }, agent_type: "standard",
+    }));
+    assert.equal(namedManager?.permissionDecision, "deny");
+  });
+
+  test("sleep loops are denied even without gh", () => {
+    for (const command of [
+      "until test -f ready; do sleep 30; done",
+      "while true; do date; sleep 10; done",
+      "gh run list; while true; do date; sleep 10; done",
+      "while true; do date # tick\nsleep 10; done",
+      "while true; do X=$(sleep 10); done",
+      "while read -r line; do echo do sleep; done < input.txt",
+      "echo while do sleep gh",
+    ]) {
+      const event = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } };
+      for (const agent of [{}, { agent_id: "worker-1" }]) {
+        const decision = invoke(JSON.stringify({ ...event, ...agent }));
+        assert.equal(decision?.permissionDecision, "deny", command);
+        assert.match(decision.permissionDecisionReason, /t3_background_wait or Monitor/);
+      }
+    }
+  });
+
   test("single reads and unrelated commands are allowed", () => {
     for (const command of [
       "gh pr view 1 --json headRefOid,statusCheckRollup",
       "gh run list --commit abc --json workflowName,event,status",
+      "gh run view 123", "gh run view 123 --json status,conclusion", "gh run view 123 --json jobs",
+      "gh api repos/o/r/actions/runs/123/jobs",
       "gh api rate_limit", "gh pr checks 1", "sleep 10",
-      "while true; do date; sleep 10; done",
+      "FOO=$(date) git status",
+      "while read f; do echo $f; done < x",
+      'while read f; do echo "$f"; done < sleep-results.txt',
+      "sleep_ms=5 gh run list",
       "for attempt in 1 2; do gh run list; done",
+      "for attempt in 1 2; do sleep 10; done",
       "echo 'gh run watch 123'", "echo gh run watch 123",
-      "gh run list; while true; do date; sleep 10; done",
       "sleep 10; for attempt in 1 2; do gh run list; done",
-      "echo while do sleep gh", "echo 'for x; do sleep 1; gh run list; done'",
+      "echo 'for x; do sleep 1; gh run list; done'",
     ]) {
       assert.equal(invoke(JSON.stringify({ tool_name: "Bash", tool_input: { command } })), null, command);
     }
@@ -562,6 +621,9 @@ describe("policy hook", () => {
     test("Bash rules and Stop still apply", () => {
       const deny = codex({ tool_name: "Bash", tool_input: { command: "gh run watch 1" } });
       assert.equal(deny.permissionDecision, "deny");
+      const loop = codex({ tool_name: "Bash", tool_input: { command: "until test -f ready; do sleep 30; done" } });
+      assert.equal(loop.permissionDecision, "deny");
+      assert.equal(codex({ tool_name: "Bash", tool_input: { command: "gh run view 123 --log" } }), null);
       const result = run(JSON.stringify({ hook_event_name: "Stop", last_assistant_message: "Proceed?" }), { args: codexArgs() });
       assert.equal(JSON.parse(result.stdout).decision, "block");
     });
