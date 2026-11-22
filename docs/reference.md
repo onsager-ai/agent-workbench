@@ -96,9 +96,9 @@ When migrating an existing configuration, update the tier keys, ladder entries, 
 
 ## Context windows
 
-Setup reads the base `policy.context` from `workers.yml`. Claude Code uses `max_tokens` for its shared compaction window and `manager_window` (200,000 by default) for models in `manager_models`, which defaults to `[claude-opus-5-5]`. Per-model settings require Claude Code v2.1.288 or later. A Worker using a Manager model shares that window, and install and status warn about the overlap. Set `manager_window: null` to use the shared window for Managers as well.
+Setup reads the base `policy.context` from `workers.yml`. Claude Code uses `max_tokens` for its shared compaction window for Managers too. `manager_window` is null by default; set it to give models in `manager_models`, which defaults to `[claude-opus-5-5]`, their own window. Per-model settings require Claude Code v2.1.288 or later. A Worker using a Manager model shares that window, and install and status warn about the overlap.
 
-For a Codex Manager, pass `-c model_auto_compact_token_limit=<manager_window>` in the harness launch arguments, for example in T3 Code's Codex provider launch arguments. Workers launched with `codex exec` keep the shared limit. At the cap, the harness compacts in place in the same thread and the Manager takes no action.
+When `manager_window` is set, for a Codex Manager pass `-c model_auto_compact_token_limit=<manager_window>` in the harness launch arguments, for example in T3 Code's Codex provider launch arguments. Workers launched with `codex exec` keep the shared limit. At the cap, the harness compacts in place in the same thread and the Manager takes no action.
 
 ## Install and update
 
