@@ -20,7 +20,7 @@ const { parse: parseToml } = await import("../vendor/smol-toml/index.js");
 
 export const VERSION = "1";
 // Agent Workbench release; tests keep it equal to package.json.
-export const RELEASE = "0.2.6";
+export const RELEASE = "0.2.7";
 const SOURCE = "onsager-ai/agent-workbench";
 const BEGIN = Buffer.from("<!-- BEGIN agent-workbench -->");
 const END = Buffer.from("<!-- END agent-workbench -->");
@@ -41,7 +41,7 @@ const CODEX_HOOK_TIMEOUT = 30;
 
 export class Conflict extends Error {}
 
-const CONTEXT_INTEGER_KEYS = ["max_tokens", "gateway_window", "codex_window", "manager_window"];
+const CONTEXT_INTEGER_KEYS = ["max_tokens", "gateway_window", "codex_window", "manager_window", "worker_window"];
 const INTEGER_KEYS = new Set(["version", "timeout_s", "max_auto_rework", ...CONTEXT_INTEGER_KEYS]);
 
 // Parse like PyYAML's safe_load: YAML 1.1, repeated keys keep the last value, keys must be strings
@@ -271,6 +271,9 @@ export function resolveWorkerConfig(config) {
     if (!isInt(value) || value <= 0) {
       throw new Conflict(`policy.context.${key} must be a positive integer` + (key !== "max_tokens" ? " or null" : "") + "; correct it in workers.yml");
     }
+  }
+  if (context.worker_window != null && context.worker_window < 100000) {
+    throw new Conflict("policy.context.worker_window must be at least 100000 or null; correct it in workers.yml");
   }
   if (has(context, "manager_models") && (!Array.isArray(context.manager_models) ||
       context.manager_models.some((model) => !nonEmptyString(model) || !model.trim()))) {
@@ -809,6 +812,7 @@ export class Setup {
     inspect(this.worker, this.home);
     if (bundle === null || !present(this.worker)) return {};
     const body = utf8(read(this.worker));
+    const workerWindow = bundle.base.policy.context.worker_window;
     const agents = {};
     const targets = {};
     const signatures = {};
@@ -824,8 +828,10 @@ export class Setup {
         const via = tier.harness === "claude" ? "" : " via configured gateway";
         const description = `Agent Workbench Worker (${tier.model}${via})`;
         agents[name] = Buffer.from("---\n" + `name: ${name}\n` + `description: ${dumps(description)}\n` +
-          `model: ${dumps(model)}\n` + `effort: ${dumps(tier.effort)}\n---\n` +
-          "<!-- Managed by agent-workbench; ownership is recorded in state.json. -->\n\n" + body);
+          `model: ${dumps(model)}\n` + `effort: ${dumps(tier.effort)}\n` +
+          "disallowedTools: AskUserQuestion\n" +
+          (workerWindow == null ? "" : `autoCompactWindow: ${workerWindow}\n`) +
+          "---\n" + "<!-- Managed by agent-workbench; ownership is recorded in state.json. -->\n\n" + body);
         // A frontmatter alias resolves in the Claude session, so catalog checks use literal IDs only.
         if (!/^(haiku|sonnet|opus|fable)$/.test(model)) targets[name] = [model, tier.effort];
       }

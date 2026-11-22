@@ -761,12 +761,30 @@ describe("workbench setup", () => {
     const text = fs.readFileSync(f.agent("haiku"), "utf8");
     const worker = fs.readFileSync(path.join(ORCHESTRATION, "references/worker.md"), "utf8");
     assert.ok(text.startsWith("---\nname: haiku\n"));
-    assert.ok(text.includes('model: "claude-haiku-5-5"\neffort: "medium"\n---\n'));
+    assert.ok(text.includes('model: "claude-haiku-5-5"\neffort: "medium"\ndisallowedTools: AskUserQuestion\n---\n'));
     assert.ok(text.includes("Managed by agent-workbench"));
+    for (const name of names(path.dirname(f.agent("x")))) {
+      const agent = fs.readFileSync(f.agent(name), "utf8");
+      assert.ok(agent.includes("disallowedTools: AskUserQuestion\n"));
+      assert.ok(!agent.includes("autoCompactWindow:"));
+    }
     assert.ok(text.endsWith(worker));
     assert.deepEqual(Object.keys(f.stateJson().agents).sort(), ["haiku", "opus", "sonnet"]);
     assert.ok("haiku" in JSON.parse(f.run("status").stdout).agents);
     assert.match(f.run("install").stdout, /no-op/);
+  });
+
+  test("worker_window is added to every generated Claude subagent", () => {
+    const f = new Fixture();
+    f.installOrchestration({ policy: { context: { worker_window: 150000 } } });
+    f.run("install");
+    const names = fs.readdirSync(path.dirname(f.agent("x"))).filter((name) => name.endsWith(".md"));
+    assert.equal(names.length, 3);
+    for (const name of names) {
+      const text = fs.readFileSync(path.join(path.dirname(f.agent("x")), name), "utf8");
+      assert.ok(text.includes("disallowedTools: AskUserQuestion\n"));
+      assert.ok(text.includes("autoCompactWindow: 150000\n"));
+    }
   });
 
   // Run desiredAgents in-process against a fake `magpie` on PATH, capturing stderr warnings.
@@ -1566,6 +1584,8 @@ select:
       "version: 1", "roles: {}", "sol_weekly_brake_percent: 100", "tiers: []",
       "defaults: {timeout_s: false}", "policy: {context: {oops: 1}}",
       "policy: {context: {manager_window: 100000.0}}", "policy: {context: {manager_window: -1}}",
+      "policy: {context: {worker_window: 99999}}", "policy: {context: {worker_window: -1}}",
+      "policy: {context: {worker_window: 1.5}}", 'policy: {context: {worker_window: "100000"}}',
       "policy: {context: {manager_models: opus}}", "policy: {context: {manager_models: [opus, 5]}}",
       "select: [{path: ~/work, profile: missing}]", "select: {}", "profile: missing",
       "profiles: {unused: {tiers: {luna: {effort: false}}}}",
