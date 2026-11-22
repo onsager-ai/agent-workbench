@@ -38,7 +38,7 @@ describe("worker configuration", () => {
       assert.equal(tier.opt_in, false);
     }
     assert.equal(config.policy.context.gateway_window, null);
-    assert.equal(config.policy.context.manager_window, 200000);
+    assert.equal(config.policy.context.manager_window, 300000);
     assert.deepEqual(config.policy.context.manager_models, ["claude-opus-5-5"]);
     assert.equal(config.policy.stop_classifier, null);
     const codex = bundle.profiles.codex;

@@ -28,7 +28,7 @@ policy:
     max_tokens: 300000
     gateway_window: null
     codex_window: null
-    manager_window: 200000
+    manager_window: 300000
     # Optional minimum-only compaction window for generated Claude Workers.
     worker_window: null
     manager_models: [claude-opus-5-5]

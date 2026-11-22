@@ -1369,7 +1369,7 @@ describe("workbench setup", () => {
     assert.deepEqual(settings.env, { OTHER: "x", CLAUDE_CODE_MAX_CONTEXT_TOKENS: "400000" });
     assert.equal(settings.autoCompactWindow, 300000);
     assert.deepEqual(settings.modelSettings, {
-      "claude-opus-5-5": { effortLevel: "high", autoCompactWindow: 200000 }, sonnet: { effortLevel: "low" },
+      "claude-opus-5-5": { effortLevel: "high", autoCompactWindow: 300000 }, sonnet: { effortLevel: "low" },
     });
     assert.equal(settings.model, "magpie");
     const expected = sub(original, "[model_providers.magpie]",
@@ -1405,7 +1405,7 @@ describe("workbench setup", () => {
     const cases = [
       ["claude", '{"autoCompactWindow":300000}', true],
       ["claude", '{"autoCompactWindow":310000}', false],
-      ["claude", '{"modelSettings":{"claude-opus-5-5":{"autoCompactWindow":200000}}}', true],
+      ["claude", '{"modelSettings":{"claude-opus-5-5":{"autoCompactWindow":300000}}}', true],
       ["claude", '{"modelSettings":{"claude-opus-5-5":{"autoCompactWindow":310000}}}', false],
       ["claude", '{"modelSettings":{"claude-opus-5-5":null}}', false],
       ["claude", '{"modelSettings":[]}', false],
