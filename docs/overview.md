@@ -22,6 +22,8 @@ npx @onsager/awb setup
 
 **Tasks that survive a new session.** The Manager keeps what you asked for, what you approved and which task owns what. A later session can pick the task up from a handover note without repeating actions. With T3 Code, so can a session in another harness or on another machine.
 
+**See active work.** `awb lanes` shows your open PRs and local worktrees without changing either.
+
 **Cleanup after itself.** `awb prune` removes local worktrees and branches whose PRs merged, plus empty branches left by Workers.
 
 **Easy to try and easy to undo.** Setup writes only to your home directory and keeps your own instructions and hooks. `awb uninstall` restores them.
@@ -36,7 +38,7 @@ npx @onsager/awb setup
 1. **The session you talk to is the Manager.** It uses the model you picked. Small questions and routine edits it handles itself.
 2. **Substantial work goes to Workers.** Workers are your harness's built-in subagents (`haiku`, `sonnet`, `opus` in Claude Code), so they inherit its permissions and sandbox. Independent pieces run in parallel.
 3. **The Worker ladder picks the model.** It starts at the lowest level that fits the task kind. Moving up needs evidence of the reason, and L3 needs your approval. After two failed rework rounds the Manager comes back to you instead of trying again.
-4. **The Manager verifies before reporting.** It checks the real branch, commit and CI result, not just the Worker's summary.
+4. **The Manager verifies before reporting.** It uses the Worker’s report and final `Outcome` line to verify the branch, commit and CI result.
 5. **A policy hook backs up the rules.** It runs on subagent dispatch, shell commands, T3 delegation and turn end in Claude Code, and on the same events in Codex after you run `awb trust`.
 
 It is plain Markdown skills plus one Node script for the hook. It never writes into your repositories, so it works next to whatever a repo already commits in `AGENTS.md` or `.claude/`.

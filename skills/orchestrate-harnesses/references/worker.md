@@ -20,6 +20,39 @@ An output file or report named in the brief, such as FINDINGS.md, is an authoriz
 
 Write long outputs to their destination incrementally rather than at the end. Read large files through bounded ranges or searches, not whole. Keep working until every assigned item is done or a concrete blocker stops you: missing authority, an unavailable capability, a false premise or a decision only the Manager can make. Do not end your turn with a progress report while you can still make progress. A large scope or CI-only verification is not a blocker; implement the work and leave verification to CI as the brief directs. Report completion against the assigned item list and name every item not finished, with the blocker for each; a header or partial file is not completion.
 
-Return changed paths and actual artifacts/revision, verification performed, unresolved findings and execution/configuration limits. CI-only tests/builds/screenshots run there; a blocked local check is not a passing result. Do not weaken checks to obtain green. Review/read-only/no-change assignments need no invented edit or commit. The Manager verifies delivery; a Worker cannot accept its own work. Use the native harness's result format; no fixed JSON response schema is required.
+Return changed paths and actual artifacts/revision, verification performed, unresolved findings and execution/configuration limits. CI-only tests/builds/screenshots run there; a blocked local check is not a passing result. Do not weaken checks to obtain green. Review/read-only/no-change assignments need no invented edit or commit. The Manager verifies delivery; a Worker cannot accept its own work. Use the native harness's result format with the checklist and final line below.
+
+## Report checklist
+
+Include these in every implementation or PR report:
+
+- Branch and full head SHA, whether the remote matches, and counts of unpushed commits and dirty files.
+- CI for that exact SHA. For every job on that head, mark whether it is required and give its state and, if it failed, its first failure as `file:line` plus a one-line message (say if the location is unavailable), whether it is new or a known flake, and whether you already reran or fixed it.
+- Verification still missing, including what has yet to compile or run in tests.
+- Changes since your last report in 1–3 lines.
+- Progress as done/total, naming the remaining items and keeping item names consistent across reports.
+- Decisions needed, with options and a recommendation for each, and any assumptions you made.
+- Any compactions or context resets during the task.
+- Next action and whether you are still running or have returned.
+
+End your final message with exactly one line in this format:
+
+`Outcome: completed|blocked|cancelled · PR <url> · head <sha> · checks <state>`
+
+Choose one lowercase outcome.
+
+- Use `completed` when you did all the assigned work and pushed it if pushing was authorized. CI may still be running.
+- Use `blocked` when you stopped before finishing because you could not resolve something within your authority, such as a needed decision, missing access, or an exhausted push allowance. Name the blocker in your report.
+- Use `cancelled` when the Manager or the user told you to stop.
+
+Use `none` if the head has no checks. Otherwise choose the first state that applies: `red` if any job failed, `running` if any job has not finished, or `green` if every job passed.
+
+Cancelled, timed-out, or action-required jobs count as failures, and skipped or neutral jobs count as passing.
+
+For finished work with CI running, use `completed` with `checks running`.
+
+`Outcome: completed · PR https://github.com/example/repo/pull/1 · head 0123456789abcdef0123456789abcdef01234567 · checks running`
+
+Use the full head SHA. Without a PR, omit the entire suffix, for example `Outcome: completed`. Use literal ` · ` separators and no Markdown or trailing text on the line. This is a cross-project contract: Semon ASI matches the entire line and treats malformed lines as unknown.
 
 Acknowledge material amendments actually read. If interrupted, preserve partial work, report observed state and any uncertain side effects, and let Manager reconcile before redispatch. Never infer model identity, enforced context/budget or stopped processes merely from your own report; native tool metadata and observed state are the evidence.

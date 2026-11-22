@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import tty from "node:tty";
 import { isDeepStrictEqual } from "node:util";
 import { runOps, opsHelp } from "./ops.mjs";
+import { showLanes } from "./lanes.mjs";
 
 const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
 if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 20)) {
@@ -20,7 +21,7 @@ const { parse: parseToml } = await import("../vendor/smol-toml/index.js");
 
 export const VERSION = "1";
 // Agent Workbench release; tests keep it equal to package.json.
-export const RELEASE = "0.2.8";
+export const RELEASE = "0.2.9";
 const SOURCE = "onsager-ai/agent-workbench";
 const BEGIN = Buffer.from("<!-- BEGIN agent-workbench -->");
 const END = Buffer.from("<!-- END agent-workbench -->");
@@ -1802,6 +1803,7 @@ const COMMANDS = {
   install: "Apply shared instructions, hooks and settings",
   update: "Update distributed skills, then apply them",
   status: "Check installed files and settings (supports --json)",
+  lanes: "Show open PRs and local worktrees (supports --cwd and --json)",
   trust: "Trust installed Codex policy hooks",
   uninstall: "Remove managed setup while keeping private files",
   workers: "Show effective worker configuration",
@@ -1868,7 +1870,7 @@ function printHelp(command) {
     for (const [name, description] of Object.entries(COMMANDS)) console.log(`  ${name.padEnd(10)} ${description}`);
     console.log("\nUse workbench.mjs help <command> for command options.");
   } else {
-    const args = command === "workers" ? " [--cwd CWD]" : command === "update" ? " [--skills-cmd SKILLS_CMD]" : command === "status" ? " [--json]" : "";
+    const args = command === "lanes" ? " [--cwd CWD] [--json]" : command === "workers" ? " [--cwd CWD]" : command === "update" ? " [--skills-cmd SKILLS_CMD]" : command === "status" ? " [--json]" : "";
     console.log(`usage: workbench.mjs [--home HOME]${args} ${command}\n\n${COMMANDS[command]}`);
   }
 }
@@ -1879,6 +1881,7 @@ export function main(argv = process.argv.slice(2)) {
   try {
     if (args.command === "version") { console.log(RELEASE); return 0; }
     if (args.command === "ops") return runOps(args.ops, path.resolve(args.home));
+    if (args.command === "lanes") { showLanes(args); return 0; }
     const setup = new Setup(args.home);
     if (args.command === "workers") setup.workers(args.cwd);
     else if (args.command === "update") return setup.update(args.skillsCmd);

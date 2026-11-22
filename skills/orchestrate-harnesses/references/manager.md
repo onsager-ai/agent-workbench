@@ -8,11 +8,11 @@ Prefer native harness subagents for same-harness work. A T3 thread you launch is
 
 - When a watched PR check fails, resume the Worker that owns the branch or dispatch an L1 Worker with the run URL. The Worker triages the failure; the Manager does not fetch or search CI logs.
 - Delegate diff review to an independent L1/L2 reviewer. Give it the PR and requirements; read its terse findings and the Worker report, not whole diffs. Before accepting, inspect only the specific hunks that change a contract: config schema, public docs, persisted formats, or hook policy. A Worker cannot accept its own work.
-- By default the Worker that owns the branch commits, pushes, opens the PR, and fixes CI. Brief it to iterate until required CI is green on the exact head, within the round's push allowance, and end its report with `PR <url>, head <sha>, checks <state>`. The Manager makes one exact-head verification call and merges when authorized.
+- By default the Worker that owns the branch commits, pushes, opens the PR, and fixes CI. Brief it to iterate until required CI is green on the exact head, within the round's push allowance, and follow the [Worker report checklist and Outcome line](worker.md#report-checklist). The Manager makes one exact-head verification call and merges when authorized.
 - Batch independent Manager checks into one tool call; avoid exploratory one-liners.
 - Don't read web pages in the Manager. That covers WebFetch, `curl` or `wget` of a page, `gh api` HTML, and preview DOM or snapshot dumps. Page content costs many tokens and stays in Manager context. Dispatch a fast Worker with the question and URLs, and have it return a short answer with source links. WebSearch result lists are fine in the Manager, and so is browser work the user asks the Manager to do.
 
-Give each Worker a bounded brief containing original requirements/amendments, named paths/worktree, permissions and authorized delivery, acceptance criteria, tier/reason and current resource rules. For PR delivery, supply the [PR CI trigger procedure](pr-ci-trigger.md) inline or at its resolved installed file path, plus recovery authority and the round's remaining push allowance; generated Worker instructions cannot rely on relative links to skill resources. Size each Worker's scope to fit one context where possible; split long inventories by file group. For implementation, give a concrete first step, value partial progress within the timebox, require an early WIP commit or push when authorized, and batch CI fixes per round; see the [Worker ladder](worker-ladder.md). Reuse native run IDs and existing task/PR records. Native tool responses establish launch/status; Worker summaries are evidence to inspect. No task directory, immutable JSON contract or response schema is required.
+Give each Worker a bounded brief containing original requirements/amendments, named paths/worktree, permissions and authorized delivery, acceptance criteria, tier/reason and current resource rules. For PR delivery, supply the [PR CI trigger procedure](pr-ci-trigger.md) inline or at its resolved installed file path, plus recovery authority and the round's remaining push allowance; generated Worker instructions cannot rely on relative links to skill resources. Size each Worker's scope to fit one context where possible; split long inventories by file group. For implementation, give a concrete first step, value partial progress within the timebox, require an early WIP commit or push when authorized, and batch CI fixes per round; see the [Worker ladder](worker-ladder.md). Reuse native run IDs and existing task/PR records. Native tool responses establish launch/status; Worker summaries are evidence to inspect. Collect reports in the native harness format using the Worker checklist and Outcome line.
 
 ## Brief checklist
 
@@ -28,7 +28,8 @@ Copy and fill in for each dispatch:
 - Host resource rules: follow `host-ops` and carry applicable limits into delegations and resumes.
 - CI-only checks: no local builds, tests or typechecks.
 - Formatter evidence: command and quoted exit code, e.g. `cargo fmt --all -- --check; echo exit=$?`.
-- PR delivery: `~/.agents/skills/orchestrate-harnesses/references/pr-ci-trigger.md`; recovery authority: ___; remaining push allowance: ___. Worker iterates until required CI is green on the exact head and reports `PR <url>, head <sha>, checks <state>`; Manager verifies once before merge. On failure, resume/dispatch a Worker with the run URL.
+- Reporting: include the [Worker report checklist](worker.md#report-checklist) and end with `Outcome: completed|blocked|cancelled · PR <url> · head <sha> · checks <state>`; omit the PR suffix when there is no PR.
+- PR delivery: `~/.agents/skills/orchestrate-harnesses/references/pr-ci-trigger.md`; recovery authority: ___; remaining push allowance: ___. Worker iterates until required CI is green on the exact head; Manager verifies once before merge. On failure, resume/dispatch a Worker with the run URL.
 - Named output files authorized for creation:
 - Dispatch description/title: `<verb> … · <tier>`.
 
@@ -43,7 +44,13 @@ You are stuck when any of these happens:
 - two consecutive review rounds find the same kind of defect, such as further lock or recovery interactions;
 - a task reaches `max_auto_rework`;
 - a PR or contract grows to about twice the size the plan or request implied;
-- Workers keep ending early on the same work after a tier change.
+- Workers keep ending early on the same work after a tier change;
+- two consecutive compile failures reach CI on one branch;
+- a Worker stops or resets three times on one task without a blocker (split the task);
+- the remaining count (total minus done) does not shrink across three reports;
+- one PR raises three or more new design decisions.
+
+Watch how many superseded or cancelled CI runs it takes to reach each green head.
 
 At a trigger, stop dispatching fixes; fixing the latest findings again is not the default. Ask whether the design or scope is the cause: which requirement forces each piece of the complexity, and what a simpler design would drop. When an independent view would help, dispatch a short L2 design audit with a neutral brief: give it the user's requirements and the design, not your hypothesis. Then give the user a short summary with options, including simplifying or narrowing scope, and your recommendation, through the question tool. Hold further fix rounds on that work until the user answers; continue only independent work.
 

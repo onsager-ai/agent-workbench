@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runOps } from "../skills/workbench-setup/scripts/ops.mjs";
 
-const commands = ["install", "update", "status", "trust", "uninstall", "workers", "prune"];
+const commands = ["install", "update", "status", "lanes", "trust", "uninstall", "workers", "prune"];
 const usage = `Usage: awb <command> [options]
 
 Commands:
@@ -14,6 +14,7 @@ Commands:
   install    Apply or refresh global setup
   update     Update installed skills and setup
   status     Show setup status
+  lanes      Show open PRs and local worktrees
   trust      Review and trust Codex hooks
   uninstall  Remove managed setup
   workers    Show effective Worker configuration
