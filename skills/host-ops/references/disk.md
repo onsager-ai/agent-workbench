@@ -15,7 +15,7 @@ For each candidate, identify its exact path, type, owning tool/task, known size,
 
 Prefer completed-task build outputs, expired scratch outputs with known ownership and tool-managed unused cache entries. Preserve source, credentials, databases, user exports, session history, backups and unknown content. Separate them from disposable outputs even when they share a directory.
 
-Use `npx -y @onsager/awb prune --apply` as the supported way to remove local worktrees and branches whose merged PR and tip state qualify them; its default dry run reports eligibility and skip reasons. Keep the additional ignored-content checks below when reclaiming disk space.
+Use `npx -y --package=@onsager/awb awb prune --apply` as the supported way to remove local worktrees and branches whose merged PR and tip state qualify them; its default dry run reports eligibility and skip reasons. Keep the additional ignored-content checks below when reclaiming disk space.
 
 Before removing a Git worktree:
 

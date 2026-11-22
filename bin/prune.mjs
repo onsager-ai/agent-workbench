@@ -160,7 +160,7 @@ export function prune({ repo: requestedRepo, apply = false, json = false } = {})
   }
   if (json) console.log(JSON.stringify(rows, null, 2));
   else {
-    console.log(`${apply ? "Applied" : "Dry run"} (use --apply to remove eligible items)`);
+    console.log(apply ? "Applied" : "Dry run (use --apply to remove eligible items)");
     for (const row of rows) console.log(`${row.action.padEnd(8)} ${row.branch}${row.worktree ? `  ${row.worktree}` : ""}  ${row.reason}`);
   }
   return rows;
