@@ -143,15 +143,18 @@ printf '%s\n' '${JSON.stringify(prs)}'
   const env = { ...f.env, PATH: `${fakeBin}:${process.env.PATH}`, AWB_TEST_GH_LOG: ghLog };
   const ghCall = `${fs.realpathSync(repo)} ${ghArgs}\n`;
 
+  const minimumAge = Math.max(0, Math.floor((Date.now() - Date.parse(updatedAt)) / 1000));
   const result = run(f.home, ["lanes", "--cwd", repo, "--json"], env);
+  const maximumAge = Math.max(0, Math.floor((Date.now() - Date.parse(updatedAt)) / 1000));
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.readFileSync(ghLog, "utf8"), ghCall);
   const lanes = JSON.parse(result.stdout);
   assert.equal(lanes.note, null);
   const [draft, ready] = lanes.pullRequests;
-  assert.ok(Number.isInteger(draft.headAgeSeconds));
+  const { updateAgeSeconds } = draft;
+  assert.ok(updateAgeSeconds >= minimumAge && updateAgeSeconds <= maximumAge);
   assert.deepEqual(draft, {
-    number: 17, draft: true, branch: "task", crossRepository: false, head, headAgeSeconds: draft.headAgeSeconds, updatedAt,
+    number: 17, draft: true, branch: "task", crossRepository: false, head, updatedAt, updateAgeSeconds,
     checks: [
       { name: "CI / lint", state: "pass" },
       { name: "CI / test", state: "fail" },
@@ -161,7 +164,7 @@ printf '%s\n' '${JSON.stringify(prs)}'
   });
   assert.deepEqual(ready, {
     number: 18, draft: false, branch: "local-only", crossRepository: true,
-    head: unknownHead, headAgeSeconds: null, updatedAt, checks: [],
+    head: unknownHead, updatedAt, updateAgeSeconds, checks: [],
   });
   assert.equal(lanes.worktrees.length, 4);
   assert.deepEqual(Object.fromEntries(lanes.worktrees.map((row) => [row.path, row])), {
@@ -174,8 +177,8 @@ printf '%s\n' '${JSON.stringify(prs)}'
   const launcher = path.join(f.home, ".local", "bin", "agent-workbench");
   const text = spawnSync(launcher, ["lanes"], { cwd: repo, encoding: "utf8", env });
   assert.equal(text.status, 0, text.stderr);
-  assert.match(text.stdout, /^PR #17  draft  [\da-f]{8}  head \d+[smhd] old  .*CI \/ lint pass/m);
-  assert.match(text.stdout, /^PR #18  ready  bbbbbbbb  head age unknown, PR updated /m);
+  assert.match(text.stdout, /^PR #17  draft  [\da-f]{8}  updated \d+[smhd] ago  .*CI \/ lint pass/m);
+  assert.match(text.stdout, /^PR #18  ready  bbbbbbbb  updated \d+[smhd] ago  no checks reported$/m);
   assert.match(text.stdout, /^worktree  task  PR #17  1 ahead  3 dirty /m);
   assert.match(text.stdout, /^worktree  local-only  no matching PR  1 ahead \(no remote branch\)  0 dirty /m);
   assert.match(text.stdout, /^worktree  \(no branch\)  no matching PR  0 ahead \(no remote branch\)  1 dirty /m);

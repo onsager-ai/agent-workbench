@@ -1,8 +1,6 @@
 import { spawnSync } from "node:child_process";
 
-const git = (cwd, ...args) => spawnSync("git", ["--no-optional-locks", ...args], {
-  cwd, encoding: "utf8", env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
-});
+const git = (cwd, ...args) => spawnSync("git", ["--no-optional-locks", ...args], { cwd, encoding: "utf8" });
 const prFields = "number,isDraft,headRefName,headRefOid,updatedAt,statusCheckRollup,isCrossRepository";
 
 function checkState(check) {
@@ -19,23 +17,19 @@ function readPullRequests(cwd) {
     return { pullRequests: [], note: "PRs unavailable: gh pr list failed. Check GitHub authentication and repository access." };
   }
   const now = Date.now();
-  const pullRequests = JSON.parse(result.stdout).map((pr) => {
-    const commit = git(cwd, "log", "-1", "--no-show-signature", "--format=%ct", pr.headRefOid, "--");
-    const headTime = commit.status === 0 && commit.stdout.trim() ? Number(commit.stdout.trim()) * 1000 : NaN;
-    return {
-      number: pr.number,
-      draft: pr.isDraft,
-      branch: pr.headRefName,
-      crossRepository: pr.isCrossRepository,
-      head: pr.headRefOid,
-      headAgeSeconds: Number.isFinite(headTime) ? Math.max(0, Math.floor((now - headTime) / 1000)) : null,
-      updatedAt: pr.updatedAt,
-      checks: (pr.statusCheckRollup ?? []).map((check) => ({
-        name: check.workflowName ? `${check.workflowName} / ${check.name}` : check.name ?? check.context,
-        state: checkState(check),
-      })),
-    };
-  });
+  const pullRequests = JSON.parse(result.stdout).map((pr) => ({
+    number: pr.number,
+    draft: pr.isDraft,
+    branch: pr.headRefName,
+    crossRepository: pr.isCrossRepository,
+    head: pr.headRefOid,
+    updatedAt: pr.updatedAt,
+    updateAgeSeconds: Math.max(0, Math.floor((now - Date.parse(pr.updatedAt)) / 1000)),
+    checks: (pr.statusCheckRollup ?? []).map((check) => ({
+      name: check.workflowName ? `${check.workflowName} / ${check.name}` : check.name ?? check.context,
+      state: checkState(check),
+    })),
+  }));
   return { pullRequests, note: null };
 }
 
@@ -85,9 +79,8 @@ export function showLanes({ cwd, json }) {
     return;
   }
   for (const pr of pullRequests) {
-    const age = pr.headAgeSeconds === null ? `head age unknown, PR updated ${pr.updatedAt}` : `head ${formatAge(pr.headAgeSeconds)} old`;
     const checks = pr.checks.map((check) => `${check.name} ${check.state}`).join(", ") || "no checks reported";
-    console.log(`PR #${pr.number}  ${pr.draft ? "draft" : "ready"}  ${pr.head.slice(0, 8)}  ${age}  ${checks}`);
+    console.log(`PR #${pr.number}  ${pr.draft ? "draft" : "ready"}  ${pr.head.slice(0, 8)}  updated ${formatAge(pr.updateAgeSeconds)} ago  ${checks}`);
   }
   for (const tree of worktrees) {
     const pr = tree.openPr ? `PR #${tree.openPr}` : note && tree.branch ? "PR unknown" : "no matching PR";

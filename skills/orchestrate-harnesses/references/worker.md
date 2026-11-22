@@ -39,6 +39,20 @@ End your final message with exactly one line in this format:
 
 `Outcome: completed|blocked|cancelled · PR <url> · head <sha> · checks <state>`
 
-Choose one lowercase outcome. Use `none` if the head has no checks. Otherwise choose the first state that applies: `red` if any job failed, `running` if any job has not finished, or `green` if every job passed. Use the full head SHA. Without a PR, omit the entire suffix, for example `Outcome: completed`. Use literal ` · ` separators and no Markdown or trailing text on the line. This is a cross-project contract: Semon ASI matches the entire line and treats malformed lines as unknown.
+Choose one lowercase outcome.
+
+- Use `completed` when you did all the assigned work and pushed it if pushing was authorized. CI may still be running.
+- Use `blocked` when you stopped before finishing because you could not resolve something within your authority, such as a needed decision, missing access, or an exhausted push allowance. Name the blocker in your report.
+- Use `cancelled` when the Manager or the user told you to stop.
+
+Use `none` if the head has no checks. Otherwise choose the first state that applies: `red` if any job failed, `running` if any job has not finished, or `green` if every job passed.
+
+Cancelled, timed-out, or action-required jobs count as failures, and skipped or neutral jobs count as passing.
+
+For finished work with CI running, use `completed` with `checks running`.
+
+`Outcome: completed · PR https://github.com/example/repo/pull/1 · head 0123456789abcdef0123456789abcdef01234567 · checks running`
+
+Use the full head SHA. Without a PR, omit the entire suffix, for example `Outcome: completed`. Use literal ` · ` separators and no Markdown or trailing text on the line. This is a cross-project contract: Semon ASI matches the entire line and treats malformed lines as unknown.
 
 Acknowledge material amendments actually read. If interrupted, preserve partial work, report observed state and any uncertain side effects, and let Manager reconcile before redispatch. Never infer model identity, enforced context/budget or stopped processes merely from your own report; native tool metadata and observed state are the evidence.
