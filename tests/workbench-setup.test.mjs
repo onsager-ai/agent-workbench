@@ -98,6 +98,7 @@ class Fixture {
       unrelated: { source: "another/project", sourceType: "github" },
     } };
     this.write(path.join(this.home, ".agents/.skill-lock.json"), JSON.stringify(lock));
+    fs.mkdirSync(path.join(this.home, ".agents/skills/host-ops"), { recursive: true });
   }
 
   fakeCommand(body) {
@@ -565,6 +566,7 @@ describe("workbench setup", () => {
     fs.writeFileSync(lockPath, JSON.stringify(lock));
     const log = path.join(f.home, "calls.json");
     const personal = f.personalFile();
+    fs.mkdirSync(path.dirname(personal), { recursive: true });
     const command = f.fakeCommand(
       'import fs from "node:fs";\nimport path from "node:path";\n' +
       `fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\n` +
@@ -573,6 +575,28 @@ describe("workbench setup", () => {
     f.run("update", ["--skills-cmd", command]);
     assert.deepEqual(f.json(log), ["update", "host-ops", "workbench-personal", "workbench-setup", "-g", "-y"]);
     assert.ok(read(f.shared).includes("updated personal rules"));
+  });
+
+  test("update drops owned lock entries whose skill was deleted locally", () => {
+    const f = new Fixture();
+    f.run("install");
+    f.nativeLock();
+    const lockPath = path.join(f.home, ".agents/.skill-lock.json");
+    const lock = f.json(lockPath);
+    lock.skills["thermal-guard"] = { source: "onsager-ai/agent-workbench", sourceType: "github" };
+    fs.writeFileSync(lockPath, JSON.stringify(lock));
+    const log = path.join(f.home, "calls.json");
+    const command = f.fakeCommand(`import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\n`);
+    assert.match(f.run("update", ["--skills-cmd", command]).stdout, /dropped stale skills lock entries: thermal-guard/);
+    assert.deepEqual(f.json(log), ["update", "host-ops", "workbench-setup", "-g", "-y"]);
+    assert.deepEqual(Object.keys(f.json(lockPath).skills).sort(), ["host-ops", "unrelated", "workbench-setup"]);
+  });
+
+  test("version matches the package release", () => {
+    const f = new Fixture();
+    const release = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../package.json"), "utf8")).version;
+    assert.equal(f.run("--version").stdout.trim(), release);
+    assert.equal(f.run("version").stdout.trim(), release);
   });
 
   test("template update preserves private positions and bytes", () => {
@@ -1254,7 +1278,7 @@ describe("workbench setup", () => {
     const f = new Fixture();
     f.installOrchestration();
     const installed = f.run("install");
-    assert.match(installed.stdout, /agent-workbench trust/);
+    assert.match(installed.stdout, /Run \/hooks in Codex once to trust agent-workbench's hooks: /);
     assert.deepEqual(f.stateJson().codex_trust, []);
     const result = f.run("trust");
     assert.match(result.stdout, /Run \/hooks in Codex once to trust agent-workbench's hooks\./);
@@ -1265,7 +1289,7 @@ describe("workbench setup", () => {
     const f = new Fixture();
     f.installOrchestration();
     const result = f.run("install");
-    assert.match(result.stdout, /Run agent-workbench trust to trust Codex hooks/);
+    assert.match(result.stdout, /Run \/hooks in Codex once to trust agent-workbench's hooks: /);
     assert.ok(!exists(path.join(f.home, ".codex/config.toml")) || !read(path.join(f.home, ".codex/config.toml")).includes("hooks.state"));
     assert.deepEqual(f.stateJson().codex_trust, []);
     assert.equal(JSON.parse(f.run("status").stdout).codex_trust.Bash, "untrusted");

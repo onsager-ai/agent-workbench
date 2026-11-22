@@ -225,6 +225,8 @@ agent-workbench status [--json]
 agent-workbench trust
 # Roll back setup while preserving current personal edits.
 agent-workbench uninstall
+# Print the installed release.
+agent-workbench --version
 # Report local worktrees/branches whose merged PRs qualify for cleanup, plus
 # PR-less branches with no commits beyond the default branch.
 awb prune [--repo PATH] [--json]
@@ -232,7 +234,7 @@ awb prune [--repo PATH] [--json]
 awb prune --apply
 ```
 
-`update` reads native version-3 skills lock ownership (`~/.agents/.skill-lock.json`, or `$XDG_STATE_HOME/skills/.skill-lock.json` when configured) and delegates to `skills@1.7.4 update` with this repository's installed skill names plus `workbench-personal` when present in the lock, regardless of its source. A failed native update leaves global instruction files unchanged. Updates honor the installed native skill source/ref metadata. `npx skills update -g -y` remains available for ordinary updates across all skills; use `agent-workbench install` afterward to apply any newly distributed instruction template.
+`update` reads native version-3 skills lock ownership (`~/.agents/.skill-lock.json`, or `$XDG_STATE_HOME/skills/.skill-lock.json` when configured) and delegates to `skills@1.7.4 update` with this repository's installed skill names plus `workbench-personal` when present in the lock, regardless of its source. Owned lock entries whose skill directory under `~/.agents/skills` is gone (skills removed upstream and deleted locally) are dropped from the lock first, so the native update stops warning about them. A failed native update leaves global instruction files unchanged. Updates honor the installed native skill source/ref metadata. `npx skills update -g -y` remains available for ordinary updates across all skills; use `agent-workbench install` afterward to apply any newly distributed instruction template.
 
 Setup refuses foreign links or same-name commands, masking Codex overrides, duplicate or broken markers, and edits inside either managed instruction block. Resolve the reported conflict before retrying. State and backups are private to your user. Backups are historical snapshots; uninstall keeps current private text and restores Codex to a regular file containing it, removes the owned Claude import and launcher, and retains backups. It never replaces later personal edits with stale backup content. For historical recovery, inspect those backups yourself and restore only the intended text. Inspect status after interrupted or partially failed operations before retrying.
 

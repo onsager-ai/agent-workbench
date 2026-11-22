@@ -19,6 +19,7 @@ Commands:
   workers    Show effective Worker configuration
   prune      Remove local worktrees and branches with merged PRs
   ops        Run host operations
+  version    Show the awb version
   help       Show this help`;
 
 const argv = process.argv.slice(2);
@@ -48,6 +49,10 @@ for (let i = 0; i < argv.length; i += 1) {
 const command = args[0] ?? "help";
 if (command === "help" || command === "--help" || command === "-h") {
   console.log(usage);
+  process.exit(0);
+}
+if (command === "version" || command === "--version") {
+  console.log(JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version);
   process.exit(0);
 }
 
