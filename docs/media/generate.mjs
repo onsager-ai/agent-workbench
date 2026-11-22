@@ -2,8 +2,8 @@
 // No dependencies: node docs/media/generate.mjs
 // session.gif is separate: a real Claude Code session recorded with asciinema
 // (session.cast) and rendered with agg 1.9.0 at --speed 3.
-// Demo text is real output from @onsager/awb 0.1.2 setup and from its policy
-// hook, abridged; the hook scenes show the decision the hook returns.
+// Demo text is adapted from earlier setup and policy hook output. The hook
+// scenes show the decision the hook returns.
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,8 +75,8 @@ const SCENES = [
     title: "Install",
     lines: [
       { cmd: "npx @onsager/awb setup" },
-      { out: "◇  Installed 7 skills", dim: false },
-      { out: "   manage-lane · orchestrate-harnesses · prompt-for-decisions · thermal-guard …", dim: true },
+      { out: "◇  Installed 5 skills", dim: false },
+      { out: "   host-ops · orchestrate-harnesses · prompt-for-decisions …", dim: true },
       { out: "claude agents: haiku, opus, sonnet" },
       { out: "ok  Claude hook Agent|Task: applied", ok: true },
       { out: "ok  Claude hook Bash: applied", ok: true },
@@ -171,7 +171,7 @@ function demo() {
     }
     body += `<g ${show(Math.max(0, s.start - 0.3), s.end)}>${g}</g>\n`;
   });
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Terminal demo: npx @onsager/awb setup installs seven skills, three Worker subagents and the policy hook. Then the hook denies a commit on main and CI polling, asks before an Opus Worker, and sends a prose question back.">
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Terminal demo: npx @onsager/awb setup installs five skills, three Worker subagents and the policy hook. Then the hook denies a commit on main and CI polling, asks before an Opus Worker, and sends a prose question back.">
 <title>Agent Workbench setup and policy hook demo</title>
 <style>
 text{font-family:${MONO};font-size:14px;white-space:pre}

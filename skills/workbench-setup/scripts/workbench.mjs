@@ -20,7 +20,7 @@ const { parse: parseToml } = await import("../vendor/smol-toml/index.js");
 
 export const VERSION = "1";
 // Agent Workbench release; tests keep it equal to package.json.
-export const RELEASE = "0.2.6";
+export const RELEASE = "0.2.7";
 const SOURCE = "onsager-ai/agent-workbench";
 const BEGIN = Buffer.from("<!-- BEGIN agent-workbench -->");
 const END = Buffer.from("<!-- END agent-workbench -->");
@@ -1500,7 +1500,7 @@ export class Setup {
     });
   }
 
-  install() {
+  install(skillsCommand) {
     this.preflight();
     let changed = false;
     let desired;
@@ -1607,6 +1607,7 @@ export class Setup {
         for (const [file, plan] of nativePlans) changed = atomic(file, plan[1]) || changed;
         changed = atomic(this.statePath, stateBytes) || changed;
       });
+      this.removeRetiredLane(skillsCommand);
     });
     console.log(changed ? "installed" : "no-op: already installed");
     const names = Object.keys(desired).sort();
@@ -1728,9 +1729,7 @@ export class Setup {
     console.log("uninstalled; current private instructions and private backups retained");
   }
 
-  update(command) {
-    this.preflight();
-    if (!this.isRealHome && !command) throw new Conflict("alternate --home requires --skills-cmd; real-user npx was not invoked; rerun with --skills-cmd COMMAND");
+  skillsLockPath() {
     let lockFile = path.join(this.home, ".agents/.skill-lock.json");
     if (this.isRealHome && process.env.XDG_STATE_HOME) {
       lockFile = path.join(process.env.XDG_STATE_HOME, "skills/.skill-lock.json");
@@ -1739,6 +1738,46 @@ export class Setup {
     } else {
       inspect(lockFile, this.home);
     }
+    return lockFile;
+  }
+
+  // Older updaters finish by running the newly distributed installer. Migrate here so the
+  // first update from those releases also removes the retired skill.
+  removeRetiredLane(command) {
+    if (!this.isRealHome && !command) return;
+    const retiredPath = path.join(this.home, ".agents/skills/manage-lane");
+    if (!present(retiredPath)) return;
+    const replacement = path.join(path.dirname(this.worker), "lane.md");
+    inspect(replacement, this.home);
+    if (!present(replacement)) return;
+    const lockFile = this.skillsLockPath();
+    if (!present(lockFile)) return;
+    const lock = JSON.parse(utf8(read(lockFile)));
+    const retired = lock?.skills?.["manage-lane"];
+    const orchestration = lock?.skills?.["orchestrate-harnesses"];
+    if (lock?.version !== 3 || retired?.source !== SOURCE || retired.sourceType !== "github" ||
+        orchestration?.source !== SOURCE || orchestration.sourceType !== "github" ||
+        retired.ref !== orchestration.ref) return;
+    inspect(retiredPath, this.home, { directory: true });
+
+    const args = command ? shellSplit(command) : ["npx", "--yes", "skills@1.7.4"];
+    if (!args.length) throw new Conflict("empty skills command; provide an executable command with --skills-cmd");
+    const env = this.isRealHome ? process.env : {
+      PATH: process.env.PATH, HOME: this.home,
+    };
+    const result = spawnSync(args[0], [...args.slice(1), "remove", "manage-lane", "-g", "-y"], {
+      stdio: "inherit", env,
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0 || present(retiredPath) || has(JSON.parse(utf8(read(lockFile))).skills, "manage-lane")) {
+      throw new Conflict("native skills removal did not remove the retired manage-lane skill; resolve the removal error and rerun agent-workbench update");
+    }
+  }
+
+  update(command) {
+    this.preflight();
+    if (!this.isRealHome && !command) throw new Conflict("alternate --home requires --skills-cmd; real-user npx was not invoked; rerun with --skills-cmd COMMAND");
+    const lockFile = this.skillsLockPath();
     if (!present(lockFile)) throw new Conflict("native skills lock is missing; install global skills first, then rerun agent-workbench update");
     let names;
     let native;
@@ -1780,7 +1819,9 @@ export class Setup {
       this.preflight();
     });
     // Fresh process loads the newly distributed code, after releasing our lock.
-    const installed = spawnSync(process.execPath, [this.script, "--home", this.home, "install"], { stdio: "inherit" });
+    const installArgs = [this.script, "--home", this.home, "install"];
+    if (command) installArgs.push("--skills-cmd", command);
+    const installed = spawnSync(process.execPath, installArgs, { stdio: "inherit" });
     if (installed.error) throw installed.error;
     return installed.status ?? 1;
   }
@@ -1876,6 +1917,7 @@ export function main(argv = process.argv.slice(2)) {
     const setup = new Setup(args.home);
     if (args.command === "workers") setup.workers(args.cwd);
     else if (args.command === "update") return setup.update(args.skillsCmd);
+    else if (args.command === "install") setup.install(args.skillsCmd);
     else if (args.command === "status") setup.status({ json: args.json });
     else setup[args.command]();
     return 0;

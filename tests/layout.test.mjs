@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const EXPECTED_SKILLS = [
   "host-ops",
-  "manage-lane",
   "orchestrate-harnesses",
   "prompt-for-decisions",
   "review-storybook",
@@ -57,7 +56,10 @@ describe("public layout", () => {
       "docs/notes.md",
       "skills/host-ops/references/disk.md",
       "skills/host-ops/references/thermal.md",
-      "skills/manage-lane/references/handover.md",
+      "skills/orchestrate-harnesses/references/handover.md",
+      "skills/orchestrate-harnesses/references/lane.md",
+      "skills/prompt-for-decisions/references/visuals.md",
+      "skills/workbench-setup/references/worker-profiles.md",
       "skills/orchestrate-harnesses/workers.yml",
       "skills/orchestrate-harnesses/references/manager.md",
       "skills/orchestrate-harnesses/references/configuration.md",

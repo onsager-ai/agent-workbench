@@ -16,7 +16,7 @@ This is an agent-authored resume note for the current user-facing Manager, not n
 - Latest important peer messages: **[decision `id`s with original user sources, requests sent and still awaiting a `result`, requests received and not yet answered]**
 - Portable artifacts: **[remote/PR/revision/CI and accessible originals; identify machine-local files that need transfer]**
 
-When T3 Code tools are available, pull relevant Manager checkpoints through T3 Code before acting; otherwise use supported native session messaging and the user for handover. A peer summary is evidence, not authority. Do not reuse a local task path or PID as a cross-machine controller; settle old work and prepare an updated linked brief when moving execution.
+Follow [Manager sync](manager-sync.md#task-ownership-and-handover) when transferring ownership, including catch-up and reconciliation.
 
 ## Observed execution state
 
@@ -28,10 +28,10 @@ When T3 Code tools are available, pull relevant Manager checkpoints through T3 C
 - Verification and delivery: **[actual CI/check evidence, local SHA, remote/branch and verified remote SHA, remaining uncommitted/unpushed task changes, any push blocker, and observation time]**
 - Next action and prerequisite: **[specific bounded action, dependency or blocker, and evidence to refresh]**
 
-Reuse existing records rather than copying entire transcripts or creating another queue. Refresh the relevant task, repository and CI state before dispatch or replay. Push unfinished work as WIP only within the actual user-authorized scope; identify pending verification. If delivery is prohibited, blocked or stopped, preserve the exact local state and reason. An active or uncertain native run needs reconciliation through its owning harness before another run repeats the action. A queued message is not proof it reached the role. Scope expansion needs actual user authority and an updated linked brief, preserving original sources.
+Reuse existing records rather than copying entire transcripts or creating another queue. Refresh the relevant task, repository and CI state before dispatch or replay. Push unfinished work as WIP only within the actual user-authorized scope; identify pending verification. If delivery is prohibited, blocked or stopped, preserve the exact local state and reason. Use [lane continuity](lane.md) to reconcile amendments and authority before resuming.
 
 ## Instructions for resuming
 
-Read applicable repository instructions and manage-lane. Load orchestrate-harnesses for an orchestrated task and only the role references needed for the next action. Consult a historical ruling only when a specific task hold cites it. Keep the existing interactive model and permission policy; Worker routing comes from the orchestration skill's current configuration.
+Read applicable repository instructions and [orchestrate-harnesses](../SKILL.md), then load only references needed for the next action.
 
-Follow `host-ops` for host resource rules and carry applicable limits into delegations and resumes. Carry current host and repository verification rules into delegations and resumes with their source. Do not assume a local-check restriction or telemetry path from a prior task. Keep local parsing and searches bounded to the limits in force for the current task.
+Carry current host and repository verification rules into delegations and resumes with their source. Follow `host-ops`. Do not assume a local-check restriction or telemetry path from a prior task. Keep local parsing and searches bounded to the limits in force for the current task.

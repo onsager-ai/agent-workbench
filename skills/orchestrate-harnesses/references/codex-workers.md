@@ -8,6 +8,4 @@ timeout <s> codex exec -m <model> -c model_reasoning_effort=<effort> -s workspac
 
 Use `-s read-only` for read-only work. Pass the brief on stdin and capture the final message with `-o <file>`. Add `-c sandbox_workspace_write.network_access=true` only when the brief authorizes network work such as `git push` or `gh`. Use Codex's own sandbox, never `danger-full-access`. If the sandbox cannot start, for example because bubblewrap is blocked by an AppArmor user-namespace restriction, report the gap rather than widening access.
 
-Launch as a tracked background command so exit signals completion. Verify the process and final message before reporting a Worker as running or finished. Honor the configured tier weekly brake. Fresh usage at or above it blocks that tier; 100 means block once the weekly allowance is used. Use [Magpie quota guidance](magpie.md) when installed; unknown or stale readings need an explicit bounded Manager exception. Never read credentials to obtain usage.
-
-Apply `policy.max_auto_rework` across tiers after the initial attempt. At the limit, follow [design and stuck checkpoints](manager.md#design-and-stuck-checkpoints). Never silently reset the count or run endless cheap retries. These are Manager decisions, not checks enforced by a controller.
+Launch as a tracked background command so exit signals completion. Verify the process and final message before reporting a Worker as running or finished. Follow the [Worker ladder](worker-ladder.md#choose-a-tier) for quota brakes and rework.

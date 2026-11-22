@@ -20,9 +20,9 @@ Within each level, try tiers in listed order. Move to the next tier only with a 
 
 A configured route is not proof of a working tool loop: verify a tool call first. Use effective model and effort values; an unavailable native model needs an explicit routing decision. Choosing a route never changes the tier. In Claude Code, Codex subagents are generated only when an override supplies their gateway routes. If a Manager delegates a Codex tier, it must retain that tier's provider, model, and effort. Do not choose a Claude tier because the dispatch mechanism is uncertain, a worktree is prepared, or Claude tiers are familiar.
 
-When `magpie` is installed, check quota using [Magpie guidance](magpie.md). A fresh reading at or above the tier's weekly brake blocks that tier. Unknown or stale readings need an explicit bounded Manager exception. Never read credentials to obtain usage. Quota informs a recorded Manager choice; it never substitutes tiers automatically.
+When `magpie` is installed, check quota using [Magpie guidance](magpie.md). A fresh reading at or above the tier's weekly brake blocks that tier. A brake of 100 blocks once the weekly allowance is used. Unknown or stale readings need an explicit bounded Manager exception. Never read credentials to obtain usage. Quota informs a recorded Manager choice; it never substitutes tiers automatically.
 
-Apply `policy.max_auto_rework` across tiers after the initial attempt. Reaching the limit is a stuck trigger. Do not reset the count or run endless cheap retries. These are Manager decisions applied through native tools, not controller checks.
+Apply `policy.max_auto_rework` across tiers after the initial attempt. Reaching the limit is a stuck trigger. Do not reset the count, retry automatically, or absorb substantial coding to bypass the limit. These are Manager decisions applied through native tools, not controller checks.
 
 ## Shape and run assignments
 
@@ -30,6 +30,6 @@ Shape implementation briefs so partial progress counts. Name a concrete first st
 
 A same-harness native Worker needs no justification beyond its brief. A cross-harness Worker is an explicit Manager choice for a concrete capability or cost reason. Record why, what the attempt resolves, and its configured timeout; mention a monetary cap only when configured. Compare effective provider prices instead of assuming cost from the harness. No automatic provider fallback, tier change, or retry.
 
-When T3 Code tools are available, use `delegate_task` for cross-harness or other-machine Workers. Call `orchestrator_capabilities` once per thread before first delegation; put settings in `target.options`, `target.environmentId` for another machine, and `isolation: "worktree"` for a separate checkout. Follow the delegate's `next` rather than polling `task_status` or sleeping. Cancel unneeded delegates with `task_cancel`. Same-provider Workers use native subagents. Only create top-level threads when the user asks. For a Claude Manager, use the [Codex Worker procedure](codex-workers.md) for Codex tiers without a `claude_route`.
+When T3 Code tools are available, use `delegate_task` for cross-harness or other-machine Workers. Call `orchestrator_capabilities` once per thread before first delegation; put settings including effort in `target.options`, `target.environmentId` for another machine, and `isolation: "worktree"` for a separate checkout. Follow the delegate's `next` rather than polling `task_status` or sleeping. Cancel unneeded delegates with `task_cancel`. Same-provider Workers use native subagents. For a Claude Manager, use the [Codex Worker procedure](codex-workers.md) for Codex tiers without a `claude_route`.
 
 For a Codex Manager, choose its native subagent tool when available. If it cannot select the required model, use the user's authorized cross-harness path or report the capability gap. Do not silently use a new CLI process.

@@ -1,6 +1,6 @@
 # Synchronize Managers
 
-When T3 Code tools are available, use T3 Code threads for Manager coordination across harnesses and machines. This workflow runs on startup/resume and meaningful changes, not as a background replication service. The current session stays Manager with its selected native model. Workers and reviewers do not discover or message peers.
+Use this workflow on startup, resume, and meaningful changes. Workers and reviewers do not discover or message peers.
 
 ## Session naming
 
@@ -11,15 +11,15 @@ Name sessions so the sidebar shows kind, project, and scope at a glance. Keep ti
 | Project Manager | `<Project> PM` | `Acme PM` |
 | Scoped Manager | `<Project> · <scope> (#issue)` | `Acme · Billing redesign (#123)` |
 | Workbench or meta session | `Workbench · <topic>` | `Workbench · Luna effort and spike tier` |
-| Worker | `<verb> #n [rN] · <tier>` or `<verb> <object> · <tier>` | `Rework #571 r3 · sol`, `Audit CI config · luna` |
+| Worker | See the [brief checklist](manager.md#brief-checklist) | `Rework #571 r3 · sol`, `Audit CI config · luna` |
 
-Omit the issue number when absent. In a Worker title, `rN` marks a review or rework round and is omitted on the first pass. A Manager sets its T3 title on its first turn and renames it when scope changes. A launching Manager passes the title when creating a thread. A Worker's title comes from the dispatch description, so write it in the Worker format.
+Omit the issue number when absent. A Manager sets its T3 title on its first turn and renames it when scope changes. A launching Manager passes the title when creating a thread. A Worker's title comes from the dispatch description, so write it in the Worker format.
 
-Only one active Manager thread holds a given title. When a Manager thread is settled, rename it to `<title> · settled MM-DD` with the settle date, for example `Tolmap PM · settled 11-15`. Whoever settles it, the Manager itself or a peer acting on the user's request, renames it in the same step. A new Manager for the same scope then takes the plain title. Titles are discovery hints only: address peers by `threadId`, and skip threads whose `settled` is true unless the user points you at one.
+Only one active Manager thread holds a given title. When a Manager thread is settled, rename it to `<title> · settled MM-DD` with the settle date, for example `Tolmap PM · settled 11-15`. Whoever settles it, the Manager itself or a peer acting on the user's request, renames it in the same step. A new Manager for the same scope then takes the plain title. Address peers by `threadId` and skip threads whose `settled` is true unless the user points you at one.
 
 ## Register and catch up
 
-1. Use `t3_thread_update` to keep the thread title in the [session naming](#session-naming) format. Post a `kind=decision` WB_MSG message in your own thread stating its role, scope and acting task owner. When a native address exists, add it to the text, such as `native=claude-code:<name>` using the session name `ListAgents` reports for itself. A title is a discovery hint; verify the role message before sending to a peer.
+1. Use `t3_thread_update` to keep the thread title in the [session naming](#session-naming) format. Post a `kind=decision` WB_MSG message in your own thread stating its role, scope and acting task owner. When a native address exists, add it to the text, such as `native=claude-code:<name>` using the session name `ListAgents` reports for itself. Verify the role message before sending to a peer.
 2. Discover threads with `t3_thread_list` and `t3_thread_search`; use `t3_thread_read` before answering about a thread. Read relevant registered Managers and known thread references from prior checkpoints. Pull global decisions from Managers and project/task information from Managers sharing the canonical repository/issue/task identity. Local paths are not cross-machine scope identifiers.
 3. For another machine, use `t3_environment_links` to list linked machines and pass the machine's `environmentId` to T3 tools. If a machine the user names is not linked, call `t3_environment_link` with a `hint` from the user's words; never ask for a pairing code in chat. If T3 cannot reach it, report the gap. SSH is an acceptable user-chosen fallback for setup, not Manager synchronization.
 4. Catch up before the first dispatch, after resume or handover, and before a conflicting external action or delivery claim. Read the newest relevant message per source and topic and reconcile it with actual user sources and repository/CI state. A peer summary never overrides a later user instruction. Reconcile conflicting evidence rather than assuming the latest timestamp wins.
@@ -49,7 +49,7 @@ Split unrelated topics into separate messages. Relaying a message does not creat
 
 Post decisions in your own thread and send them to known active registered Managers for global scope, or active registered Managers in the affected project/task scope. Refresh activity before sending, exclude self, and use resolved thread identities. Do not notify unrelated sessions, Workers or reviewers, or deliberately wake inactive/archived Managers for routine sync; they catch up on resume. An explicit user-authorized handover may resume its named target.
 
-For a peer listed natively in the same harness and machine, use native messaging; in Claude Code use `ListAgents` and `SendMessage`. For other peers, including cross-harness, cross-machine and Codex peers, send the message using `t3_thread_send`. Discover tool schemas by name without hardcoding an MCP prefix. Send one consolidated, self-contained message per milestone or review round and no acknowledgement-only pings. A successful send does not prove the recipient read it. A request is answered only when its `result` arrives; track open requests and do not automatically resend one.
+For a peer listed natively in the same harness and machine, use native messaging; in Claude Code use `ListAgents` and `SendMessage`. For other peers, including cross-harness, cross-machine and Codex peers, send the message using `t3_thread_send`. Discover tool schemas by name without hardcoding an MCP prefix. Send one consolidated message per milestone or review round. Skip acknowledgement-only pings. A successful send does not prove the recipient read it. A request is answered only when its `result` arrives; track open requests and do not automatically resend one.
 
 ### Choose the T3 delivery mode
 
@@ -60,7 +60,7 @@ Relay is near-realtime by default. Choose `mode` on `t3_thread_send` per message
 - **`queue`** only for non-time-sensitive information that can wait until the peer's current turn ends, which may take a long time.
 - **`restart`** never for relay; it interrupts the peer's work. Use it only on the user's explicit instruction.
 
-Do not send to settled or archived Managers for routine sync; they catch up on resume. Steering does not abort the peer's turn or guarantee an immediate reply.
+Steering does not abort the peer's turn or guarantee an immediate reply.
 
 ### Receive
 
@@ -72,12 +72,16 @@ T3's `senderThreadId` is the sender's real identity. When the footer's `from` or
 
 ## PR check notifications
 
-Treat `watch_pull_request` "no checks reported" notifications as actionable: follow the [PR CI trigger procedure](pr-ci-trigger.md), verify `pull_request` event provenance for the current head, and diagnose/re-trigger missing runs. Passing manually dispatched jobs on the commit are not evidence that the PR gate is satisfied. Use the native watch for waits, not `gh` polling loops or sleeps; report a missing bounded no-check timer rather than claiming one exists.
+On a `watch_pull_request` "no checks reported" notification, follow the [PR CI trigger procedure](pr-ci-trigger.md). Report a missing bounded no-check timer.
 
 ## Task ownership and handover
 
 Only one Manager dispatches work for a task at a time. A peer can advise or own independent work. Before takeover, get the acting Manager's explicit handover with settled Worker state. If ownership is unknown or conflicting, reconcile it before dispatch; a checkpoint is not a distributed lock.
 
-Use `t3_thread_transfer` or `t3_worktree_handoff` where applicable, together with a portable handover containing original user sources, current authorization/holds, task and owner thread IDs, remote/branch/SHA, CI, unresolved amendments, resource rules and next action. Native execution state remains owned by its harness/machine. Do not copy a local path, PID or native subagent ID and pretend it controls a remote process. On a new machine, prepare an updated linked Worker brief from current authority only after the old work is settled. See manage-lane's handover template.
+Use `t3_thread_transfer` or `t3_worktree_handoff` where applicable, with a portable [Manager handover](handover.md). Native execution state remains owned by its harness/machine. Do not copy a local path, PID or native subagent ID and pretend it controls a remote process. On a new machine, prepare an updated linked Worker brief from current authority only after the old work is settled.
 
-Incomplete discovery, missing checkpoints or inaccessible sources are incomplete evidence. If an unknown checkpoint or owner affects the next dispatch or delivery, hold that dependent action, request a fresh checkpoint from a known active owner when appropriate, and report what remains missing; continue independent authorized work. Report missing Managers or updates rather than claiming everyone is current. Do not build a parallel controller, persistent registry, daemon, broker or guaranteed broadcast service. Only create new top-level threads with `t3_thread_launch` or `create_threads` when the user asks for a new thread.
+Incomplete discovery, missing checkpoints or inaccessible sources are incomplete evidence. If an unknown checkpoint or owner affects the next dispatch or delivery, hold that dependent action, request a fresh checkpoint from a known active owner when appropriate, and report what remains missing; continue independent authorized work. Report missing Managers or updates rather than claiming everyone is current.
+
+## Launching a Manager thread
+
+Create a top-level thread with `t3_thread_launch` or `create_threads` only at the user’s request and only as many as requested. It is a foreground Manager, never a Worker. Brief it with scope, authority and holds, reporting Manager, and instructions to load `orchestrate-harnesses` and dispatch native Workers. Use the user’s selected model or inherit the launching Manager’s provider, model, and effort. Do not use `ultra` effort for a Manager. Follow [session naming](#session-naming).

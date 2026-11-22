@@ -87,12 +87,11 @@ awb uninstall                       # 恢复说明、设置和 hook；保留你�
 npx skills remove -g --all          # 移除已安装的所有全局 skill
 ```
 
-若只想移除这些 skill，请明确列出名称：`npx skills remove -g manage-lane orchestrate-harnesses prompt-for-decisions host-ops workbench-setup review-storybook`。
+若只想移除这些 skill，请明确列出名称：`npx skills remove -g orchestrate-harnesses prompt-for-decisions host-ops workbench-setup review-storybook`。
 
 ## Skills
 
-- **manage-lane** — 维护任务目标、授权和交接。
-- **orchestrate-harnesses** — 协调原生 Worker 和 T3 Code Manager。
+- **orchestrate-harnesses** — 协调原生 Worker 和 T3 Code Manager，维护任务目标、授权和交接。
 - **prompt-for-decisions** — 根据证据和权衡说明尚未解决的选择。
 - **host-ops** — 在受支持的机器上限制高 CPU 负载，并检查或释放本地磁盘空间。
 - **workbench-setup** — 应用共享全局说明，同时保留个人文本。

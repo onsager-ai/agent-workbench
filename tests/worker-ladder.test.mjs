@@ -55,7 +55,7 @@ describe("worker configuration", () => {
   test("the documented neutral profile works as a user override", () => {
     const override = path.join(ROOT, "tests/fixtures/neutral-workers.yml");
     const snippet = fs.readFileSync(override, "utf8");
-    for (const file of ["docs/reference.md", "skills/orchestrate-harnesses/references/configuration.md"]) {
+    for (const file of ["docs/reference.md", "skills/workbench-setup/references/worker-profiles.md"]) {
       assert.ok(fs.readFileSync(path.join(ROOT, file), "utf8").includes("```yaml\n" + snippet + "```"), file);
     }
     assert.equal(bundle.profile, null);

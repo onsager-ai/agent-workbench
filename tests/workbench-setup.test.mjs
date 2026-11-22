@@ -592,6 +592,49 @@ describe("workbench setup", () => {
     assert.deepEqual(Object.keys(f.json(lockPath).skills).sort(), ["host-ops", "unrelated", "workbench-setup"]);
   });
 
+  test("update removes the retired lane only if Workbench owns it and the replacement is installed", () => {
+    const repository = { source: "onsager-ai/agent-workbench", sourceType: "github" };
+    const scenarios = [
+      { retired: repository, replacement: true, removes: true },
+      { retired: { ...repository, source: "another/project" }, replacement: true, removes: false },
+      { retired: { ...repository, ref: "older-release" }, replacement: true, removes: false },
+      { retired: repository, replacement: false, removes: false },
+    ];
+    for (const { retired, replacement, removes } of scenarios) {
+      const f = new Fixture();
+      if (replacement) f.installOrchestration();
+      f.run("install");
+      f.nativeLock();
+      const lockPath = path.join(f.home, ".agents/.skill-lock.json");
+      const lock = f.json(lockPath);
+      lock.skills["manage-lane"] = retired;
+      if (replacement) lock.skills["orchestrate-harnesses"] = repository;
+      fs.writeFileSync(lockPath, JSON.stringify(lock));
+      const retiredPath = path.join(f.home, ".agents/skills/manage-lane");
+      f.write(path.join(retiredPath, "SKILL.md"), "retired lane\n");
+      const calls = path.join(f.home, "calls.jsonl");
+      const command = f.fakeCommand(
+        'import fs from "node:fs";\n' +
+        `const args = process.argv.slice(2);\n` +
+        `fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");\n` +
+        `if (args[0] === "remove") {\n` +
+        `  const lockPath = ${JSON.stringify(lockPath)};\n` +
+        `  const lock = JSON.parse(fs.readFileSync(lockPath));\n` +
+        `  delete lock.skills["manage-lane"];\n` +
+        `  fs.writeFileSync(lockPath, JSON.stringify(lock));\n` +
+        `  fs.rmSync(${JSON.stringify(retiredPath)}, { recursive: true });\n` +
+        `}\n`);
+      f.run("update", ["--skills-cmd", command]);
+      f.run("update", ["--skills-cmd", command]);
+      const args = read(calls).toString().trim().split("\n").map((line) => JSON.parse(line));
+      assert.deepEqual(args.filter(([verb]) => verb === "remove"), removes
+        ? [["remove", "manage-lane", "-g", "-y"]] : []);
+      assert.equal(exists(retiredPath), !removes);
+      if (removes) delete lock.skills["manage-lane"];
+      assert.deepEqual(f.json(lockPath), lock);
+    }
+  });
+
   test("version matches the package release", () => {
     const f = new Fixture();
     const release = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../package.json"), "utf8")).version;
