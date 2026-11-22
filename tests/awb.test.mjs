@@ -70,6 +70,102 @@ test("prune reports merged PR cleanup and removes eligible local worktrees on ap
   assert.notEqual(spawnSync("git", ["show-ref", "--verify", "refs/heads/merged-task-tree"], { cwd: repo }).status, 0);
 });
 
+test("lanes reports authored PR checks and local worktree status", (t) => {
+  const f = fixture();
+  t.after(() => fs.rmSync(f.dir, { recursive: true, force: true }));
+  const setup = run(f.home, ["--skills-cmd", f.skillsCmd, "setup"], f.env);
+  assert.equal(setup.status, 0, setup.stderr);
+
+  const repo = path.join(f.dir, "repo");
+  const tree = path.join(f.dir, "task tree");
+  fs.mkdirSync(repo);
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git(repo, "init", "-b", "main");
+  git(repo, "config", "user.name", "Test");
+  git(repo, "config", "user.email", "test@example.com");
+  fs.writeFileSync(path.join(repo, "original"), "base\n");
+  git(repo, "add", "original");
+  git(repo, "commit", "-m", "base");
+  const head = git(repo, "rev-parse", "HEAD");
+  git(repo, "worktree", "add", "-b", "task", tree);
+  git(tree, "branch", "--set-upstream-to=main");
+  git(tree, "commit", "--allow-empty", "-m", "local change");
+  git(tree, "mv", "original", "renamed");
+  fs.mkdirSync(path.join(tree, "untracked"));
+  fs.writeFileSync(path.join(tree, "untracked", "one"), "one\n");
+  fs.writeFileSync(path.join(tree, "untracked", "two"), "two\n");
+
+  const fakeBin = path.join(f.dir, "bin");
+  fs.mkdirSync(fakeBin);
+  const updatedAt = "2026-01-01T00:00:00Z";
+  const unknownHead = "b".repeat(40);
+  const prs = [
+    {
+      number: 17, isDraft: true, headRefName: "task", headRefOid: head, updatedAt,
+      statusCheckRollup: [
+        { name: "lint", workflowName: "CI", status: "COMPLETED", conclusion: "SUCCESS" },
+        { name: "test", workflowName: "CI", status: "COMPLETED", conclusion: "FAILURE" },
+        { name: "build", workflowName: "CI", status: "IN_PROGRESS", conclusion: "" },
+        { context: "external", state: "PENDING" },
+      ],
+    },
+    { number: 18, isDraft: false, headRefName: "remote-only", headRefOid: unknownHead, updatedAt, statusCheckRollup: [] },
+  ];
+  const ghLog = path.join(f.dir, "gh-calls");
+  const ghArgs = "pr list --author @me --state open --json number,isDraft,headRefName,headRefOid,updatedAt,statusCheckRollup";
+  fs.writeFileSync(path.join(fakeBin, "gh"), `#!/bin/sh
+printf '%s\n' "$PWD $*" >> "$AWB_TEST_GH_LOG"
+[ "$*" = '${ghArgs}' ] || exit 2
+[ -z "$AWB_TEST_GH_FAIL" ] || exit 1
+printf '%s\n' '${JSON.stringify(prs)}'
+`, { mode: 0o755 });
+  const env = { ...f.env, PATH: `${fakeBin}:${process.env.PATH}`, AWB_TEST_GH_LOG: ghLog };
+  const ghCall = `${fs.realpathSync(repo)} ${ghArgs}\n`;
+
+  const result = run(f.home, ["lanes", "--cwd", repo, "--json"], env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(ghLog, "utf8"), ghCall);
+  const lanes = JSON.parse(result.stdout);
+  assert.equal(lanes.note, null);
+  const [draft, ready] = lanes.pullRequests;
+  assert.ok(Number.isInteger(draft.headAgeSeconds));
+  assert.deepEqual(draft, {
+    number: 17, draft: true, branch: "task", head, headAgeSeconds: draft.headAgeSeconds, updatedAt,
+    checks: [
+      { name: "CI / lint", state: "pass" },
+      { name: "CI / test", state: "fail" },
+      { name: "CI / build", state: "running" },
+      { name: "external", state: "running" },
+    ],
+  });
+  assert.deepEqual(ready, {
+    number: 18, draft: false, branch: "remote-only", head: unknownHead, headAgeSeconds: null, updatedAt, checks: [],
+  });
+  assert.deepEqual(lanes.worktrees, [
+    { path: fs.realpathSync(repo), branch: "main", openPr: null, ahead: null, dirtyFiles: 0 },
+    { path: fs.realpathSync(tree), branch: "task", openPr: 17, ahead: 1, dirtyFiles: 3 },
+  ]);
+
+  const launcher = path.join(f.home, ".local", "bin", "agent-workbench");
+  const text = spawnSync(launcher, ["lanes"], { cwd: repo, encoding: "utf8", env });
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /^PR #17  draft  [\da-f]{8}  head \d+[smhd] old  .*CI \/ lint pass/m);
+  assert.match(text.stdout, /^PR #18  ready  bbbbbbbb  head age unknown, PR updated /m);
+  assert.match(text.stdout, /^worktree  task  PR #17  1 ahead  3 dirty /m);
+
+  const unavailable = run(f.home, ["lanes", "--cwd", repo, "--json"], { ...env, AWB_TEST_GH_FAIL: "1" });
+  assert.equal(unavailable.status, 0, unavailable.stderr);
+  const offline = JSON.parse(unavailable.stdout);
+  assert.match(offline.note, /Check GitHub authentication/);
+  assert.deepEqual(offline.pullRequests, []);
+  assert.deepEqual(offline.worktrees, lanes.worktrees.map((row) => ({ ...row, openPr: null })));
+  assert.equal(fs.readFileSync(ghLog, "utf8"), ghCall.repeat(3));
+});
+
 test("setup installs skills, then applies and reports setup", (t) => {
   const f = fixture();
   t.after(() => fs.rmSync(f.dir, { recursive: true, force: true }));

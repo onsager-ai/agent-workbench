@@ -212,6 +212,8 @@ Setup applies the configured compaction target to owned Claude and Codex config 
 
 The optional `policy.stop_classifier` workers setting enables model classification for the Stop hook's prose-question check. Set `{url, model}` to use it; while enabled, every turn's final assistant message is sent to that URL, so use the local Magpie gateway. A confident yes blocks for AskUserQuestion; a confident no passes, and uncertain or failed requests use the existing question-mark check. It is off by default.
 
+Workers use a [report checklist](../skills/orchestrate-harnesses/references/worker.md#report-checklist) and end their final response with `Outcome: completed|blocked|cancelled · PR <url> · head <sha> · checks <state>`. Without a PR, only the outcome appears.
+
 ## Setup commands and behavior
 
 ```sh
@@ -221,6 +223,8 @@ agent-workbench install
 agent-workbench update
 # Inspect hashes, versions, native paths, managed edits and masking overrides.
 agent-workbench status [--json]
+# Show open PRs and local worktrees for the current repository or PATH.
+awb lanes [--cwd PATH] [--json]  # also agent-workbench lanes
 # Trust Codex policy hooks after reviewing the prompt.
 agent-workbench trust
 # Roll back setup while preserving current personal edits.
@@ -233,6 +237,8 @@ awb prune [--repo PATH] [--json]
 # Remove eligible local worktrees and branches after reviewing the report.
 awb prune --apply
 ```
+
+`lanes` uses one GitHub CLI listing of your open PRs (the default limit is 30). It shows the check rollup for each head without required-check metadata. Head age comes from the local commit when available. Worktrees match PRs by branch name and still appear if GitHub is unavailable. Semon ASI will supply Worker state and session stats.
 
 `update` reads native version-3 skills lock ownership (`~/.agents/.skill-lock.json`, or `$XDG_STATE_HOME/skills/.skill-lock.json` when configured) and delegates to `skills@1.7.4 update` with this repository's installed skill names plus `workbench-personal` when present in the lock, regardless of its source. Owned lock entries whose skill directory under `~/.agents/skills` is gone (skills removed upstream and deleted locally) are dropped from the lock first, so the native update stops warning about them. A failed native update leaves global instruction files unchanged. Updates honor the installed native skill source/ref metadata. `npx skills update -g -y` remains available for ordinary updates across all skills; use `agent-workbench install` afterward to apply any newly distributed instruction template.
 

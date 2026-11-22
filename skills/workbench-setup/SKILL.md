@@ -14,6 +14,7 @@ After global distribution, explicitly apply the setup:
 ```sh
 node ~/.agents/skills/workbench-setup/scripts/workbench.mjs install
 awb status  # alias for the installed agent-workbench command
+awb lanes   # open PRs and local worktrees
 awb trust  # optional: consent to trust installed Codex hooks
 # Or use ~/.local/bin/agent-workbench status and trust
 ```

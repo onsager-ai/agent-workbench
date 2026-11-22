@@ -53,6 +53,8 @@ A real Claude Code session after setup: the Manager sends a bug fix to a Haiku W
 
 3. Start a new Manager session. Use the native subagent tools in your harness to delegate work; setup details and configuration are in the [reference](docs/reference.md).
 
+Run `awb lanes` to see your open PRs and local worktrees.
+
 For manual skill installation, updates, project-local installs, `awb prune` cleanup, and detailed configuration, see the [reference](docs/reference.md). Setup does not install agent tools or authenticate harnesses.
 
 Gateway and CC Switch users can copy the [neutral Worker profile](docs/reference.md#neutral-profile-for-provider-switching) to use plain Worker names and follow provider model aliases.
