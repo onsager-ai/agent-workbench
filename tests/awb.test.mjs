@@ -63,8 +63,12 @@ test("prune reports merged PR cleanup and removes eligible local worktrees on ap
   assert.ok(fs.existsSync(tree));
   assert.ok(JSON.parse(dry.stdout).some((row) => row.branch === "merged-task-tree" && row.action === "worktree"));
   assert.ok(JSON.parse(dry.stdout).some((row) => row.branch === "empty-leftover" && row.action === "branch"));
-  const apply = spawnSync(process.execPath, [cli, "prune", "--repo", repo, "--apply", "--json"], { encoding: "utf8", env, cwd: repo });
+  const preview = spawnSync(process.execPath, [cli, "prune", "--repo", repo], { encoding: "utf8", env, cwd: repo });
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.match(preview.stdout, /^Dry run \(use --apply to remove eligible items\)/);
+  const apply = spawnSync(process.execPath, [cli, "prune", "--repo", repo, "--apply"], { encoding: "utf8", env, cwd: repo });
   assert.equal(apply.status, 0, apply.stderr);
+  assert.match(apply.stdout, /^Applied\n/);
   assert.equal(fs.existsSync(tree), false);
   assert.notEqual(spawnSync("git", ["show-ref", "--verify", "refs/heads/empty-leftover"], { cwd: repo }).status, 0);
   assert.notEqual(spawnSync("git", ["show-ref", "--verify", "refs/heads/merged-task-tree"], { cwd: repo }).status, 0);
