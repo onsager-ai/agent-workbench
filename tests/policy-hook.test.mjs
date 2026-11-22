@@ -487,6 +487,7 @@ describe("policy hook", () => {
       "while true; do gh run list; sleep 30; done",
       "until gh pr view 1; do sleep 10; done",
       "for attempt in 1 2 3; do sleep 10; gh api repos/o/r; done",
+      "for i in 1 2; do X=$(sleep 1); gh run list; done",
       "while true\ndo\ngh run list\nsleep 10\ndone",
     ]) {
       const decision = invoke(JSON.stringify({ tool_name: "Bash", tool_input: { command } }));
@@ -499,6 +500,8 @@ describe("policy hook", () => {
   test("Claude Managers delegate CI logs and subagents can read them", () => {
     for (const command of [
       "gh run view 123 --log",
+      "gh run 'view' 123 --log",
+      'gh run "view" 123 --log',
       "gh run view 123 --log | tail -50",
       "logs=$(gh run view 123 --log)",
       "echo 'gh run view 123 --log'", "echo gh run download 123",
@@ -556,6 +559,8 @@ describe("policy hook", () => {
       "gh api rate_limit", "gh pr checks 1", "sleep 10",
       "FOO=$(date) git status",
       "while read f; do echo $f; done < x",
+      'while read f; do echo "$f"; done < sleep-results.txt',
+      "sleep_ms=5 gh run list",
       "for attempt in 1 2; do gh run list; done",
       "for attempt in 1 2; do sleep 10; done",
       "echo 'gh run watch 123'", "echo gh run watch 123",

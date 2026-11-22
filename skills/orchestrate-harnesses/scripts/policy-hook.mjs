@@ -289,15 +289,24 @@ function shlex(text, whitespaceSplit) {
 }
 
 const punctuationOnly = (token) => [...token].every((char) => PUNCTUATION.includes(char));
+const SHELL_WORD_SEPARATOR = /[\s;|&()$`"']/.source;
+const shellWords = (pattern) => new RegExp(`(?:^|${SHELL_WORD_SEPARATOR})${pattern}(?=$|${SHELL_WORD_SEPARATOR})`);
+const LOOP_WORD = shellWords("(?:while|until)");
+const SLEEP_WORD = shellWords("sleep");
+const GH_WORD = shellWords("gh");
+const GH_RUN_VIEW = shellWords("gh\\s+run\\s+view");
+const GH_RUN_DOWNLOAD = shellWords("gh\\s+run\\s+download");
 
 function textShellPolicy(command, manager) {
   // Scan the full text, including substitutions. Quoted examples and heredocs can also match.
-  if (manager && (
-    /\bgh\s+run\s+view\b.*(?<![\w-])--log(?:-failed)?(?![\w-])/s.test(command) ||
-    /\bgh\s+run\s+download\b/.test(command) ||
-    /\bactions\/(?:jobs\/[^/\s]+|runs\/[^/\s]+(?:\/attempts\/[^/\s]+)?)\/logs\b/.test(command)
-  )) return CI_LOGS;
-  if (/\b(?:while|until)\b/.test(command) && /\bsleep\b/.test(command)) return SLEEP_LOOP;
+  if (manager) {
+    const text = command.replace(/["']/g, "");
+    const view = GH_RUN_VIEW.exec(text);
+    if ((view && /(?<![\w-])--log(?:-failed)?(?![\w-])/.test(text.slice(view.index + view[0].length))) ||
+        GH_RUN_DOWNLOAD.test(text) ||
+        /\bactions\/(?:jobs\/[^/\s]+|runs\/[^/\s]+(?:\/attempts\/[^/\s]+)?)\/logs\b/.test(text)) return CI_LOGS;
+  }
+  if (LOOP_WORD.test(command) && SLEEP_WORD.test(command)) return SLEEP_LOOP;
   return null;
 }
 
@@ -343,12 +352,16 @@ function pollsGithub(command) {
     if (group === "pr" && operation === "checks" &&
         args.some((word) => word === "--watch" || word.startsWith("--watch="))) return POLLING;
   }
-  for (const [start, end] of loops) {
-    if (!tokens.slice(start, end).includes("do")) continue;
-    const contains = (program) => commands.some(([index, words]) =>
-      start < index && index < end && words[0] === program);
-    if (!contains("sleep")) continue;
-    if (contains("gh")) return `${POLLING} ${SLEEP_LOOP}`;
+  if (SLEEP_WORD.test(command) && GH_WORD.test(command)) {
+    for (const [start, end] of loops) {
+      const loopTokens = tokens.slice(start, end);
+      if (!loopTokens.includes("do")) continue;
+      // Assignment tokens can hide commands inside a substitution from the argv check.
+      const contains = (program, word) => commands.some(([index, words]) =>
+        start < index && index < end && words[0] === program) || loopTokens.some((token) =>
+        ASSIGNMENT.test(token) && token.includes("$(") && word.test(token));
+      if (contains("sleep", SLEEP_WORD) && contains("gh", GH_WORD)) return `${POLLING} ${SLEEP_LOOP}`;
+    }
   }
   return null;
 }
