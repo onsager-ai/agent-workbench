@@ -11,6 +11,8 @@ const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task 
 const PROTECTED_BRANCHES = new Set(["main", "master"]);
 const POLLING = "GitHub polling is disabled. Use watch_pull_request and the single-call status reads " +
   "in orchestrate-harnesses' GitHub API budget section.";
+const SLEEP_LOOP = "Sleep loops are disabled. Use t3_background_wait or Monitor.";
+const CI_LOGS = "Delegate CI logs. Resume the Worker that owns the branch or dispatch an L1 Worker with the run URL.";
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
 const INHERITED_MODEL = "Built-in agents inherit the Manager's model. Use a tier agent " +
@@ -261,35 +263,51 @@ function shlex(text, whitespaceSplit) {
 
 const punctuationOnly = (token) => [...token].every((char) => PUNCTUATION.includes(char));
 
-function pollsGithub(command) {
+function shellPolicy(command, manager) {
   if (typeof command !== "string") throw new TypeError("command must be a string");
   const tokens = [];
   for (const token of shlex(command, false)) {
     if (token && punctuationOnly(token)) tokens.push(...token);
     else tokens.push(token);
   }
-  const separators = new Set([";", "|", "&", "(", ")", "\n", "do", "then", "!", "while", "until"]);
+  const prefixes = new Set(["do", "then", "else", "if", "elif", "!", "while", "until"]);
   const commands = [];
   const loops = [];
   const stack = [];
-  tokens.forEach((token, index) => {
-    if (index === 0 || separators.has(tokens[index - 1])) {
-      if (["while", "until", "for"].includes(token)) stack.push(index);
-      else if (token === "done" && stack.length) loops.push([stack.pop(), index]);
-      let end = index + 1;
-      while (end < tokens.length && !separators.has(tokens[end])) end++;
-      commands.push([index, tokens.slice(index, end)]);
+  for (let index = 0; index < tokens.length;) {
+    const token = tokens[index];
+    if (["while", "until", "for"].includes(token)) stack.push(index);
+    else if (token === "done" && stack.length) loops.push([stack.pop(), index]);
+    if (prefixes.has(token) || (token && punctuationOnly(token))) {
+      index++;
+      continue;
     }
-  });
-  for (const [, words] of commands) {
-    if (words[0] === "gh" && words[1] === "run" && words[2] === "watch") return true;
-    if (words[0] === "gh" && words[1] === "pr" && words[2] === "checks" &&
-        words.slice(3).some((word) => word === "--watch" || word.startsWith("--watch="))) return true;
+    let end = index + 1;
+    while (end < tokens.length && (!tokens[end] || !punctuationOnly(tokens[end]))) end++;
+    commands.push([index, tokens.slice(index, end)]);
+    index = end;
   }
-  return loops.some(([start, end]) =>
-    tokens.slice(start, end).includes("do") &&
-    commands.some(([index, words]) => start < index && index < end && words[0] === "sleep") &&
-    commands.some(([index, words]) => start < index && index < end && words[0] === "gh"));
+  for (const [, words] of commands) {
+    const [program, group, operation, ...args] = words;
+    if (program !== "gh") continue;
+    if (group === "run" && operation === "watch") return POLLING;
+    if (group === "pr" && operation === "checks" &&
+        args.some((word) => word === "--watch" || word.startsWith("--watch="))) return POLLING;
+    if (manager && (
+      (group === "run" && operation === "download") ||
+      (group === "run" && operation === "view" && args.some((word) => /^--log(?:-failed)?(?:=|$)/.test(word))) ||
+      (group === "api" && words.slice(2).some((word) => /(?:^|\/)actions\/(?:jobs|runs)\/[^/]+\/logs(?:$|[?\/])/.test(word)))
+    )) return CI_LOGS;
+  }
+  for (const [start, end] of loops) {
+    if (!tokens.slice(start, end).includes("do")) continue;
+    const contains = (program) => commands.some(([index, words]) =>
+      start < index && index < end && words[0] === program);
+    if (!contains("sleep")) continue;
+    if (contains("gh")) return `${POLLING} ${SLEEP_LOOP}`;
+    if (tokens[start] !== "for") return SLEEP_LOOP;
+  }
+  return null;
 }
 
 function shellCommands(command) {
@@ -670,9 +688,10 @@ async function main() {
       else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason] = ["deny", INHERITED_MODEL];
     } else if (tool === "Bash") {
       const command = dict(args).command ?? "";
-      const branchReason = protectedBranchGit(command, event);
-      if (branchReason) [decision, reason] = ["deny", branchReason];
-      else if (pollsGithub(command)) [decision, reason] = ["deny", POLLING];
+      // Claude Code supplies agent_id for subagents. A top-level --agent also sets agent_type.
+      const manager = !codex && !event.agent_id;
+      reason = protectedBranchGit(command, event) ?? shellPolicy(command, manager);
+      if (reason) decision = "deny";
     }
   } catch {
     return;

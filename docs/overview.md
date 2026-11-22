@@ -18,7 +18,7 @@ npx @onsager/awb setup
 
 **No accidents on `main`.** The policy hook blocks checking out, committing to or pushing a local `main` or `master`, so every change starts on a task branch from `origin/main`.
 
-**No wasted turns waiting on CI.** The hook blocks polling such as `gh pr checks --watch` or `sleep` loops around `gh`. Agents use the harness's own notifications instead.
+**Wait for CI notifications.** The hook blocks GitHub polling, `while` or `until` loops with `sleep`, and `for` loops with both `sleep` and `gh`. Claude Code Managers delegate CI log retrieval to Workers.
 
 **Tasks that survive a new session.** The Manager keeps what you asked for, what you approved and which task owns what. A later session can pick the task up from a handover note without repeating actions. With T3 Code, so can a session in another harness or on another machine.
 

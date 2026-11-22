@@ -73,7 +73,8 @@ Agent Workbench 为 Codex 和 Claude Code 提供一组可移植的 skill，帮�
 
 - 阻止切换到本地 `main` 或 `master` 分支，以及在这些分支上提交或推送，确保工作在任务分支上进行；
 - 在派发 L3 Worker（默认是 Opus）前询问；
-- 阻止轮询 GitHub，例如运行 `gh pr checks --watch` 或围绕 `gh` 使用 `sleep` 循环；
+- 阻止轮询 GitHub、含有 `sleep` 的 `while` 或 `until` 循环，以及同时含有 `sleep` 和 `gh` 的 `for` 循环；
+- 要求 Claude Code 的 Manager 把 CI 日志交给 Worker 读取；
 - 如果智能体在正文里提问就结束当前轮次，会让它改用提问工具。
 
 在装有受支持传感器的 Linux 机器上，进行高负载本地工作前运行 `awb ops thermal now`，并用 `awb ops thermal gate -- <command>` 执行任务。频繁调用时，可使用已安装的 `agent-workbench ops thermal` 启动器，无需运行 `npx`。如果机器使用用户级 systemd，完成设置后可运行 `awb ops thermal install` 启用后台日志记录。
