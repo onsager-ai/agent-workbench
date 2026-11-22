@@ -167,6 +167,7 @@ function stampFooter(args, stateDir) {
 // Port of Python shlex (posix mode, punctuation_chars=";|&()\n", whitespace " \t\r", commenters "#").
 const PUNCTUATION = ";|&()\n";
 const WHITESPACE = " \t\r";
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const WORDCHARS = new Set(
   "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" +
   "ßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞ" + "~-./*?=");
@@ -181,6 +182,29 @@ function shlex(text, whitespaceSplit) {
     let character;
     while ((character = read()) !== "" && character !== "\n");
     if (character === "\n") pushback.push(character);
+  };
+  const assignmentExpansion = () => {
+    const open = read();
+    if (open !== "(" && open !== "{") {
+      if (open) pushback.push(open);
+      return "$";
+    }
+    const close = open === "(" ? ")" : "}";
+    let expansion = "$" + open;
+    let depth = 1;
+    let quote = "";
+    while (depth) {
+      const character = read();
+      if (!character) throw new Error("Unclosed assignment expansion");
+      expansion += character;
+      if (character === "\\" && quote !== "'") expansion += read();
+      else if (quote) {
+        if (character === quote) quote = "";
+      } else if (["'", '"', "`"].includes(character)) quote = character;
+      else if (character === open) depth++;
+      else if (character === close) depth--;
+    }
+    return expansion;
   };
   for (;;) {
     let state = " ";
@@ -214,6 +238,8 @@ function shlex(text, whitespaceSplit) {
           token = next;
           break;
         }
+      } else if (!whitespaceSplit && next === "$" && (state === "a" || state === '"') && ASSIGNMENT.test(token)) {
+        token += assignmentExpansion();
       } else if (state === "'" || state === '"') {
         quoted = true;
         if (!next) throw new Error("No closing quotation");
@@ -269,7 +295,7 @@ function commandWords(words) {
   let start = 0;
   while (start < words.length) {
     const word = words[start];
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word) || word === "env" || word === "command") start++;
+    if (ASSIGNMENT.test(word) || word === "env" || word === "command") start++;
     else if (word === "timeout" && /^\d+(?:\.\d+)?[smhd]?$/.test(words[start + 1])) start += 2;
     else break;
   }
