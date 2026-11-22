@@ -500,6 +500,8 @@ describe("policy hook", () => {
     for (const command of [
       "gh run view 123 --log",
       "gh run view 123 --log | tail -50",
+      "logs=$(gh run view 123 --log)",
+      "echo 'gh run view 123 --log'", "echo gh run download 123",
       "GH_PAGER=cat gh run view 123 --log | tail -50",
       "GH_PAGER=$PAGER gh run view 123 --log",
       "X=${Y} gh run download 1",
@@ -532,6 +534,9 @@ describe("policy hook", () => {
       "while true; do date; sleep 10; done",
       "gh run list; while true; do date; sleep 10; done",
       "while true; do date # tick\nsleep 10; done",
+      "while true; do X=$(sleep 10); done",
+      "while read -r line; do echo do sleep; done < input.txt",
+      "echo while do sleep gh",
     ]) {
       const event = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } };
       for (const agent of [{}, { agent_id: "worker-1" }]) {
@@ -550,13 +555,12 @@ describe("policy hook", () => {
       "gh api repos/o/r/actions/runs/123/jobs",
       "gh api rate_limit", "gh pr checks 1", "sleep 10",
       "FOO=$(date) git status",
-      "while read -r line; do echo do sleep; done < input.txt",
+      "while read f; do echo $f; done < x",
       "for attempt in 1 2; do gh run list; done",
       "for attempt in 1 2; do sleep 10; done",
       "echo 'gh run watch 123'", "echo gh run watch 123",
-      "echo 'gh run view 123 --log'", "echo gh run download 123",
       "sleep 10; for attempt in 1 2; do gh run list; done",
-      "echo while do sleep gh", "echo 'for x; do sleep 1; gh run list; done'",
+      "echo 'for x; do sleep 1; gh run list; done'",
     ]) {
       assert.equal(invoke(JSON.stringify({ tool_name: "Bash", tool_input: { command } })), null, command);
     }

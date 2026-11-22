@@ -289,7 +289,17 @@ function shlex(text, whitespaceSplit) {
 }
 
 const punctuationOnly = (token) => [...token].every((char) => PUNCTUATION.includes(char));
-const CI_LOG_ENDPOINT = /(?:^|\/)actions\/(?:jobs\/[^/]+|runs\/[^/]+(?:\/attempts\/[^/]+)?)\/logs(?:$|[?\/])/;
+
+function textShellPolicy(command, manager) {
+  // Scan the full text, including substitutions. Quoted examples and heredocs can also match.
+  if (manager && (
+    /\bgh\s+run\s+view\b.*(?<![\w-])--log(?:-failed)?(?![\w-])/s.test(command) ||
+    /\bgh\s+run\s+download\b/.test(command) ||
+    /\bactions\/(?:jobs\/[^/\s]+|runs\/[^/\s]+(?:\/attempts\/[^/\s]+)?)\/logs\b/.test(command)
+  )) return CI_LOGS;
+  if (/\b(?:while|until)\b/.test(command) && /\bsleep\b/.test(command)) return SLEEP_LOOP;
+  return null;
+}
 
 function commandWords(words) {
   let start = 0;
@@ -302,7 +312,7 @@ function commandWords(words) {
   return words.slice(start);
 }
 
-function shellPolicy(command, manager) {
+function pollsGithub(command) {
   if (typeof command !== "string") throw new TypeError("command must be a string");
   const tokens = [];
   for (const token of shlex(command, false)) {
@@ -332,11 +342,6 @@ function shellPolicy(command, manager) {
     if (group === "run" && operation === "watch") return POLLING;
     if (group === "pr" && operation === "checks" &&
         args.some((word) => word === "--watch" || word.startsWith("--watch="))) return POLLING;
-    if (manager && (
-      (group === "run" && operation === "download") ||
-      (group === "run" && operation === "view" && args.some((word) => /^--log(?:-failed)?(?:=|$)/.test(word))) ||
-      (group === "api" && words.slice(2).some((word) => CI_LOG_ENDPOINT.test(word)))
-    )) return CI_LOGS;
   }
   for (const [start, end] of loops) {
     if (!tokens.slice(start, end).includes("do")) continue;
@@ -344,7 +349,6 @@ function shellPolicy(command, manager) {
       start < index && index < end && words[0] === program);
     if (!contains("sleep")) continue;
     if (contains("gh")) return `${POLLING} ${SLEEP_LOOP}`;
-    if (tokens[start] !== "for") return SLEEP_LOOP;
   }
   return null;
 }
@@ -727,9 +731,15 @@ async function main() {
       else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason] = ["deny", INHERITED_MODEL];
     } else if (tool === "Bash") {
       const command = dict(args).command ?? "";
+      if (typeof command !== "string") return;
       // Claude Code supplies agent_id for subagents. A top-level --agent also sets agent_type.
       const manager = !codex && !event.agent_id;
-      reason = protectedBranchGit(command, event) ?? shellPolicy(command, manager);
+      reason = textShellPolicy(command, manager);
+      try {
+        reason = protectedBranchGit(command, event) ?? pollsGithub(command) ?? reason;
+      } catch {
+        // A tokenization error leaves the text-based decision in place.
+      }
       if (reason) decision = "deny";
     }
   } catch {
