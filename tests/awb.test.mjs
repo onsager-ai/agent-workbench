@@ -107,3 +107,12 @@ test("uninstalled commands explain how to bootstrap", (t) => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Agent Workbench isn't installed; run: npx @onsager\/awb setup/);
 });
+
+test("--version prints the package version", () => {
+  const { version } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  for (const flag of ["--version", "version"]) {
+    const result = run(os.tmpdir(), [flag]);
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout.trim(), version);
+  }
+});

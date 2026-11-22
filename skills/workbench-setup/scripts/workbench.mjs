@@ -19,6 +19,8 @@ const { isScalar, parseDocument, visit } = await import("../vendor/yaml/index.js
 const { parse: parseToml } = await import("../vendor/smol-toml/index.js");
 
 export const VERSION = "1";
+// Agent Workbench release; tests keep it equal to package.json.
+export const RELEASE = "0.2.4";
 const SOURCE = "onsager-ai/agent-workbench";
 const BEGIN = Buffer.from("<!-- BEGIN agent-workbench -->");
 const END = Buffer.from("<!-- END agent-workbench -->");
@@ -1543,7 +1545,7 @@ export class Setup {
         this.codexTrustItems(codexHookRecord, codexLists).some((item) => item.key === entry.key && item.hash === entry.hash));
       trustMessages = this.codexTrustItems(codexHookRecord, codexLists)
         .filter((item) => !codexTrustRecord.some((entry) => entry.key === item.key && entry.hash === item.hash))
-        .map((item) => `Run agent-workbench trust to trust Codex hooks, or run /hooks in Codex once: ${item.label}`);
+        .map((item) => `Run /hooks in Codex once to trust agent-workbench's hooks: ${item.label}`);
       desired = this.desiredAgents();
       this.checkAgents(state, Object.keys(desired));
       for (const name of ["shared", "codex", "claude", "launcher"]) this.backup(name, this[name]);
@@ -1668,7 +1670,7 @@ export class Setup {
       }
       for (const [name, status] of Object.entries(hookStatus)) line(`Claude hook ${name}`, status, "run agent-workbench install to restore");
       for (const [name, status] of Object.entries(codexHookStatus)) line(`Codex hook ${name}`, status, "run agent-workbench install to restore");
-      for (const [name, status] of Object.entries(report.codex_trust)) line(`Codex trust ${name}`, status, status === "trusted" ? "" : "run agent-workbench trust (or /hooks in Codex)");
+      for (const [name, status] of Object.entries(report.codex_trust)) line(`Codex trust ${name}`, status, status === "trusted" ? "" : "run /hooks in Codex once");
       line("personal package", report.personal_package.present ? "applied" : "not installed", "install workbench-personal if needed");
       line("instruction template", state.template_hash === report.available_template_hash && state.version === VERSION ? "applied" : "missing", "run agent-workbench install to apply update");
       line(`private instructions (${private_.length} bytes)`, "applied", "");
@@ -1739,8 +1741,9 @@ export class Setup {
     }
     if (!present(lockFile)) throw new Conflict("native skills lock is missing; install global skills first, then rerun agent-workbench update");
     let names;
+    let native;
     try {
-      const native = JSON.parse(utf8(read(lockFile)));
+      native = JSON.parse(utf8(read(lockFile)));
       const skills = native.skills;
       if (native.version !== 3 || !isDict(skills)) throw new TypeError("unsupported lock");
       names = Object.entries(skills).filter(([name, item]) => {
@@ -1754,10 +1757,20 @@ export class Setup {
     } catch {
       throw new Conflict("unsupported native skills lock or missing repository ownership; restore a supported native skills lock, then rerun agent-workbench update");
     }
+    // Skills removed upstream and already deleted locally would make the native update warn every run.
+    const stale = names.filter((name) => name !== "workbench-setup" && !present(path.join(this.home, ".agents/skills", name)));
     const args = command ? shellSplit(command) : ["npx", "--yes", "skills@1.7.4"];
     if (!args.length) throw new Conflict("empty skills command; provide an executable command with --skills-cmd");
     this.withLock(() => {
       this.preflight();
+      if (stale.length) {
+        for (const name of stale) delete native.skills[name];
+        const temporary = `${lockFile}.${process.pid}.tmp`;
+        fs.writeFileSync(temporary, JSON.stringify(native, null, 2) + "\n", { mode: fs.statSync(lockFile).mode & 0o777 });
+        fs.renameSync(temporary, lockFile);
+        console.log(`dropped stale skills lock entries: ${stale.join(", ")}`);
+        names = names.filter((name) => !stale.includes(name));
+      }
       const result = spawnSync(args[0], [...args.slice(1), "update", ...names, "-g", "-y"], { stdio: "inherit" });
       if (result.error) throw result.error;
       if (result.status !== 0) {
@@ -1787,6 +1800,7 @@ const COMMANDS = {
   uninstall: "Remove managed setup while keeping private files",
   workers: "Show effective worker configuration",
   ops: "Run host operations",
+  version: "Print the installed Agent Workbench version",
 };
 const USAGE = "usage: workbench.mjs [--home HOME] [--skills-cmd SKILLS_CMD] [--cwd CWD] " +
   `{${Object.keys(COMMANDS).join(",")}}`;
@@ -1805,6 +1819,7 @@ function parseArguments(argv) {
       continue;
     }
     if (argv[index] === "--json") { options.json = true; continue; }
+    if (argv[index] === "--version" && options.command === undefined) { options.command = "version"; continue; }
     const [flag, inline] = argv[index].startsWith("--") && argv[index].includes("=") ?
       [argv[index].slice(0, argv[index].indexOf("=")), argv[index].slice(argv[index].indexOf("=") + 1)] : [argv[index]];
     if (has(flags, flag)) {
@@ -1856,6 +1871,7 @@ export function main(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
   if (args.help) { printHelp(args.helpCommand ?? (args.command === "help" ? undefined : args.command)); return 0; }
   try {
+    if (args.command === "version") { console.log(RELEASE); return 0; }
     if (args.command === "ops") return runOps(args.ops, path.resolve(args.home));
     const setup = new Setup(args.home);
     if (args.command === "workers") setup.workers(args.cwd);
