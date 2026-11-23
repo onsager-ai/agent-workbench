@@ -23,12 +23,12 @@ policy:
   max_auto_rework: 2
   # Absolute compaction target and optional native window overrides.
   # Gateway users set gateway_window to their gateway's advertised window.
-  # Sessions on manager_models use manager_window in Claude Code.
+  # manager_window (null by default) gives manager_models their own Claude Code window.
   context:
     max_tokens: 300000
     gateway_window: null
     codex_window: null
-    manager_window: 200000
+    manager_window: null
     # Optional minimum-only compaction window for generated Claude Workers.
     worker_window: null
     manager_models: [claude-opus-5-5]
