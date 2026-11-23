@@ -953,7 +953,7 @@ describe("workbench setup", () => {
     f.write(settingsPath, JSON.stringify({ model: "personal", hooks: { PreToolUse: [foreign], Stop: [{ hooks: [] }] }, env: { OTHER: "yes" } }));
     f.run("install");
     let settings = f.json(settingsPath);
-    assert.deepEqual(Object.keys(settings), ["model", "hooks", "env", "autoCompactWindow", "modelSettings"]);
+    assert.deepEqual(Object.keys(settings), ["model", "hooks", "env", "autoCompactWindow"]);
     const entries = settings.hooks.PreToolUse;
     assert.deepEqual(entries[0], foreign);
     assert.deepEqual(entries.slice(1).map((entry) => entry.matcher),
@@ -1358,7 +1358,7 @@ describe("workbench setup", () => {
 
   test("native apply, rewrite, conflict and uninstall", () => {
     const f = new Fixture();
-    f.installOrchestration({ policy: { context: { codex_window: 900000, gateway_window: 400000 } } });
+    f.installOrchestration({ policy: { context: { codex_window: 900000, gateway_window: 400000, manager_window: 200000 } } });
     const claude = path.join(f.home, ".claude/settings.json");
     const codex = path.join(f.home, ".codex/config.toml");
     const original = Buffer.from('model = "magpie" # routing\nmodel_reasoning_effort = "high"\n\n[model_providers.magpie]\nname = "route"\n[projects."/tmp"]\ntrust_level = "trusted"\n');
@@ -1417,7 +1417,7 @@ describe("workbench setup", () => {
     cases.forEach(([kind, data, succeeds], index) => {
       const f = new Fixture();
       f.configureHome(path.join(f.temporary, `native-${index}`));
-      f.installOrchestration();
+      f.installOrchestration({ policy: { context: { manager_window: 200000 } } });
       const file = path.join(f.home, kind === "claude" ? ".claude/settings.json" : ".codex/config.toml");
       f.write(file, data);
       f.run("install", [], succeeds);
