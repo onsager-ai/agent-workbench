@@ -953,7 +953,7 @@ describe("workbench setup", () => {
     f.write(settingsPath, JSON.stringify({ model: "personal", hooks: { PreToolUse: [foreign], Stop: [{ hooks: [] }] }, env: { OTHER: "yes" } }));
     f.run("install");
     let settings = f.json(settingsPath);
-    assert.deepEqual(Object.keys(settings), ["model", "hooks", "env", "autoCompactWindow", "modelSettings"]);
+    assert.deepEqual(Object.keys(settings), ["model", "hooks", "env", "autoCompactWindow"]);
     const entries = settings.hooks.PreToolUse;
     assert.deepEqual(entries[0], foreign);
     assert.deepEqual(entries.slice(1).map((entry) => entry.matcher),
