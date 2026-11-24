@@ -71,7 +71,16 @@ Links: <PR, issue or thread links>
 - Number decisions per lane (`awb-D1`, `awb-D2`) and keep a decision's id when it is re-asked. A reply cites that id; drop the decision from the list once it is answered.
 - Send a full status when any field changes. While a lane is active and nothing changed for 6 hours, send a one-line heartbeat instead: `No change since <id>.`, with `re` set to the last full status's `id`. Send a status when a lane is parked, resumed or done; parked lanes send no heartbeats.
 - Send `kind=alert` at once, in `auto` mode, when CI fails twice on the same head, a dependency the lane needs breaks, a decision has waited longer than the configured limit (12 hours until one is set), or spend crosses 50% or 80% of a cap. Name the lane, what happened and what is needed.
-- Host facts, such as stalls, open PRs, thermal state and shared balances, come from that host's `infra` lane, not from each Manager.
+- Host facts come from that host's `infra` lane, not from each Manager. Its owner sends the same status form with `Lane: infra · <host>`, and adds these lines after `Spend`:
+
+  ~~~text
+  Thermal: <C> · <ok|gated> · as of <YYYY-MM-DDTHH:MMZ>
+  Balances: <source> spent=<number> cap=<number> unit=<unit> · as of <YYYY-MM-DDTHH:MMZ>; ...
+  Stalls: none | <session> <reason> idle <minutes>m; ...
+  Lanes: <repo> <open PRs> PRs, <failing> failing; ...
+  ~~~
+
+  Read stalls with `semon query stalls --idle-minutes 60` and lanes with `awb lanes --json`. Give every reading the time it was taken; a cached balance keeps the cache's time, not the send time.
 - Governance, meaning who may decide what and the caps themselves, is set separately; this section only reports against it.
 
 ### Choose the T3 delivery mode
