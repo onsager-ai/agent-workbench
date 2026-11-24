@@ -34,7 +34,7 @@ Publish changes that affect another Manager's decisions: user requirements and s
 <One plain sentence saying what you need, found or decided.>
 <Details. For a decision, name the user source.>
 
--- WB_MSG from=<environmentId>/<threadId> kind=request|result|decision id=<last8>:<n> re=<id-or-none>
+-- WB_MSG from=<environmentId>/<threadId> kind=request|result|decision|status|alert id=<last8>:<n> re=<id-or-none>
 ~~~
 
 Put the footer last, after a blank line, so T3 shows the readable text first.
@@ -42,6 +42,7 @@ Put the footer last, after a blank line, so T3 shows the readable text first.
 - In Claude Code, the workbench policy hook fills in `from` and `id` on every `t3_thread_send` whose message has a footer line, using T3's real identity and a per-thread counter. Write the footer as `-- WB_MSG kind=<kind> re=<id-or-none>`. Without that hook, as in Codex, write the full footer, reading the `threadId` from `$T3CODE_THREAD_ID` and the `environmentId` from `$T3CODE_HOME/userdata/environment-id` (default `~/.t3`). Never type either from memory or a role name.
 - `from` is the sender's full T3 `environmentId` and `threadId`, so the receiver can pass them straight to `t3_thread_send`. Outside T3, use the native address, such as `from=native:claude-code:<name>`.
 - `kind=request` asks the receiver to do or find something and send a `result` back. `kind=result` answers a request; set `re` to the request's `id`. `kind=decision` shares a decision, blocker or handover and needs no answer; set `re` to the decision it replaces, if any.
+- `kind=status` and `kind=alert` carry [lane status](#lane-status-and-alerts) to the Chief PM and need no answer.
 - `id` is the last eight characters of the sender's `threadId` and that thread's own message sequence starting at 1, for example `id=89effeb3:4`. Use the last characters, because many thread IDs share a prefix such as `mcp:launch:`.
 - Copy `re` from the `id` in the footer of the message you answer, as it arrived. Never reconstruct it.
 
@@ -50,6 +51,28 @@ Split unrelated topics into separate messages. Relaying a message does not creat
 Post decisions in your own thread and send them to known active registered Managers for global scope, or active registered Managers in the affected project/task scope. Refresh activity before sending, exclude self, and use resolved thread identities. Do not notify unrelated sessions, Workers or reviewers, or deliberately wake inactive/archived Managers for routine sync; they catch up on resume. An explicit user-authorized handover may resume its named target.
 
 For a peer listed natively in the same harness and machine, use native messaging; in Claude Code use `ListAgents` and `SendMessage`. For other peers, including cross-harness, cross-machine and Codex peers, send the message using `t3_thread_send`. Discover tool schemas by name without hardcoding an MCP prefix. Send one consolidated, self-contained message per milestone or review round and no acknowledgement-only pings. A successful send does not prove the recipient read it. A request is answered only when its `result` arrives; track open requests and do not automatically resend one.
+
+### Lane status and alerts
+
+When a Chief PM Manager is registered, each Manager keeps it current on its lanes with `kind=status` messages, so the Chief PM combines messages instead of reading threads. Send one message per lane, in this form, with every field present:
+
+~~~text
+Lane: <project> · <scope>
+State: active|parked|done
+Goal: <one sentence>
+Next: <milestone> · due <YYYY-MM-DDTHH:MMZ>
+Blockers: none | <item>; <item>
+Decisions: none | <lane>-D<n> <question> · to owner|chief-pm · asked <YYYY-MM-DDTHH:MMZ>; ...
+Spend: none | spent=<number> cap=<number> unit=<unit>; ...
+Links: <PR, issue or thread links>
+~~~
+
+- Times are absolute UTC. Spend uses one `spent`/`cap`/`unit` triple per budget, such as `unit=usd` or `unit=kiro-credits`; never mix units in one triple.
+- Number decisions per lane (`awb-D1`, `awb-D2`) and keep a decision's id when it is re-asked. A reply cites that id; drop the decision from the list once it is answered.
+- Send a full status when any field changes. While a lane is active and nothing changed for 6 hours, send a one-line heartbeat instead: `No change since <id>.`, with `re` set to the last full status's `id`. Send a status when a lane is parked, resumed or done; parked lanes send no heartbeats.
+- Send `kind=alert` at once, in `auto` mode, when CI fails twice on the same head, a dependency the lane needs breaks, a decision has waited longer than the configured limit (12 hours until one is set), or spend crosses 50% or 80% of a cap. Name the lane, what happened and what is needed.
+- Host facts, such as stalls, open PRs, thermal state and shared balances, come from that host's `infra` lane, not from each Manager.
+- Governance, meaning who may decide what and the caps themselves, is set separately; this section only reports against it.
 
 ### Choose the T3 delivery mode
 
