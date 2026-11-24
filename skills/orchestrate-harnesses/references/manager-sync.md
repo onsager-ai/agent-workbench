@@ -65,7 +65,10 @@ Blockers: none | <item>; <item>
 Decisions: none | <lane>-D<n> <question> · to owner|chief-pm · asked <YYYY-MM-DDTHH:MMZ>; ...
 Spend: none | spent=<number> cap=<number> unit=<unit>; ...
 Links: <PR, issue or thread links>
+State-of-work: open PRs <#n@sha>, ...; holds none | <item>; next action <one line>; owner sources <link to the owner message for each standing authorization>
 ~~~
+
+- The latest full status is the lane's handover record and must survive compaction, so `State-of-work` is required and complete: a successor resumes from it without the thread history.
 
 - Times are absolute UTC. Spend uses one `spent`/`cap`/`unit` triple per budget, such as `unit=usd` or `unit=kiro-credits`; never mix units in one triple.
 - Number decisions per lane (`awb-D1`, `awb-D2`) and keep a decision's id when it is re-asked. A reply cites that id; drop the decision from the list once it is answered.
