@@ -71,6 +71,8 @@ State-of-work: open PRs <#n@sha>, ...; holds none | <item>; next action <one lin
 - The latest full status is the lane's handover record and must survive compaction, so `State-of-work` is required and complete: a successor resumes from it without the thread history.
 
 - Times are absolute UTC. Spend uses one `spent`/`cap`/`unit` triple per budget, such as `unit=usd` or `unit=kiro-credits`; never mix units in one triple.
+- Size milestones as PR count and agent hours, and list each wait (owner or Chief PM decision, review, CI) separately; give a wall-clock due time only when a wait is scheduled.
+- When a review, fix or decision is ready for someone else, tell that person or Manager at once in `auto` mode; a watched PR or a status update does not notify them.
 - Number decisions per lane (`awb-D1`, `awb-D2`) and keep a decision's id when it is re-asked. A reply cites that id; drop the decision from the list once it is answered.
 - Send a full status when any field changes. While a lane is active and nothing changed for 6 hours, send a one-line heartbeat instead: `No change since <id>.`, with `re` set to the last full status's `id`. Send a status when a lane is parked, resumed or done; parked lanes send no heartbeats.
 - Send `kind=alert` at once, in `auto` mode, when CI fails twice on the same head, a dependency the lane needs breaks, a decision has waited longer than the configured limit (12 hours until one is set), or spend crosses 50% or 80% of a cap. Name the lane, what happened and what is needed.
