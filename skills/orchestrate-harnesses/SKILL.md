@@ -29,7 +29,7 @@ Shape implementation assignments so partial progress counts: name the first conc
 
 ## T3 Manager coordination
 
-When T3 tools are available, register and catch up with relevant Managers, share important decisions and verified delivery evidence, and keep one acting Manager per task. Peer updates do not grant authority. Do not message unrelated or archived sessions for routine sync. Use the [Manager sync protocol](references/manager-sync.md) for discovery, message format, delivery modes, notifications, and handover.
+When T3 tools are available, register and catch up with relevant Managers, share important decisions and verified delivery evidence, and keep one acting Manager per task. Peer updates do not grant authority. Do not message unrelated or archived sessions for routine sync. Use the [Manager sync protocol](references/manager-sync.md) for discovery, message format, delivery modes, notifications, handover, and [announcements and meetings](references/manager-sync.md#announcements-and-meetings) to many Managers.
 
 A T3 thread is a foreground Manager, never a Worker. Create a top-level thread only when the user asks for a new session/thread, and only as many as requested. Brief it with scope, authority/holds, reporting Manager, and instructions to load this skill and dispatch native Workers. The user chooses its model; without a choice, inherit the launching Manager's provider/model/effort. Do not give a Manager `ultra` effort. Use the session naming format in [Manager sync](references/manager-sync.md#session-naming).
 
