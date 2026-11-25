@@ -21,7 +21,7 @@ const { parse: parseToml } = await import("../vendor/smol-toml/index.js");
 
 export const VERSION = "1";
 // Agent Workbench release; tests keep it equal to package.json.
-export const RELEASE = "0.2.18";
+export const RELEASE = "0.2.19";
 const SOURCE = "onsager-ai/agent-workbench";
 const BEGIN = Buffer.from("<!-- BEGIN agent-workbench -->");
 const END = Buffer.from("<!-- END agent-workbench -->");
@@ -1350,7 +1350,7 @@ export class Setup {
     return { owned: Boolean(owned), line: line.toString("base64") };
   }
 
-  preflight({ uninstall = false, status = false } = {}) {
+  preflight({ uninstall = false, status = false, config = true } = {}) {
     const state = this.load();
     for (const file of [this.shared, this.claude, this.launcher]) inspect(file, this.home);
     inspect(this.codex, this.home, { link: true });
@@ -1431,8 +1431,10 @@ export class Setup {
       throw new Conflict(`owned resolved Worker configuration is missing: ${this.workersPath}; restore it with agent-workbench install`);
     }
     if (!uninstall) {
-      this.workersBundle();
-      this.desiredAgents({ warn: false });
+      if (config) {
+        this.workersBundle();
+        this.desiredAgents({ warn: false });
+      }
       inspect(this.script, this.home);
       inspect(this.template, this.home);
       if (!isFile(this.script) || !isFile(this.template)) {
@@ -1784,7 +1786,8 @@ export class Setup {
         throw new Conflict(`native skills update failed (${result.status ?? result.signal}); global instructions unchanged; correct the skills update error, then rerun agent-workbench update`);
       }
       // Revalidate updated canonical resource paths without executing replaced symlinks.
-      this.preflight();
+      // Config is left to the fresh install process: this process may predate new keys.
+      this.preflight({ config: false });
     });
     // Fresh process loads the newly distributed code, after releasing our lock.
     const installed = spawnSync(process.execPath, [this.script, "--home", this.home, "install"], { stdio: "inherit" });
