@@ -34,12 +34,13 @@ Publish changes that affect another Manager's decisions: user requirements and s
 <One plain sentence saying what you need, found or decided.>
 <Details. For a decision, name the user source.>
 
--- WB_MSG from=<environmentId>/<threadId> kind=request|result|decision|status|alert id=<last8>:<n> re=<id-or-none>
+-- WB_MSG from=<environmentId>/<threadId> kind=request|result|decision|status|alert sent=<YYYY-MM-DDTHH:MMZ> id=<last8>:<n> re=<id-or-none>
 ~~~
 
 Put the footer last, after a blank line, so T3 shows the readable text first.
 
-- In Claude Code, the workbench policy hook fills in `from` and `id` on every `t3_thread_send` whose message has a footer line, using T3's real identity and a per-thread counter. Write the footer as `-- WB_MSG kind=<kind> re=<id-or-none>`. Without that hook, as in Codex, write the full footer, reading the `threadId` from `$T3CODE_THREAD_ID` and the `environmentId` from `$T3CODE_HOME/userdata/environment-id` (default `~/.t3`). Never type either from memory or a role name.
+- In Claude Code, the workbench policy hook fills in `from`, `sent` and `id` on every `t3_thread_send` whose message has a footer line, using T3's real identity and a per-thread counter. Write the footer as `-- WB_MSG kind=<kind> re=<id-or-none>`. Without that hook, as in Codex, write the full footer, reading the `threadId` from `$T3CODE_THREAD_ID` and the `environmentId` from `$T3CODE_HOME/userdata/environment-id` (default `~/.t3`). Never type either from memory or a role name.
+- `sent` is the UTC send time to the minute, such as `sent=2026-11-25T05:40Z`, so a reader can tell how long a queued message waited. Footers without `sent` remain valid.
 - `from` is the sender's full T3 `environmentId` and `threadId`, so the receiver can pass them straight to `t3_thread_send`. Outside T3, use the native address, such as `from=native:claude-code:<name>`.
 - `kind=request` asks the receiver to do or find something and send a `result` back. `kind=result` answers a request; set `re` to the request's `id`. `kind=decision` shares a decision, blocker or handover and needs no answer; set `re` to the decision it replaces, if any.
 - `kind=status` and `kind=alert` carry [lane status](#lane-status-and-alerts) to the Chief PM and need no answer.
