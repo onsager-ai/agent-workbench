@@ -15,6 +15,9 @@ const SLEEP_LOOP = "Sleep loops are disabled. Use t3_background_wait or Monitor.
 const CI_LOGS = "Delegate CI logs. Resume the Worker that owns the branch or dispatch an L1 Worker with the run URL.";
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
+const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
+const COUNT_EXEMPT = /^(?:mcp__t3[-_]code__)?(?:t3_thread_send|t3_queue|send_to_user|t3_pending_request|t3_background_wait|Agent|Task|spawn_agent|delegate_task|AskUserQuestion|ToolSearch|pull_request_merge|pull_request_review|pull_request_respond|link_pull_requests?|watch_pull_request|unwatch_pull_request|pull_request_create)$/;
+const MUTATING_GIT = new Set(["commit", "push", "tag", "merge", "rebase", "reset", "checkout", "switch", "stash", "add"]);
 const APPROVAL_LINE = "Get it first (through the Chief PM when one is registered), then add a line " +
   "`L3 approval: <link to the approval>` to the brief and retry.";
 const CONFIG_MISSING = "Worker policy configuration is missing or unreadable; rerun agent-workbench install before dispatching Workers.";
@@ -677,6 +680,55 @@ function hostArgument(argv) {
   return "claude";
 }
 
+function managerStatePath(event) {
+  const session = event.session_id;
+  if (typeof session !== "string" || !/^[A-Za-z0-9_-]+$/.test(session)) return null;
+  const root = process.env.AGENT_WORKBENCH_STATE_HOME || process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
+  return path.join(root, "agent-workbench", "manager-turns", `${session}.json`);
+}
+
+function readManagerState(file) {
+  if (!file) return { worker: false, count: 0, approved: false };
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!isDict(value) || typeof value.worker !== "boolean" || !Number.isSafeInteger(value.count) ||
+        value.count < 0 || typeof value.approved !== "boolean") throw new Error("invalid state");
+    return value;
+  } catch {
+    return { worker: false, count: 0, approved: false };
+  }
+}
+
+function writeManagerState(file, state) {
+  if (!file) return;
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, JSON.stringify(state) + "\n", { mode: 0o600 });
+}
+
+function managerGateReason(what, file) {
+  return `${what} is blocked. Send this step to an L1/L2 Worker (luna first, then sol). ` +
+    `A turn whose first message has \`${MANAGER_APPROVAL}\` passes the gate. State file: ${file ?? "invalid session_id"}.`;
+}
+
+function mutatingBash(command) {
+  // Exclude the common harmless redirections before checking remaining output redirects.
+  const redirects = command.replace(/(?:2>\s*\/dev\/null|>\s*\/dev\/null|>&2)/g, "");
+  if (/(?:^|[^<])>>?(?!=|&)(?:\s*[^\s;|&]+)/.test(redirects)) return true;
+  let commands;
+  try { commands = shellCommands(command); } catch { return false; }
+  for (const words of commands) {
+    const [argv] = gitCommand(words);
+    if (argv && MUTATING_GIT.has(argv[0])) return true;
+    const [program, operation] = words;
+    if (["tee", "rm", "mv", "cp", "mkdir", "touch", "chmod"].includes(program) ||
+        (program === "sed" && words.some((word) => word === "-i" || word.startsWith("-i"))) ||
+        (["npm", "pnpm", "yarn"].includes(program) && ["install", "publish"].includes(operation)) ||
+        (program === "pip" && operation === "install") ||
+        (program === "ssh" && words.length > 2)) return true;
+  }
+  return false;
+}
+
 function emit(value) {
   process.stdout.write(JSON.stringify(value) + "\n");
 }
@@ -722,6 +774,18 @@ async function main() {
   try {
     const event = JSON.parse(fs.readFileSync(0, "utf8"));
     if (!isDict(event)) return;
+    const stateFile = managerStatePath(event);
+    if (event.hook_event_name === "UserPromptSubmit") {
+      if (!codex) {
+        const previous = readManagerState(stateFile);
+        const prompt = typeof event.prompt === "string" ? event.prompt : "";
+        writeManagerState(stateFile, {
+          worker: previous.worker || /^Role: Worker$/m.test(prompt), count: 0,
+          approved: /^Manager work approval: \S/m.test(prompt),
+        });
+      }
+      return;
+    }
     if (event.hook_event_name === "PostToolUse") {
       if (event.tool_name !== "Agent" && event.tool_name !== "Task") return;
       const context = postToolModelContext(workers, event);
@@ -748,7 +812,35 @@ async function main() {
     if (event.hook_event_name != null && event.hook_event_name !== "PreToolUse") return;
     const tool = event.tool_name;
     const args = "tool_input" in event ? event.tool_input : {};
-    if (typeof tool === "string" && tool.endsWith("t3_thread_send")) {
+    const mainLoop = !codex && !event.agent_id;
+    let managerState = readManagerState(stateFile);
+    if (mainLoop && !managerState.worker && !managerState.approved && typeof tool === "string" && !COUNT_EXEMPT.test(tool)) {
+      managerState.count++;
+      writeManagerState(stateFile, managerState);
+      if (managerState.count > 5) {
+        decision = "deny";
+        reason = managerGateReason(`The sixth counted work call (${tool})`, stateFile);
+      }
+    }
+    const enforceManager = mainLoop && !managerState.worker && !managerState.approved;
+    if (enforceManager && !decision && ["Edit", "Write", "NotebookEdit", "MultiEdit"].includes(tool)) {
+      const filePath = dict(args).file_path ?? dict(args).notebook_path ?? "";
+      const memory = path.join(os.homedir(), ".claude", "projects");
+      const resolved = path.resolve(String(filePath));
+      const memoryRoot = path.resolve(memory);
+      const relative = path.relative(memoryRoot, resolved).split(path.sep);
+      const isMemory = !path.isAbsolute(path.relative(memoryRoot, resolved)) && relative.length >= 3 &&
+        relative[0] !== ".." && relative[1] === "memory";
+      if (!isMemory) {
+        decision = "deny";
+        reason = managerGateReason(`${tool} to ${filePath || "a file"}`, stateFile);
+      }
+    }
+    if (enforceManager && !decision && tool === "Bash" && mutatingBash(dict(args).command ?? "")) {
+      decision = "deny";
+      reason = managerGateReason("A Bash command that changes files or state", stateFile);
+    }
+    if (!decision && typeof tool === "string" && tool.endsWith("t3_thread_send")) {
       const stamped = stampFooter(args, workers ? path.dirname(workers) : null);
       // Codex only honors updatedInput together with permissionDecision:allow.
       if (stamped) {
@@ -756,13 +848,18 @@ async function main() {
       }
       return;
     }
-    if (tool === "mcp__t3-code__delegate_task" || tool === "mcp__t3_code__delegate_task") {
+    if (!decision && (tool === "mcp__t3-code__delegate_task" || tool === "mcp__t3_code__delegate_task")) {
       const target = "target" in dict(args) ? args.target : {};
       const model = dict(target).model;
       if (!model) [decision, reason] = ["deny", T3_MODEL];
       else {
         const tier = modelTier(workers, event, model);
         [decision, reason] = gate(tier && dispatchApproval(workers, event, tier), dict(args).task);
+        if (!decision && mainLoop) {
+          const task = typeof dict(args).task === "string" ? dict(args).task : "";
+          if (!/^Role: Worker$/m.test(task)) emit({ hookSpecificOutput: { hookEventName: "PreToolUse", ...(codex ? { permissionDecision: "allow" } : {}), updatedInput: { ...dict(args), task: `Role: Worker\n${task}` } } });
+          return;
+        }
       }
     } else if (tool === "spawn_agent") {
       const subagentType = dict(args).agent_type;
@@ -775,7 +872,7 @@ async function main() {
         [decision, reason] = ["deny", MODEL_OVERRIDE];
       } else if (approval || args.model === "opus") [decision, reason] = gate(approval ?? APPROVAL, args.prompt);
       else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason] = ["deny", INHERITED_MODEL];
-    } else if (tool === "Bash") {
+    } else if (!decision && tool === "Bash") {
       const command = dict(args).command ?? "";
       if (typeof command !== "string") return;
       // Claude Code supplies agent_id for subagents. A top-level --agent also sets agent_type.

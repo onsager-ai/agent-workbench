@@ -50,6 +50,6 @@ profiles:
       - {level: L2, tiers: [sol, sonnet], start_for: [spike, research, architecture]}
       - {level: L3, tiers: [opus], approval: required}
 # Default profile when no select rule matches; null uses the base config.
-profile: null
+profile: codex
 # First matching ancestor path wins, e.g. [{path: ~/work, profile: corporate}].
 select: []

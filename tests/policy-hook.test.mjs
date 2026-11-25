@@ -44,7 +44,18 @@ describe("policy hook", () => {
   }
 
   const invoke = (payload, env) => {
-    const result = run(payload, { env });
+    let event;
+    try { event = JSON.parse(payload); } catch {}
+    if (event && typeof event === "object" && !Array.isArray(event)) {
+      if ([undefined, "PreToolUse"].includes(event.hook_event_name) && !event.session_id) {
+        event.session_id = "legacy-test-session";
+        event.agent_id = "legacy-test-worker";
+      }
+      payload = JSON.stringify(event);
+    }
+    const stateHome = env?.AGENT_WORKBENCH_STATE_HOME ?? path.join(directory, "state");
+    const hookEnv = { ...(env ?? process.env), AGENT_WORKBENCH_STATE_HOME: stateHome };
+    const result = run(payload, { env: hookEnv });
     return result.stdout ? JSON.parse(result.stdout).hookSpecificOutput : null;
   };
 
@@ -195,6 +206,131 @@ describe("policy hook", () => {
     assert.match(launch("fast", "other/small").additionalContext, /expected gateway\/small but launched with resolved model other\/small/);
     assert.equal(launch("standard", undefined, env), null);
     assert.equal(launch("unknown", route), null);
+  });
+
+  test("Manager turn state gates main-loop work, counts calls, and honors approval", () => {
+    const session = "manager-session";
+    const stateHome = path.join(directory, "state");
+    const env = { AGENT_WORKBENCH_STATE_HOME: stateHome };
+    const prompt = (text) => invoke(JSON.stringify({
+      hook_event_name: "UserPromptSubmit", session_id: session, prompt: text,
+    }), env);
+    const call = (tool_name, tool_input = {}, extras = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_name, tool_input, ...extras,
+    }), env);
+    const statePath = path.join(stateHome, "agent-workbench", "manager-turns", `${session}.json`);
+
+    prompt("Decide and delegate.");
+    assert.equal(call("Read", { file_path: "/tmp/file" }), null);
+    const blocked = call("Edit", { file_path: "/tmp/file" });
+    assert.equal(blocked.permissionDecision, "deny");
+    assert.match(blocked.permissionDecisionReason, /L1\/L2 Worker \(luna first, then sol\)/);
+    assert.match(blocked.permissionDecisionReason, /Manager work approval/);
+    assert.ok(blocked.permissionDecisionReason.includes(statePath));
+    assert.equal(call("Edit", { file_path: path.join(os.homedir(), ".claude/projects/p/memory/MEMORY.md") }), null);
+    assert.equal(call("Bash", { command: "git status" }), null);
+    for (const command of ["git add file", "echo hi > output", "echo hi >> output", "tee output",
+      "sed -i s/a/b/ file", "rm file", "mv a b", "cp a b", "mkdir dir", "touch file",
+      "chmod 600 file", "git stash", "npm install", "pnpm publish", "yarn install", "pip install x",
+      "ssh host 'touch file'"]) {
+      prompt("Fresh command check.");
+      assert.equal(call("Bash", { command }).permissionDecision, "deny", command);
+    }
+    for (const command of ["echo hi 2>/dev/null", "echo hi >/dev/null", "echo hi >&2", "npm view x", "git status"]) {
+      prompt("Fresh read-only check.");
+      assert.equal(call("Bash", { command }), null, command);
+    }
+
+    prompt("A fresh turn.");
+    for (let i = 0; i < 5; i++) assert.equal(call("Read"), null);
+    const sixth = call("Read");
+    assert.equal(sixth.permissionDecision, "deny");
+    prompt("Another turn.");
+    for (const tool of ["Agent", "Task"]) {
+      assert.equal(call(tool, { subagent_type: "luna", prompt: "Inspect the issue." }), null, tool);
+    }
+    assert.equal(call("spawn_agent", { agent_type: "luna", message: "Inspect the issue." }), null);
+    for (const tool of ["t3_thread_send", "t3_queue", "send_to_user", "t3_pending_request",
+      "t3_background_wait", "AskUserQuestion", "ToolSearch", "pull_request_merge",
+      "pull_request_review", "pull_request_respond", "link_pull_request", "link_pull_requests",
+      "watch_pull_request", "unwatch_pull_request", "pull_request_create"]) {
+      assert.equal(call(tool), null, tool);
+    }
+    for (let i = 0; i < 5; i++) assert.equal(call("Read"), null);
+    prompt("Manager work approval: https://example.test/chief-pm-message");
+    for (let i = 0; i < 7; i++) assert.equal(call("Read"), null);
+  });
+
+  test("Manager Bash denials keep the full gate reason", () => {
+    const session_id = "manager-bash";
+    const statePath = path.join(directory, "state", "agent-workbench", "manager-turns", `${session_id}.json`);
+    const call = (tool_name, tool_input = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id, tool_name, tool_input,
+    }));
+    const guidance = "Send this step to an L1/L2 Worker (luna first, then sol). " +
+      "A turn whose first message has `Manager work approval: <link to a Chief PM or owner message>` " +
+      `passes the gate. State file: ${statePath}.`;
+
+    for (const command of ["touch file", "gh run view 123 --log-failed > failed.log"]) {
+      const blocked = call("Bash", { command });
+      assert.equal(blocked.permissionDecision, "deny", command);
+      assert.equal(blocked.permissionDecisionReason, `A Bash command that changes files or state is blocked. ${guidance}`);
+    }
+    for (let i = 0; i < 3; i++) assert.equal(call("Read"), null);
+    const sixth = call("Bash", { command: "git status" });
+    assert.equal(sixth.permissionDecision, "deny");
+    assert.equal(sixth.permissionDecisionReason, `The sixth counted work call (Bash) is blocked. ${guidance}`);
+  });
+
+  test("Worker sessions and subagents bypass the Manager gate; corrupt state is fresh", () => {
+    const stateHome = path.join(directory, "state");
+    const env = { AGENT_WORKBENCH_STATE_HOME: stateHome };
+    const event = (session_id, tool_name, extras = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id, tool_name,
+      tool_input: { file_path: "/tmp/file", command: "rm file" }, ...extras,
+    }), env);
+    const submit = (session_id, prompt) => invoke(JSON.stringify({
+      hook_event_name: "UserPromptSubmit", session_id, prompt,
+    }), env);
+    submit("worker-session", "Role: Worker\nDo the task.");
+    assert.equal(event("worker-session", "Edit"), null);
+    assert.equal(event("worker-session", "Bash"), null);
+    assert.equal(event("subagent-session", "Edit", { agent_id: "agent-1" }), null);
+    const corrupt = path.join(stateHome, "agent-workbench", "manager-turns", "corrupt-session.json");
+    fs.mkdirSync(path.dirname(corrupt), { recursive: true });
+    fs.writeFileSync(corrupt, "not json");
+    const result = event("corrupt-session", "Edit");
+    assert.equal(result.permissionDecision, "deny");
+    assert.doesNotMatch(result.permissionDecisionReason, /approved/i);
+    const invalid = event("../invalid", "Edit");
+    assert.equal(invalid.permissionDecision, "deny");
+    assert.match(invalid.permissionDecisionReason, /invalid session_id/);
+  });
+
+  test("Manager file restrictions apply without a session ID", () => {
+    for (const [tool_name, tool_input] of [
+      ["Edit", { file_path: "/tmp/file" }],
+      ["Bash", { command: "touch file" }],
+    ]) {
+      const { stdout } = run(JSON.stringify({ hook_event_name: "PreToolUse", tool_name, tool_input }));
+      assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, "deny", tool_name);
+    }
+  });
+
+  test("delegate_task stamps Worker role after its existing checks pass", () => {
+    for (const tool_name of ["mcp__t3-code__delegate_task", "mcp__t3_code__delegate_task"]) {
+      const result = invoke(JSON.stringify({ tool_name, session_id: "stamp-session", tool_input: {
+        task: "Fix this issue.", target: { model: "gpt-6-luna" },
+      } }));
+      assert.equal(result.updatedInput.task, "Role: Worker\nFix this issue.");
+      const already = invoke(JSON.stringify({ tool_name, session_id: "stamp-session", tool_input: {
+        task: "Role: Worker\nFix this issue.", target: { model: "gpt-6-luna" },
+      } }));
+      assert.equal(already, null);
+      const denied = invoke(JSON.stringify({ tool_name, session_id: "stamp-session", tool_input: { task: "x", target: {} } }));
+      assert.equal(denied.permissionDecision, "deny");
+      assert.equal(denied.updatedInput, undefined);
+    }
   });
 
   test("neutral profile keeps L3 approval and disallows named model overrides", () => {
@@ -378,6 +514,7 @@ describe("policy hook", () => {
     await new Promise((resolve) => server.once("listening", resolve));
     try {
       const url = `http://127.0.0.1:${server.address().port}/v1/systemone`;
+      bundle.profile = null;
       bundle.base.policy.stop_classifier = { url, model: "typesafe/jev-latest" };
       fs.writeFileSync(workers, JSON.stringify(bundle));
       const invoke = async (message) => invokeStopAsync({ hook_event_name: "Stop", last_assistant_message: message });
@@ -547,14 +684,19 @@ describe("policy hook", () => {
       "gh api repos/{owner}/{repo}/actions/jobs/456/logs",
       'gh api "repos/$repo/actions/jobs/$job_id/logs"',
     ]) {
-      const event = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } };
+      const event = { hook_event_name: "PreToolUse", session_id: "manager-ci-logs", tool_name: "Bash", tool_input: { command } };
+      invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: event.session_id,
+        prompt: "Manager work approval: https://example.test/approval" }));
       const decision = invoke(JSON.stringify(event));
       assert.equal(decision?.permissionDecision, "deny", command);
       assert.match(decision.permissionDecisionReason, /Resume the Worker.*L1 Worker with the run URL/);
       assert.equal(invoke(JSON.stringify({ ...event, agent_id: "worker-1", agent_type: "standard" })), null, command);
     }
+    invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "named-manager",
+      prompt: "Manager work approval: https://example.test/approval" }));
     const namedManager = invoke(JSON.stringify({
-      hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "gh run view 123 --log" }, agent_type: "standard",
+      hook_event_name: "PreToolUse", session_id: "named-manager", tool_name: "Bash",
+      tool_input: { command: "gh run view 123 --log" }, agent_type: "standard",
     }));
     assert.equal(namedManager?.permissionDecision, "deny");
   });

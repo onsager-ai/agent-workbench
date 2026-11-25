@@ -6,11 +6,11 @@ Choose a level by the work it handles:
 
 | Level | Use for | Default Claude mapping |
 | --- | --- | --- |
-| L1 | Bounded work; use a small, fast, low-cost model. | haiku / claude-haiku-5-5 / medium |
-| L2 | Research, spikes, and architecture; use a capable general model. | sonnet / claude-sonnet-5-5 / medium |
+| L1 | Bounded work; use a small, fast, low-cost model. | luna / gpt-6-luna / medium; haiku / claude-haiku-5-5 / medium |
+| L2 | Research, spikes, and architecture; use a capable general model. | sol / gpt-6.2-sol / medium; sonnet / claude-sonnet-5-5 / medium |
 | L3 | Work that needs the strongest model; user approval is required. | opus / claude-opus-5-5 / medium |
 
-Haiku, Sonnet, and Opus are Anthropic's small, mid-size, and largest Claude models. These are defaults: map any models from a gateway or another harness to levels in `workers.yml`.
+Haiku, Sonnet, and Opus are Anthropic's small, mid-size, and largest Claude models. The Codex tiers are the default Worker choice, with haiku and sonnet as fallbacks. Map any models from a gateway or another harness to levels in `workers.yml`.
 
 Always use the resolved ladder from effective configuration. Start at its first level for bounded work. A task kind listed in `start_for` may start at that level; record why. By default, research, spikes, and architecture recommendations start at L2, or can split into narrow L1 probes with L2 synthesis. Give each spike a timebox, typically 20–30 minutes, and accept a partial report with unresolved checks. When a named output such as `FINDINGS.md` is in the brief, it is authorized output. Escalate one level at a time based on actual complexity, defects, or failed attempts. Choose the next level rather than raising effort when more reasoning is needed.
 

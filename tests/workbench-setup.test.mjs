@@ -957,7 +957,8 @@ describe("workbench setup", () => {
     const entries = settings.hooks.PreToolUse;
     assert.deepEqual(entries[0], foreign);
     assert.deepEqual(entries.slice(1).map((entry) => entry.matcher),
-      ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"]);
+      [".*"]);
+    assert.deepEqual(settings.hooks.UserPromptSubmit, [{ hooks: [{ type: "command", command: f.hookCommand }] }]);
     assert.deepEqual(settings.hooks.PostToolUse, [{
       matcher: "Agent|Task", hooks: [{ type: "command", command: f.hookCommand }],
     }]);
@@ -969,13 +970,13 @@ describe("workbench setup", () => {
     }
     assert.deepEqual(f.stateJson().hooks, [
       ...entries.slice(1).map((entry) => ({ ...entry, key: `PreToolUse:${entry.matcher}` })),
+      { ...settings.hooks.UserPromptSubmit[0], key: "UserPromptSubmit" },
       { ...settings.hooks.PostToolUse[0], key: "PostToolUse:Agent|Task" },
       { ...stopEntry, key: "Stop" },
     ]);
     assert.deepEqual(JSON.parse(f.run("status").stdout).hooks, {
-      "Agent|Task": "applied", Bash: "applied",
-      "PostToolUse:Agent|Task": "applied", "mcp__t3-code__delegate_task": "applied",
-      "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
+      ".*": "applied", UserPromptSubmit: "applied",
+      "PostToolUse:Agent|Task": "applied", Stop: "applied",
     });
     const postEntry = settings.hooks.PostToolUse[0];
     settings.hooks.PostToolUse = [];
@@ -988,7 +989,7 @@ describe("workbench setup", () => {
     assert.deepEqual(f.snapshot(), before);
     f.run("uninstall");
     settings = f.json(settingsPath);
-    assert.deepEqual(settings.hooks, { PreToolUse: [foreign], PostToolUse: [], Stop: [{ hooks: [] }] });
+    assert.deepEqual(settings.hooks, { PreToolUse: [foreign], UserPromptSubmit: [], PostToolUse: [], Stop: [{ hooks: [] }] });
     assert.equal(settings.model, "personal");
     assert.deepEqual(settings.env, { OTHER: "yes" });
   });
@@ -1002,18 +1003,17 @@ describe("workbench setup", () => {
     const fresh = f.stateJson();
     const settings = f.json(settingsPath);
     const post = fresh.hooks.find((entry) => entry.key === "PostToolUse:Agent|Task");
-    const older = fresh.hooks.filter((entry) => entry !== post).map(({ key, ...entry }) => {
-      if (key === "PreToolUse:Agent|Task") return { ...entry, key: "Agent|Task" };
-      if (key === "Stop") return { ...entry, key };
-      return entry;
-    });
+    const older = fresh.hooks.filter((entry) => entry !== post && entry.key !== "UserPromptSubmit");
     const olderSettings = { ...settings.hooks };
     delete olderSettings.PostToolUse;
+    delete olderSettings.UserPromptSubmit;
+    const splitSettings = { ...settings.hooks };
+    delete splitSettings.UserPromptSubmit;
     for (const split of [false, true]) {
       f.write(statePath, JSON.stringify({ ...fresh, hooks: older, ...(split ? { post_hooks: [post] } : {}) }));
-      f.write(settingsPath, JSON.stringify({ ...settings, hooks: split ? settings.hooks : olderSettings }));
+      f.write(settingsPath, JSON.stringify({ ...settings, hooks: split ? splitSettings : olderSettings }));
       const status = JSON.parse(f.run("status").stdout).hooks;
-      assert.equal(status["Agent|Task"], "applied");
+      assert.equal(status[".*"], "applied");
       assert.equal(status.Stop, "applied");
       assert.equal(status["PostToolUse:Agent|Task"], split ? "applied" : undefined);
       f.run("install");
@@ -1046,8 +1046,8 @@ describe("workbench setup", () => {
     settings.hooks.PreToolUse[0] = edited;
     fs.writeFileSync(settingsPath, JSON.stringify(settings));
     assert.deepEqual(JSON.parse(f.run("status").stdout).hooks, {
-      "Agent|Task": "missing", Bash: "applied", "PostToolUse:Agent|Task": "applied",
-      "mcp__t3-code__delegate_task": "applied", "mcp__t3-code__t3_thread_send": "applied", Stop: "applied",
+      ".*": "missing", UserPromptSubmit: "applied",
+      "PostToolUse:Agent|Task": "applied", Stop: "applied",
     });
     f.run("install");
     const reapplied = f.json(settingsPath).hooks.PreToolUse;
@@ -1082,8 +1082,7 @@ describe("workbench setup", () => {
     f.run("install");
     const saved = f.stateJson().hooks;
     assert.deepEqual(saved.map((entry) => entry.key), [
-      "PreToolUse:Agent|Task", "PreToolUse:mcp__t3-code__delegate_task", "PreToolUse:mcp__t3-code__t3_thread_send",
-      "PostToolUse:Agent|Task", "Stop",
+      "PreToolUse:.*", "UserPromptSubmit", "PostToolUse:Agent|Task", "Stop",
     ]);
     f.run("uninstall");
     const hooks = f.json(settingsPath).hooks;
@@ -1099,7 +1098,7 @@ describe("workbench setup", () => {
     f.run("install");
     assert.deepEqual(f.stateJson().hooks, []);
     assert.deepEqual(f.json(path.join(f.home, ".claude/settings.json")).hooks,
-      { PreToolUse: [], PostToolUse: [], Stop: [] });
+      { PreToolUse: [], UserPromptSubmit: [], PostToolUse: [], Stop: [] });
   });
 
   test("policy hooks invalid configuration conflicts without writes", () => {
@@ -1130,7 +1129,7 @@ describe("workbench setup", () => {
     for (const entry of file.hooks.PreToolUse.slice(1)) assert.deepEqual(entry.hooks, [codexHandler(f)]);
     assert.deepEqual(file.hooks.Stop, [{ hooks: [codexHandler(f)] }]);
     assert.deepEqual(f.stateJson().codex_hooks, [...file.hooks.PreToolUse.slice(1), file.hooks.Stop[0]]);
-    assert.deepEqual(f.stateJson().hooks.length, 6);
+    assert.deepEqual(f.stateJson().hooks.length, 4);
     assert.deepEqual(JSON.parse(f.run("status").stdout).codex_hooks, {
       "Agent|spawn_agent": "applied", Bash: "applied", mcp__t3_code__delegate_task: "applied",
       mcp__t3_code__t3_thread_send: "applied", Stop: "applied",
