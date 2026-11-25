@@ -206,18 +206,22 @@ describe("policy hook", () => {
     }));
     assert.equal(dispatch("standard"), null);
     assert.equal(dispatch("standard", "sonnet").permissionDecision, "deny");
-    assert.equal(dispatch("expert").permissionDecision, "ask");
+    assert.equal(dispatch("expert").permissionDecision, "deny");
   });
 
-  test("opus requires approval", () => {
+  test("opus is denied until the prompt records the approval", () => {
     for (const tool of ["Agent", "Task"]) {
-      const decision = invoke(JSON.stringify({
-        tool_name: tool, tool_input: { subagent_type: "opus" }, agent_id: "worker", agent_type: "sol",
+      const dispatch = (prompt) => invoke(JSON.stringify({
+        tool_name: tool, tool_input: { subagent_type: "opus", prompt }, agent_id: "worker", agent_type: "sol",
       }));
+      const decision = dispatch("Fix the bug.");
       assert.equal(decision.hookEventName, "PreToolUse");
-      assert.equal(decision.permissionDecision, "ask");
-      assert.equal(decision.permissionDecisionReason,
-        "Worker opus at level L3 needs the user's approval for this task (configured Worker ladder).");
+      assert.equal(decision.permissionDecision, "deny");
+      assert.match(decision.permissionDecisionReason,
+        /^Worker opus at level L3 needs the user's approval for this task \(configured Worker ladder\)\. /);
+      assert.match(decision.permissionDecisionReason, /`L3 approval: <link to the approval>`/);
+      assert.equal(dispatch("Fix the bug.\nL3 approval: https://example.test/approval"), null);
+      assert.equal(dispatch("Fix the bug. L3 approval: inline only.").permissionDecision, "deny");
     }
   });
 
@@ -252,21 +256,21 @@ describe("policy hook", () => {
     for (const tool of ["Agent", "Task"]) {
       const payload = { tool_name: tool, cwd: path.join(alias, "nested"), tool_input: { subagent_type: "sol" } };
       let result = invoke(JSON.stringify(payload));
-      assert.equal(result.permissionDecision, "ask");
+      assert.equal(result.permissionDecision, "deny");
       assert.match(result.permissionDecisionReason, /expert/);
       payload.cwd = path.dirname(work);
       assert.equal(invoke(JSON.stringify(payload)), null);
       payload.cwd = work;
       payload.tool_input.subagent_type = "opus";
       result = invoke(JSON.stringify(payload));
-      assert.equal(result.permissionDecision, "ask");
+      assert.equal(result.permissionDecision, "deny");
       assert.match(result.permissionDecisionReason, /not in the ladder/);
       payload.tool_input.subagent_type = "terra";
       assert.equal(invoke(JSON.stringify(payload)), null);
     }
     bundle.profile = "corporate";
     fs.writeFileSync(workers, JSON.stringify(bundle));
-    assert.equal(invoke(JSON.stringify({ tool_name: "Agent", tool_input: { subagent_type: "sol" } })).permissionDecision, "ask");
+    assert.equal(invoke(JSON.stringify({ tool_name: "Agent", tool_input: { subagent_type: "sol" } })).permissionDecision, "deny");
   });
 
   test("missing or unreadable workers asks on every dispatch", () => {
@@ -334,9 +338,12 @@ describe("policy hook", () => {
   test("opus model requires approval", () => {
     for (const tool of ["Agent", "Task"]) {
       const decision = invoke(JSON.stringify({ tool_name: tool, tool_input: { subagent_type: "Plan", model: "opus" } }));
-      assert.equal(decision.permissionDecision, "ask");
-      assert.equal(decision.permissionDecisionReason,
-        "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).");
+      assert.equal(decision.permissionDecision, "deny");
+      assert.match(decision.permissionDecisionReason,
+        /^L3 Opus Worker needs the user's approval for this task \(orchestrate-harnesses Worker ladder\)\. /);
+      assert.equal(invoke(JSON.stringify({
+        tool_name: tool, tool_input: { subagent_type: "Plan", model: "opus", prompt: "L3 approval: https://example.test/a" },
+      })), null);
     }
   });
 
@@ -623,7 +630,10 @@ describe("policy hook", () => {
       const byType = codex({ tool_name: "spawn_agent", tool_input: { agent_type: "opus", message: "x" } });
       assert.equal(byType.permissionDecision, "deny");
       assert.match(byType.permissionDecisionReason, /^Worker opus at level L3 needs the user's approval/);
-      assert.match(byType.permissionDecisionReason, /Get the user's approval, then retry\.$/);
+      assert.match(byType.permissionDecisionReason, /`L3 approval: <link to the approval>` to the brief and retry\.$/);
+      assert.equal(codex({
+        tool_name: "spawn_agent", tool_input: { agent_type: "opus", message: "x\nL3 approval: https://example.test/a" },
+      }), null);
       const byModel = codex({ tool_name: "spawn_agent", tool_input: { model: "opus" } });
       assert.equal(byModel.permissionDecision, "deny");
       assert.match(byModel.permissionDecisionReason, /Opus Worker needs the user's approval/);
@@ -634,9 +644,9 @@ describe("policy hook", () => {
       assert.equal(codex({ tool_name: "spawn_agent", tool_input: { agent_type: "haiku", model: "claude-haiku-5-5" } }), null);
     });
 
-    test("Claude host keeps ask and stamps without allow", () => {
-      const ask = invoke(JSON.stringify({ tool_name: "spawn_agent", tool_input: { agent_type: "opus" } }));
-      assert.equal(ask.permissionDecision, "ask");
+    test("Claude host denies an unapproved spawn_agent too", () => {
+      const deny = invoke(JSON.stringify({ tool_name: "spawn_agent", tool_input: { agent_type: "opus" } }));
+      assert.equal(deny.permissionDecision, "deny");
     });
 
     test("Bash rules and Stop still apply", () => {

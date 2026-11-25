@@ -15,8 +15,9 @@ const SLEEP_LOOP = "Sleep loops are disabled. Use t3_background_wait or Monitor.
 const CI_LOGS = "Delegate CI logs. Resume the Worker that owns the branch or dispatch an L1 Worker with the run URL.";
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
-const T3_APPROVAL = "Get it first (through the Chief PM when one is registered), then add a line " +
-  "`L3 approval: <link to the approval>` to the task and retry.";
+const APPROVAL_LINE = "Get it first (through the Chief PM when one is registered), then add a line " +
+  "`L3 approval: <link to the approval>` to the brief and retry.";
+const CONFIG_MISSING = "Worker policy configuration is missing or unreadable; rerun agent-workbench install before dispatching Workers.";
 const INHERITED_MODEL ="Built-in agents inherit the Manager's model. Use a tier agent " +
   "(subagent_type: <role>) or pass model explicitly.";
 const INHERITING_AGENT_TYPES = new Set([undefined, null, "general-purpose", "Plan", "Explore", "claude"]);
@@ -631,7 +632,7 @@ function dispatchApproval(file, event, tier) {
     return `Worker ${tier} is not in the ladder for profile ${profile || "base"} at ${cwd}; ` +
       "dispatch it only with the user's approval.";
   } catch {
-    return "Worker policy configuration is missing or unreadable; rerun agent-workbench install before dispatching Workers.";
+    return CONFIG_MISSING;
   }
 }
 
@@ -649,6 +650,15 @@ function modelTier(file, event, model) {
     // Without readable configuration there is no tier to check.
   }
   return null;
+}
+
+// Full-access sessions accept "ask" without showing a prompt, so an approval-gated dispatch is denied
+// until its brief records where the approval came from. Missing configuration still asks.
+function gate(approval, brief) {
+  if (!approval) return [undefined, undefined];
+  if (approval === CONFIG_MISSING) return ["ask", approval];
+  if (/^L3 approval: \S/m.test(String(brief ?? ""))) return [undefined, undefined];
+  return ["deny", `${approval} ${APPROVAL_LINE}`];
 }
 
 function workersArgument(argv) {
@@ -751,26 +761,19 @@ async function main() {
       const model = dict(target).model;
       if (!model) [decision, reason] = ["deny", T3_MODEL];
       else {
-        // T3 full-access threads accept "ask" without a prompt, so an approval-gated tier is denied
-        // until the brief records where the approval came from.
         const tier = modelTier(workers, event, model);
-        const approval = tier && dispatchApproval(workers, event, tier);
-        if (approval && !/^L3 approval: \S/m.test(String(dict(args).task ?? ""))) {
-          [decision, reason] = ["deny", `${approval} ${T3_APPROVAL}`];
-        }
+        [decision, reason] = gate(tier && dispatchApproval(workers, event, tier), dict(args).task);
       }
     } else if (tool === "spawn_agent") {
       const subagentType = dict(args).agent_type;
-      const approval = dispatchApproval(workers, event, subagentType);
-      if (approval) [decision, reason] = ["ask", approval];
-      else if (args.model === "opus") [decision, reason] = ["ask", APPROVAL];
+      const approval = dispatchApproval(workers, event, subagentType) ?? (args.model === "opus" ? APPROVAL : null);
+      [decision, reason] = gate(approval, args.message);
     } else if (tool === "Agent" || tool === "Task") {
       const subagentType = dict(args).subagent_type;
       const approval = dispatchApproval(workers, event, subagentType);
       if (args.model && !INHERITING_AGENT_TYPES.has(subagentType) && subagentType !== "fork") {
         [decision, reason] = ["deny", MODEL_OVERRIDE];
-      } else if (approval) [decision, reason] = ["ask", approval];
-      else if (args.model === "opus") [decision, reason] = ["ask", APPROVAL];
+      } else if (approval || args.model === "opus") [decision, reason] = gate(approval ?? APPROVAL, args.prompt);
       else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason] = ["deny", INHERITED_MODEL];
     } else if (tool === "Bash") {
       const command = dict(args).command ?? "";
