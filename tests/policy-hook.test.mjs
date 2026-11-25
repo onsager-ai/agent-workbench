@@ -84,13 +84,17 @@ describe("policy hook", () => {
     const thread = env.T3CODE_THREAD_ID;
     const first = send("Done.\n\n-- WB_MSG from=x/duhem-pm kind=result id=duhempm:1 re=89effeb3:2", env);
     assert.equal("permissionDecision" in first, false);
+    const sent = (message) => message.match(/ sent=(\d{4}-\d\d-\d\dT\d\d:\d\dZ) /)?.[1];
+    const firstSent = sent(first.updatedInput.message);
+    assert.ok(Math.abs(Date.parse(firstSent) - Date.now()) < 120000);
     assert.deepEqual(first.updatedInput, {
       threadId: "peer", mode: "auto",
-      message: `Done.\n\n-- WB_MSG from=env-1/${thread} kind=result id=74859825:1 re=89effeb3:2`,
+      message: `Done.\n\n-- WB_MSG from=env-1/${thread} kind=result sent=${firstSent} id=74859825:1 re=89effeb3:2`,
     });
-    const second = send("Decided.\n\n-- WB_MSG kind=decision", env);
+    const second = send("Decided.\n\n-- WB_MSG kind=decision sent=2000-01-01T00:00Z", env);
     assert.equal(second.updatedInput.message,
-      `Decided.\n\n-- WB_MSG from=env-1/${thread} kind=decision id=74859825:2 re=none`);
+      `Decided.\n\n-- WB_MSG from=env-1/${thread} kind=decision sent=${sent(second.updatedInput.message)} id=74859825:2 re=none`);
+    assert.notEqual(sent(second.updatedInput.message), "2000-01-01T00:00Z");
   });
 
   test("thread send without footer or identity is unchanged", () => {
@@ -586,7 +590,7 @@ describe("policy hook", () => {
           tool_input: { threadId: "peer", message: "Hi.\n\n-- WB_MSG kind=request" },
         }, env);
         assert.equal(result.permissionDecision, "allow");
-        assert.match(result.updatedInput.message, /^Hi\.\n\n-- WB_MSG from=env-1\/.* kind=request id=74859825:\d+ re=none$/);
+        assert.match(result.updatedInput.message, /^Hi\.\n\n-- WB_MSG from=env-1\/.* kind=request sent=\d{4}-\d\d-\d\dT\d\d:\d\dZ id=74859825:\d+ re=none$/);
       }
     });
 

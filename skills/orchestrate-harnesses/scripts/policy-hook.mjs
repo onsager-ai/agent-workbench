@@ -160,7 +160,8 @@ function stampFooter(args, stateDir) {
   const fields = {};
   for (const [, key, value] of last[0].matchAll(FOOTER_FIELD)) fields[key] = value;
   const [environment, thread] = identity;
-  const footer = `-- WB_MSG from=${environment}/${thread} kind=${fields.kind ?? "decision"} ` +
+  const sent = new Date().toISOString().slice(0, 16) + "Z";
+  const footer = `-- WB_MSG from=${environment}/${thread} kind=${fields.kind ?? "decision"} sent=${sent} ` +
     `id=${thread.slice(-8)}:${nextSequence(stateDir, thread)} re=${fields.re ?? "none"}`;
   return { ...args, message: message.slice(0, last.index) + footer + message.slice(last.index + last[0].length) };
 }
