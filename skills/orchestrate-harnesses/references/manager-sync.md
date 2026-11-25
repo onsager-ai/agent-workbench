@@ -109,12 +109,12 @@ State-of-work: open PRs <#n@sha>, ...; holds none | <item>; next action <one lin
 
 Relay is near-realtime by default. Choose `mode` on `t3_thread_send` per message:
 
-- **`auto` (default)** for decisions, corrections, blockers, holds, handovers and anything that may change the peer's next action. It steers a running turn, starts a turn on an idle thread and queues otherwise. An idle, unsettled, unarchived registered Manager counts as active, so starting its turn is expected.
+- **`auto` (default)** for decisions, corrections, blockers, holds, handovers and anything that may change the peer's next action. It steers a running turn, starts a turn on an idle thread and queues otherwise, including whenever the target already has queued messages; check the returned `delivery`. An idle, unsettled, unarchived registered Manager counts as active, so starting its turn is expected.
 - **`steer`** when the message must land in the current turn and should fail rather than wait or start a new turn, such as a correction that invalidates work in progress. State what the peer should adjust now.
 - **`queue`** only for non-time-sensitive information that can wait until the peer's current turn ends, which may take a long time.
 - **`restart`** never for relay; it interrupts the peer's work. Use it only on the user's explicit instruction.
 
-When the target thread is `waiting` with a pending request, send in `queue` mode whatever the content: steering or starting a turn cancels its open question.
+When the target thread has a pending request, send in `queue` mode whatever the content: steering or starting a turn cancels its open question. When you replace or correct a message of yours still queued there, `t3_queue edit` it, or `cancel` it and send the new one; never leave a superseded message queued. When a message of yours is urgent, was queued, and the target is running with no pending request, `t3_queue promote_to_steer` it rather than leaving it behind a long turn.
 
 Do not send to settled or archived Managers for routine sync; they catch up on resume. Steering does not abort the peer's turn or guarantee an immediate reply.
 
