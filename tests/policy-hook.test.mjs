@@ -246,13 +246,17 @@ describe("policy hook", () => {
     const sixth = call("Read");
     assert.equal(sixth.permissionDecision, "deny");
     prompt("Another turn.");
+    for (const tool of ["Agent", "Task"]) {
+      assert.equal(call(tool, { subagent_type: "luna", prompt: "Inspect the issue." }), null, tool);
+    }
+    assert.equal(call("spawn_agent", { agent_type: "luna", message: "Inspect the issue." }), null);
     for (const tool of ["t3_thread_send", "t3_queue", "send_to_user", "t3_pending_request",
-      "t3_background_wait", "Agent", "Task", "spawn_agent", "AskUserQuestion", "ToolSearch",
-      "pull_request_merge", "pull_request_review", "pull_request_respond", "link_pull_request",
-      "link_pull_requests", "watch_pull_request", "unwatch_pull_request", "pull_request_create"]) {
+      "t3_background_wait", "AskUserQuestion", "ToolSearch", "pull_request_merge",
+      "pull_request_review", "pull_request_respond", "link_pull_request", "link_pull_requests",
+      "watch_pull_request", "unwatch_pull_request", "pull_request_create"]) {
       assert.equal(call(tool), null, tool);
     }
-    assert.equal(call("Read"), null);
+    for (let i = 0; i < 5; i++) assert.equal(call("Read"), null);
     prompt("Manager work approval: https://example.test/chief-pm-message");
     for (let i = 0; i < 7; i++) assert.equal(call("Read"), null);
   });
@@ -280,6 +284,16 @@ describe("policy hook", () => {
     const invalid = event("../invalid", "Edit");
     assert.equal(invalid.permissionDecision, "deny");
     assert.match(invalid.permissionDecisionReason, /invalid session_id/);
+  });
+
+  test("Manager file restrictions apply without a session ID", () => {
+    for (const [tool_name, tool_input] of [
+      ["Edit", { file_path: "/tmp/file" }],
+      ["Bash", { command: "touch file" }],
+    ]) {
+      const { stdout } = run(JSON.stringify({ hook_event_name: "PreToolUse", tool_name, tool_input }));
+      assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, "deny", tool_name);
+    }
   });
 
   test("delegate_task stamps Worker role after its existing checks pass", () => {
