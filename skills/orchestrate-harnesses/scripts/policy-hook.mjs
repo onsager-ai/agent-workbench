@@ -840,7 +840,7 @@ async function main() {
       decision = "deny";
       reason = managerGateReason("A Bash command that changes files or state", stateFile);
     }
-    if (typeof tool === "string" && tool.endsWith("t3_thread_send")) {
+    if (!decision && typeof tool === "string" && tool.endsWith("t3_thread_send")) {
       const stamped = stampFooter(args, workers ? path.dirname(workers) : null);
       // Codex only honors updatedInput together with permissionDecision:allow.
       if (stamped) {
@@ -872,7 +872,7 @@ async function main() {
         [decision, reason] = ["deny", MODEL_OVERRIDE];
       } else if (approval || args.model === "opus") [decision, reason] = gate(approval ?? APPROVAL, args.prompt);
       else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason] = ["deny", INHERITED_MODEL];
-    } else if (tool === "Bash") {
+    } else if (!decision && tool === "Bash") {
       const command = dict(args).command ?? "";
       if (typeof command !== "string") return;
       // Claude Code supplies agent_id for subagents. A top-level --agent also sets agent_type.

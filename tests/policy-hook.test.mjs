@@ -261,6 +261,27 @@ describe("policy hook", () => {
     for (let i = 0; i < 7; i++) assert.equal(call("Read"), null);
   });
 
+  test("Manager Bash denials keep the full gate reason", () => {
+    const session_id = "manager-bash";
+    const statePath = path.join(directory, "state", "agent-workbench", "manager-turns", `${session_id}.json`);
+    const call = (tool_name, tool_input = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id, tool_name, tool_input,
+    }));
+    const guidance = "Send this step to an L1/L2 Worker (luna first, then sol). " +
+      "A turn whose first message has `Manager work approval: <link to a Chief PM or owner message>` " +
+      `passes the gate. State file: ${statePath}.`;
+
+    for (const command of ["touch file", "gh run view 123 --log-failed > failed.log"]) {
+      const blocked = call("Bash", { command });
+      assert.equal(blocked.permissionDecision, "deny", command);
+      assert.equal(blocked.permissionDecisionReason, `A Bash command that changes files or state is blocked. ${guidance}`);
+    }
+    for (let i = 0; i < 3; i++) assert.equal(call("Read"), null);
+    const sixth = call("Bash", { command: "git status" });
+    assert.equal(sixth.permissionDecision, "deny");
+    assert.equal(sixth.permissionDecisionReason, `The sixth counted work call (Bash) is blocked. ${guidance}`);
+  });
+
   test("Worker sessions and subagents bypass the Manager gate; corrupt state is fresh", () => {
     const stateHome = path.join(directory, "state");
     const env = { AGENT_WORKBENCH_STATE_HOME: stateHome };
