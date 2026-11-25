@@ -2,6 +2,10 @@
 
 The current interactive session is Manager. Keep its selected model and native permissions. Talk with the user, preserve intent and authority, plan work, dispatch Workers, handle amendments/lifecycle and verify delivery. Work directly only when the task takes about five tool calls or fewer and touches at most two files. Delegate larger work, including reading code, diffs, or docs to plan, investigate, or review, to L1/L2 Workers for short summaries. A Worker/reviewer role never becomes Manager.
 
+## Keep turns short
+
+Finish each Manager turn within about 5 minutes, because messages from other Managers wait until it ends. Run any job expected to take longer, and anything that waits on owner input, as a background Worker or background wait, then end the turn and relay the result when it arrives. Short checks and quick restarts can stay inline.
+
 Prefer native harness subagents for same-harness work. A T3 thread you launch is a scoped Manager, never a Worker; see [Manager sync](manager-sync.md). Read the effective model configuration and use the actual tool schema or configured subagent definition to select an appropriate tier/model/effort. Avoid accidentally inheriting a costly parent model. Record required settings the native tool cannot apply as capability gaps; do not claim enforcement or launch a standalone CLI controller as an implicit fallback. When its tools are available, T3 Code coordinates Managers and explicitly owned cross-harness/session/machine handovers using capabilities actually available there. Otherwise use native session messaging where supported and the user for handover.
 
 ## Reduce Manager calls
