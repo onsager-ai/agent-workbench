@@ -31,6 +31,7 @@ const MARKERS = [BEGIN, END, PERSONAL_BEGIN, PERSONAL_END];
 const IMPORT = Buffer.from("@~/.agents/AGENTS.md");
 const LIMIT = 10 * 1024 * 1024;
 const ROLE = /^[a-z][a-z0-9-]*$/;
+const LEGACY_PRETOOLUSE_MATCHERS = new Set(["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"]);
 const CLAUDE_HOOK_MATCHERS = {
   PreToolUse: [".*"],
   UserPromptSubmit: [undefined],
@@ -1009,7 +1010,7 @@ export class Setup {
     const hooks = has(parsed, "hooks") ? parsed.hooks : {};
     const events = Object.entries(CLAUDE_HOOK_MATCHERS);
     if (!isDict(hooks) || events.some(([event]) => has(hooks, event) && !Array.isArray(hooks[event]))) {
-      throw new Conflict("invalid Claude hook configuration; correct settings.json, then rerun agent-workbench install");
+      throw new Conflict("invalid Claude hooks.PreToolUse, hooks.PostToolUse, or hooks.Stop configuration; correct settings.json, then rerun agent-workbench install");
     }
     let command = null;
     if (!uninstall && present(this.models) && present(this.worker)) {
@@ -1300,7 +1301,8 @@ export class Setup {
         const expectedKey = claudeHookKey(event, matcher);
         const bareKey = event === "PreToolUse" && key === matcher;
         if (names !== (["Stop", "UserPromptSubmit"].includes(event) ? "hooks" : "hooks,matcher") ||
-            !CLAUDE_HOOK_MATCHERS[event]?.includes(matcher) || hookKeys.has(expectedKey) ||
+            !(CLAUDE_HOOK_MATCHERS[event]?.includes(matcher) ||
+              (event === "PreToolUse" && LEGACY_PRETOOLUSE_MATCHERS.has(matcher))) || hookKeys.has(expectedKey) ||
             (has(saved, "key") && key !== expectedKey && !bareKey) ||
             !Array.isArray(hooks) || hooks.length !== 1 || !isDict(hooks[0]) ||
             Object.keys(hooks[0]).sort().join(",") !== "command,type" ||

@@ -44,7 +44,9 @@ describe("policy hook", () => {
   }
 
   const invoke = (payload, env) => {
-    const result = run(payload, { env });
+    const event = JSON.parse(payload);
+    if ([undefined, "PreToolUse"].includes(event.hook_event_name) && !event.session_id) event.agent_id = "legacy-test-worker";
+    const result = run(JSON.stringify(event), { env });
     return result.stdout ? JSON.parse(result.stdout).hookSpecificOutput : null;
   };
 
@@ -222,9 +224,11 @@ describe("policy hook", () => {
       "sed -i s/a/b/ file", "rm file", "mv a b", "cp a b", "mkdir dir", "touch file",
       "chmod 600 file", "git stash", "npm install", "pnpm publish", "yarn install", "pip install x",
       "ssh host 'touch file'"]) {
+      prompt("Fresh command check.");
       assert.equal(call("Bash", { command }).permissionDecision, "deny", command);
     }
     for (const command of ["echo hi 2>/dev/null", "echo hi >/dev/null", "echo hi >&2", "npm view x", "git status"]) {
+      prompt("Fresh read-only check.");
       assert.equal(call("Bash", { command }), null, command);
     }
 
@@ -264,7 +268,9 @@ describe("policy hook", () => {
     const result = event("corrupt-session", "Edit");
     assert.equal(result.permissionDecision, "deny");
     assert.doesNotMatch(result.permissionDecisionReason, /approved/i);
-    assert.equal(event("../invalid", "Edit"), null);
+    const invalid = event("../invalid", "Edit");
+    assert.equal(invalid.permissionDecision, "deny");
+    assert.match(invalid.permissionDecisionReason, /invalid session_id/);
   });
 
   test("delegate_task stamps Worker role after its existing checks pass", () => {
