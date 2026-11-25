@@ -52,6 +52,16 @@ Post decisions in your own thread and send them to known active registered Manag
 
 For a peer listed natively in the same harness and machine, use native messaging; in Claude Code use `ListAgents` and `SendMessage`. For other peers, including cross-harness, cross-machine and Codex peers, send the message using `t3_thread_send`. Discover tool schemas by name without hardcoding an MCP prefix. Send one consolidated, self-contained message per milestone or review round and no acknowledgement-only pings. A successful send does not prove the recipient read it. A request is answered only when its `result` arrives; track open requests and do not automatically resend one.
 
+### Announcements and meetings
+
+For one message to many Managers, send every copy in one turn with parallel `t3_thread_send` calls, choosing each recipient's mode by [the delivery rules](#choose-the-t3-delivery-mode). The first line names the message, because the hook stamps a different footer `id` on each copy. Write recipients inline in `to:`: names, or `all active Managers` for the active registered Managers above, excluding yourself.
+
+- **Announcement:** `kind=decision`, first line `Announcement <sender>-A<n>: <subject> · to: <recipients>`. It needs no reply. A correction reuses the id, says what it replaces, and edits or cancels any copy still queued.
+- **Meeting:** `kind=request`, first line `Meeting <host>-M<n>: <topic> · reply by <YYYY-MM-DDTHH:MMZ> · to: <recipients>`. Each recipient replies once to the host as `kind=result` starting `Meeting <host>-M<n>:`. At the reply-by time the host sends every recipient one `kind=decision` starting `Meeting <host>-M<n> outcome:`, listing who sent no reply and the decisions made; owner-level ones go through [owner decisions](#owner-decisions).
+- **Digest:** a recurring summary, such as the Chief PM's daily digest, is an announcement.
+
+Known limits: there are no read receipts, and the send result (steered, started or queued) is all the delivery evidence. Copies queued behind a long turn arrive late. A meeting reply that arrives after the outcome goes to the host only and does not reopen the meeting. Named or stored recipient groups are not part of this rule.
+
 ### Owner decisions
 
 When a Chief PM Manager is registered, send a question that needs the owner's decision to it as `kind=request`, with `Owner decision:` on the first line, the options and your recommendation. The Chief PM removes duplicates, asks the owner once and sends the answer to every affected Manager. Do not ask the owner directly, except:
