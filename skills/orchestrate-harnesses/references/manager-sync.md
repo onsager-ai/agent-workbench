@@ -75,6 +75,7 @@ Blockers: none | <item>; <item>
 Decisions: none | <lane>-D<n> <question> · to owner|chief-pm · asked <YYYY-MM-DDTHH:MMZ>; ...
 Spend: none | spent=<number> cap=<number> unit=<unit>; ...
 Links: <PR, issue or thread links>
+Progress: none | <done>/<target> <unit>
 Report: next by <YYYY-MM-DDTHH:MMZ>
 State-of-work: open PRs <#n@sha>, ...; holds none | <item>; next action <one line>; owner sources <link to the owner message for each standing authorization>
 ~~~
@@ -82,6 +83,7 @@ State-of-work: open PRs <#n@sha>, ...; holds none | <item>; next action <one lin
 - The latest full status is the lane's handover record and must survive compaction, so `State-of-work` is required and complete: a successor resumes from it without the thread history.
 
 - `on-track`, `at-risk` and `blocked` are active states. `at-risk` and `blocked` name their evidence in `Blockers`, such as a failing check, a missed due time or an open decision.
+- `Progress` counts the deliverables of the current `Goal`, usually `unit=PRs` with merged PRs as done. Keep the target fixed while the goal stands; when the scope changes, say so in the status that changes the target. Use `none` when the goal has no countable deliverables.
 - Send the next full status or heartbeat by the `Report` time. Promise a check-in only through a mechanism the harness actually runs, such as a T3 scheduled task, a PR watch or a background wait; never promise one nothing will trigger.
 - Times are absolute UTC. Spend uses one `spent`/`cap`/`unit` triple per budget, such as `unit=usd` or `unit=kiro-credits`; never mix units in one triple.
 - Size milestones as PR count and agent hours, and list each wait (owner or Chief PM decision, review, CI) separately; give a wall-clock due time only when a wait is scheduled.
