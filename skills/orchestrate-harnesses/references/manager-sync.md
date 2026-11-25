@@ -26,6 +26,10 @@ Only one active Manager thread holds a given title. When a Manager thread is set
 
 If T3 tools are unavailable, use native session messaging where supported and the user for handover. Continue independent authorized local work, but do not claim T3 peers were synchronized. Coordinate ownership before work that depends on a peer's state. Do not change authentication or bypass an unavailable peer surface.
 
+## Manager delegation gate
+
+Claude Code's hook limits Manager turns to deciding and delegating; Codex Managers follow this rule from the docs only because the hook cannot enforce it there. Running sessions keep the old hook until they restart. The owner can type `Manager work approval: <link>` in any Manager thread to unblock it.
+
 ## Publish and notify
 
 Publish changes that affect another Manager's decisions: user requirements and sources, settled choices, task ownership/handover, blockers, accepted results and verified branch/revision/CI evidence. Routine tool output, full transcripts and secrets do not belong in peer messages. Every message to another Manager, over T3 or native messaging, is self-contained plain text that a person can read first, and ends with one metadata footer line:

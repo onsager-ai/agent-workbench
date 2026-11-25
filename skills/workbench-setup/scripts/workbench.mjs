@@ -21,7 +21,7 @@ const { parse: parseToml } = await import("../vendor/smol-toml/index.js");
 
 export const VERSION = "1";
 // Agent Workbench release; tests keep it equal to package.json.
-export const RELEASE = "0.2.25";
+export const RELEASE = "0.2.26";
 const SOURCE = "onsager-ai/agent-workbench";
 const BEGIN = Buffer.from("<!-- BEGIN agent-workbench -->");
 const END = Buffer.from("<!-- END agent-workbench -->");
@@ -32,7 +32,8 @@ const IMPORT = Buffer.from("@~/.agents/AGENTS.md");
 const LIMIT = 10 * 1024 * 1024;
 const ROLE = /^[a-z][a-z0-9-]*$/;
 const CLAUDE_HOOK_MATCHERS = {
-  PreToolUse: ["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"],
+  PreToolUse: [".*"],
+  UserPromptSubmit: [undefined],
   PostToolUse: ["Agent|Task"],
   Stop: [undefined],
 };
@@ -1008,7 +1009,7 @@ export class Setup {
     const hooks = has(parsed, "hooks") ? parsed.hooks : {};
     const events = Object.entries(CLAUDE_HOOK_MATCHERS);
     if (!isDict(hooks) || events.some(([event]) => has(hooks, event) && !Array.isArray(hooks[event]))) {
-      throw new Conflict("invalid Claude hooks.PreToolUse, hooks.PostToolUse, or hooks.Stop configuration; correct settings.json, then rerun agent-workbench install");
+      throw new Conflict("invalid Claude hook configuration; correct settings.json, then rerun agent-workbench install");
     }
     let command = null;
     if (!uninstall && present(this.models) && present(this.worker)) {
@@ -1294,11 +1295,12 @@ export class Setup {
         const names = Object.keys(entry).sort().join(",");
         const { matcher, hooks } = entry;
         const event = legacyEvent ?? (typeof key === "string" && key.startsWith("PostToolUse:")
-          ? "PostToolUse" : has(entry, "matcher") ? "PreToolUse" : "Stop");
+          ? "PostToolUse" : typeof key === "string" && (key === "UserPromptSubmit" || key.startsWith("UserPromptSubmit:"))
+            ? "UserPromptSubmit" : has(entry, "matcher") ? "PreToolUse" : "Stop");
         const expectedKey = claudeHookKey(event, matcher);
         const bareKey = event === "PreToolUse" && key === matcher;
-        if (names !== (event === "Stop" ? "hooks" : "hooks,matcher") ||
-            !CLAUDE_HOOK_MATCHERS[event].includes(matcher) || hookKeys.has(expectedKey) ||
+        if (names !== (["Stop", "UserPromptSubmit"].includes(event) ? "hooks" : "hooks,matcher") ||
+            !CLAUDE_HOOK_MATCHERS[event]?.includes(matcher) || hookKeys.has(expectedKey) ||
             (has(saved, "key") && key !== expectedKey && !bareKey) ||
             !Array.isArray(hooks) || hooks.length !== 1 || !isDict(hooks[0]) ||
             Object.keys(hooks[0]).sort().join(",") !== "command,type" ||

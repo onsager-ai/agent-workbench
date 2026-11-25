@@ -52,13 +52,13 @@ describe("worker configuration", () => {
     }
   });
 
-  test("the documented neutral profile works as a user override", () => {
+  test("Codex is the default profile and neutral remains a user override", () => {
     const override = path.join(ROOT, "tests/fixtures/neutral-workers.yml");
     const snippet = fs.readFileSync(override, "utf8");
     for (const file of ["docs/reference.md", "skills/orchestrate-harnesses/references/configuration.md"]) {
       assert.ok(fs.readFileSync(path.join(ROOT, file), "utf8").includes("```yaml\n" + snippet + "```"), file);
     }
-    assert.equal(bundle.profile, null);
+    assert.equal(bundle.profile, "codex");
     assert.equal(bundle.profiles.neutral, undefined);
     const selected = workerBundle(WORKERS, [override]);
     assert.equal(selected.profile, "neutral");

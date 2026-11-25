@@ -197,6 +197,92 @@ describe("policy hook", () => {
     assert.equal(launch("unknown", route), null);
   });
 
+  test("Manager turn state gates main-loop work, counts calls, and honors approval", () => {
+    const session = "manager-session";
+    const stateHome = path.join(directory, "state");
+    const env = { AGENT_WORKBENCH_STATE_HOME: stateHome };
+    const prompt = (text) => invoke(JSON.stringify({
+      hook_event_name: "UserPromptSubmit", session_id: session, prompt: text,
+    }), env);
+    const call = (tool_name, tool_input = {}, extras = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_name, tool_input, ...extras,
+    }), env);
+    const statePath = path.join(stateHome, "agent-workbench", "manager-turns", `${session}.json`);
+
+    prompt("Decide and delegate.");
+    assert.equal(call("Read", { file_path: "/tmp/file" }), null);
+    const blocked = call("Edit", { file_path: "/tmp/file" });
+    assert.equal(blocked.permissionDecision, "deny");
+    assert.match(blocked.permissionDecisionReason, /L1\/L2 Worker \(luna first, then sol\)/);
+    assert.match(blocked.permissionDecisionReason, /Manager work approval/);
+    assert.ok(blocked.permissionDecisionReason.includes(statePath));
+    assert.equal(call("Edit", { file_path: path.join(os.homedir(), ".claude/projects/p/memory/MEMORY.md") }), null);
+    assert.equal(call("Bash", { command: "git status" }), null);
+    for (const command of ["git add file", "echo hi > output", "echo hi >> output", "tee output",
+      "sed -i s/a/b/ file", "rm file", "mv a b", "cp a b", "mkdir dir", "touch file",
+      "chmod 600 file", "git stash", "npm install", "pnpm publish", "yarn install", "pip install x",
+      "ssh host 'touch file'"]) {
+      assert.equal(call("Bash", { command }).permissionDecision, "deny", command);
+    }
+    for (const command of ["echo hi 2>/dev/null", "echo hi >/dev/null", "echo hi >&2", "npm view x", "git status"]) {
+      assert.equal(call("Bash", { command }), null, command);
+    }
+
+    prompt("A fresh turn.");
+    for (let i = 0; i < 5; i++) assert.equal(call("Read"), null);
+    const sixth = call("Read");
+    assert.equal(sixth.permissionDecision, "deny");
+    prompt("Another turn.");
+    for (const tool of ["t3_thread_send", "t3_queue", "send_to_user", "t3_pending_request",
+      "t3_background_wait", "Agent", "Task", "spawn_agent", "AskUserQuestion", "ToolSearch",
+      "pull_request_merge", "pull_request_review", "pull_request_respond", "link_pull_request",
+      "link_pull_requests", "watch_pull_request", "unwatch_pull_request", "pull_request_create"]) {
+      assert.equal(call(tool), null, tool);
+    }
+    assert.equal(call("Read"), null);
+    prompt("Manager work approval: https://example.test/chief-pm-message");
+    for (let i = 0; i < 7; i++) assert.equal(call("Edit", { file_path: "/tmp/file" }), null);
+  });
+
+  test("Worker sessions and subagents bypass the Manager gate; corrupt state is fresh", () => {
+    const stateHome = path.join(directory, "state");
+    const env = { AGENT_WORKBENCH_STATE_HOME: stateHome };
+    const event = (session_id, tool_name, extras = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id, tool_name,
+      tool_input: { file_path: "/tmp/file", command: "rm file" }, ...extras,
+    }), env);
+    const submit = (session_id, prompt) => invoke(JSON.stringify({
+      hook_event_name: "UserPromptSubmit", session_id, prompt,
+    }), env);
+    submit("worker-session", "Role: Worker\nDo the task.");
+    assert.equal(event("worker-session", "Edit"), null);
+    assert.equal(event("worker-session", "Bash"), null);
+    assert.equal(event("subagent-session", "Edit", { agent_id: "agent-1" }), null);
+    const corrupt = path.join(stateHome, "agent-workbench", "manager-turns", "corrupt-session.json");
+    fs.mkdirSync(path.dirname(corrupt), { recursive: true });
+    fs.writeFileSync(corrupt, "not json");
+    const result = event("corrupt-session", "Edit");
+    assert.equal(result.permissionDecision, "deny");
+    assert.doesNotMatch(result.permissionDecisionReason, /approved/i);
+    assert.equal(event("../invalid", "Edit"), null);
+  });
+
+  test("delegate_task stamps Worker role after its existing checks pass", () => {
+    for (const tool_name of ["mcp__t3-code__delegate_task", "mcp__t3_code__delegate_task"]) {
+      const result = invoke(JSON.stringify({ tool_name, session_id: "stamp-session", tool_input: {
+        task: "Fix this issue.", target: { model: "gpt-6-luna" },
+      } }));
+      assert.equal(result.updatedInput.task, "Role: Worker\nFix this issue.");
+      const already = invoke(JSON.stringify({ tool_name, session_id: "stamp-session", tool_input: {
+        task: "Role: Worker\nFix this issue.", target: { model: "gpt-6-luna" },
+      } }));
+      assert.equal(already, null);
+      const denied = invoke(JSON.stringify({ tool_name, session_id: "stamp-session", tool_input: { task: "x", target: {} } }));
+      assert.equal(denied.permissionDecision, "deny");
+      assert.equal(denied.updatedInput, undefined);
+    }
+  });
+
   test("neutral profile keeps L3 approval and disallows named model overrides", () => {
     bundle = workerBundle(WORKERS, [NEUTRAL_OVERRIDE]);
     fs.writeFileSync(workers, JSON.stringify(bundle));
