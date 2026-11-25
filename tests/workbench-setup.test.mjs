@@ -1003,16 +1003,15 @@ describe("workbench setup", () => {
     const fresh = f.stateJson();
     const settings = f.json(settingsPath);
     const post = fresh.hooks.find((entry) => entry.key === "PostToolUse:Agent|Task");
-    const older = fresh.hooks.filter((entry) => entry !== post).map(({ key, ...entry }) => {
-      if (key === "PreToolUse:.*") return { ...entry, key: ".*" };
-      if (key === "Stop") return { ...entry, key };
-      return entry;
-    });
+    const older = fresh.hooks.filter((entry) => entry !== post && entry.key !== "UserPromptSubmit");
     const olderSettings = { ...settings.hooks };
     delete olderSettings.PostToolUse;
+    delete olderSettings.UserPromptSubmit;
+    const splitSettings = { ...settings.hooks };
+    delete splitSettings.UserPromptSubmit;
     for (const split of [false, true]) {
       f.write(statePath, JSON.stringify({ ...fresh, hooks: older, ...(split ? { post_hooks: [post] } : {}) }));
-      f.write(settingsPath, JSON.stringify({ ...settings, hooks: split ? settings.hooks : olderSettings }));
+      f.write(settingsPath, JSON.stringify({ ...settings, hooks: split ? splitSettings : olderSettings }));
       const status = JSON.parse(f.run("status").stdout).hooks;
       assert.equal(status[".*"], "applied");
       assert.equal(status.Stop, "applied");

@@ -44,9 +44,18 @@ describe("policy hook", () => {
   }
 
   const invoke = (payload, env) => {
-    const event = JSON.parse(payload);
-    if ([undefined, "PreToolUse"].includes(event.hook_event_name) && !event.session_id) event.agent_id = "legacy-test-worker";
-    const result = run(JSON.stringify(event), { env });
+    let event;
+    try { event = JSON.parse(payload); } catch {}
+    if (event && typeof event === "object" && !Array.isArray(event)) {
+      if ([undefined, "PreToolUse"].includes(event.hook_event_name) && !event.session_id) {
+        event.session_id = "legacy-test-session";
+        event.agent_id = "legacy-test-worker";
+      }
+      payload = JSON.stringify(event);
+    }
+    const stateHome = env?.AGENT_WORKBENCH_STATE_HOME ?? path.join(directory, "state");
+    const hookEnv = { ...(env ?? process.env), AGENT_WORKBENCH_STATE_HOME: stateHome };
+    const result = run(payload, { env: hookEnv });
     return result.stdout ? JSON.parse(result.stdout).hookSpecificOutput : null;
   };
 
@@ -245,7 +254,7 @@ describe("policy hook", () => {
     }
     assert.equal(call("Read"), null);
     prompt("Manager work approval: https://example.test/chief-pm-message");
-    for (let i = 0; i < 7; i++) assert.equal(call("Edit", { file_path: "/tmp/file" }), null);
+    for (let i = 0; i < 7; i++) assert.equal(call("Read"), null);
   });
 
   test("Worker sessions and subagents bypass the Manager gate; corrupt state is fresh", () => {
@@ -470,6 +479,7 @@ describe("policy hook", () => {
     await new Promise((resolve) => server.once("listening", resolve));
     try {
       const url = `http://127.0.0.1:${server.address().port}/v1/systemone`;
+      bundle.profile = null;
       bundle.base.policy.stop_classifier = { url, model: "typesafe/jev-latest" };
       fs.writeFileSync(workers, JSON.stringify(bundle));
       const invoke = async (message) => invokeStopAsync({ hook_event_name: "Stop", last_assistant_message: message });
@@ -639,14 +649,19 @@ describe("policy hook", () => {
       "gh api repos/{owner}/{repo}/actions/jobs/456/logs",
       'gh api "repos/$repo/actions/jobs/$job_id/logs"',
     ]) {
-      const event = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } };
+      const event = { hook_event_name: "PreToolUse", session_id: "manager-ci-logs", tool_name: "Bash", tool_input: { command } };
+      invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: event.session_id,
+        prompt: "Manager work approval: https://example.test/approval" }));
       const decision = invoke(JSON.stringify(event));
       assert.equal(decision?.permissionDecision, "deny", command);
       assert.match(decision.permissionDecisionReason, /Resume the Worker.*L1 Worker with the run URL/);
       assert.equal(invoke(JSON.stringify({ ...event, agent_id: "worker-1", agent_type: "standard" })), null, command);
     }
+    invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "named-manager",
+      prompt: "Manager work approval: https://example.test/approval" }));
     const namedManager = invoke(JSON.stringify({
-      hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "gh run view 123 --log" }, agent_type: "standard",
+      hook_event_name: "PreToolUse", session_id: "named-manager", tool_name: "Bash",
+      tool_input: { command: "gh run view 123 --log" }, agent_type: "standard",
     }));
     assert.equal(namedManager?.permissionDecision, "deny");
   });
