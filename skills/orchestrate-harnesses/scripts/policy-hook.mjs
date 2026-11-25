@@ -22,6 +22,7 @@ const MODEL_OVERRIDE = "model overrides the model in this agent's definition, so
   "the wrong model. Drop model and let subagent_type select the tier.";
 const STOP_REASON = "If this asks the user something, re-ask it with AskUserQuestion, putting the recommended " +
   "option first and offering your best guesses as options for open-ended answers. " +
+  "If it is an owner decision and a Chief PM is registered, send it to the Chief PM instead. " +
   "If it was not a question to the user, end the turn without it.";
 const TRANSCRIPT_TAIL_BYTES = 256 * 1024;
 const FOOTER = /(?<![^\n])-- WB_MSG\b[^\n]*/g;
