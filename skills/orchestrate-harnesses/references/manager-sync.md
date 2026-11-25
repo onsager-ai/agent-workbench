@@ -43,7 +43,7 @@ Put the footer last, after a blank line, so T3 shows the readable text first.
 - `sent` is the UTC send time to the minute, such as `sent=2026-11-25T05:40Z`, so a reader can tell how long a queued message waited. Footers without `sent` remain valid.
 - `from` is the sender's full T3 `environmentId` and `threadId`, so the receiver can pass them straight to `t3_thread_send`. Outside T3, use the native address, such as `from=native:claude-code:<name>`.
 - `kind=request` asks the receiver to do or find something and send a `result` back. `kind=result` answers a request; set `re` to the request's `id`. `kind=decision` shares a decision, blocker or handover and needs no answer; set `re` to the decision it replaces, if any.
-- `kind=status` and `kind=alert` carry [lane status](#lane-status-and-alerts) to the Chief PM and need no answer.
+- `kind=alert` carries a [lane alert](#lane-status-and-alerts) to the Chief PM and needs no answer. `kind=status` marks a status block sent to a Manager that asked for one; routine lane status stays in your own thread.
 - `id` is the last eight characters of the sender's `threadId` and that thread's own message sequence starting at 1, for example `id=89effeb3:4`. Use the last characters, because many thread IDs share a prefix such as `mcp:launch:`.
 - Copy `re` from the `id` in the footer of the message you answer, as it arrived. Never reconstruct it.
 
@@ -63,6 +63,14 @@ For one message to many Managers, send every copy in one turn with parallel `t3_
 
 Known limits: there are no read receipts, and the send result (steered, started or queued) is all the delivery evidence. Copies queued behind a long turn arrive late. A meeting reply that arrives after the outcome goes to the host only and does not reopen the meeting. Named or stored recipient groups are not part of this rule.
 
+### What goes to the Chief PM
+
+When a Chief PM Manager is registered, message it only for a decision you need from it or the owner, a blocker you can't clear, a lane alert, or the result of a request it made. Don't send it plain status or information; it reads your lane status from your thread ([lane status](#lane-status-and-alerts)). Put one ask in each message, with your recommendation.
+
+Decide calls inside your own lane yourself when they spend no new money and touch none of the owner's reserved items: spend and caps, public posts, credentials and permissions, deletes, Caddy, Cloudflare or tailnet changes, product direction, and customer-facing releases. Note each such decision in your next status. No answer by a deadline is never approval; keep waiting, or ask again once.
+
+Keep your own turns to deciding, briefing, merging and reporting. Hand any engineering step longer than about five tool calls or two files to an L1 or L2 Worker, including investigation, edits, reviews and reading CI logs, and don't re-read a thread or diff a Worker has already summarized.
+
 ### Owner decisions
 
 When a Chief PM Manager is registered, send a question that needs the owner's decision to it as `kind=request`, with `Owner decision:` on the first line, the options and your recommendation. The Chief PM removes duplicates, asks the owner once and sends the answer to every affected Manager. Do not ask the owner directly, except:
@@ -75,7 +83,7 @@ After an exception, send the Chief PM the answer as `kind=decision` with its sou
 
 ### Lane status and alerts
 
-When a Chief PM Manager is registered, each Manager keeps it current on its lanes with `kind=status` messages, so the Chief PM combines messages instead of reading threads. Send one message per lane, in this form, with every field present:
+When a Chief PM Manager is registered, each Manager keeps its lane status current in its own thread, and the Chief PM reads it there at check-in, along with the /manage snapshot or lane health where a lane has one. Post the status as your own reply text, one block per lane, each ending with a footer line `-- WB_MSG kind=status sent=<YYYY-MM-DDTHH:MMZ>`, in this form, with every field present:
 
 ~~~text
 Lane: <project> · <scope>
@@ -95,14 +103,14 @@ State-of-work: open PRs <#n@sha>, ...; holds none | <item>; next action <one lin
 
 - `on-track`, `at-risk` and `blocked` are active states. `at-risk` and `blocked` name their evidence in `Blockers`, such as a failing check, a missed due time or an open decision.
 - `Progress` counts the deliverables of the current `Goal`, usually `unit=PRs` with merged PRs as done. Keep the target fixed while the goal stands; when the scope changes, say so in the status that changes the target. Use `none` when the goal has no countable deliverables.
-- Send the next full status or heartbeat by the `Report` time. Promise a check-in only through a mechanism the harness actually runs, such as a T3 scheduled task, a PR watch or a background wait; never promise one nothing will trigger.
+- Post the next full status or heartbeat by the `Report` time. Promise a check-in only through a mechanism the harness actually runs, such as a T3 scheduled task, a PR watch or a background wait; never promise one nothing will trigger.
 - Times are absolute UTC. Spend uses one `spent`/`cap`/`unit` triple per budget, such as `unit=usd` or `unit=kiro-credits`; never mix units in one triple.
 - Size milestones as PR count and agent hours, and list each wait (owner or Chief PM decision, review, CI) separately; give a wall-clock due time only when a wait is scheduled.
 - When a review, fix or decision is ready for someone else, tell that person or Manager at once in `auto` mode; a watched PR or a status update does not notify them.
 - Number decisions per lane (`awb-D1`, `awb-D2`) and keep a decision's id when it is re-asked. A reply cites that id; drop the decision from the list once it is answered.
-- Send a full status when any field changes. While a lane is active and nothing changed for 6 hours, send a one-line heartbeat instead: `No change since <id>.`, with `re` set to the last full status's `id`. Send a status when a lane is parked, resumed or done; parked lanes send no heartbeats.
+- Post a full status when any field changes. While a lane is active and nothing changed for 6 hours, post a heartbeat instead: `No change since <UTC time of the last full status>. Report: next by <YYYY-MM-DDTHH:MMZ>`, with the same footer. Post a status when a lane is parked, resumed or done; parked lanes post no heartbeats.
 - Send `kind=alert` at once, in `auto` mode, when CI fails twice on the same head, a dependency the lane needs breaks, a decision has waited longer than the configured limit (12 hours until one is set), or spend crosses 50% or 80% of a cap. Name the lane, what happened and what is needed.
-- Host facts come from that host's `infra` lane, not from each Manager. Its owner sends the same status form with `Lane: infra · <host>`, and adds these lines after `Spend`:
+- Host facts come from that host's `infra` lane, not from each Manager. Its owner posts the same status form with `Lane: infra · <host>`, and adds these lines after `Spend`:
 
   ~~~text
   Thermal: <C> · <ok|gated> · as of <YYYY-MM-DDTHH:MMZ>
@@ -113,7 +121,7 @@ State-of-work: open PRs <#n@sha>, ...; holds none | <item>; next action <one lin
 
   Read stalls with `semon query stalls --idle-minutes 60` and lanes with `awb lanes --json`. Give every reading the time it was taken; a cached balance keeps the cache's time, not the send time.
 
-  The infra lane also checks freshness on a schedule. When an active lane's `Report` time has passed by more than 1 hour, or a service a lane depends on is down, it sends the Chief PM one `kind=alert` naming the lane, the last status `id` and what is late or down. It alerts once per missed time or outage.
+  The infra lane also checks freshness on a schedule. For each active Manager on its host in the peers directory, it reads the newest `kind=status` block in that Manager's thread and its `Report: next by` line; the Chief PM checks lanes on other hosts at check-in. When that `Report` time has passed by more than 1 hour, or a service a lane depends on is down, it sends the Chief PM one `kind=alert` naming the lane, the `sent` time of the last status and what is late or down. It alerts once per missed time or outage.
 - Governance, meaning who may decide what and the caps themselves, is set separately; this section only reports against it.
 
 ### Choose the T3 delivery mode
@@ -125,7 +133,7 @@ Relay is near-realtime by default. Choose `mode` on `t3_thread_send` per message
 - **`queue`** only for non-time-sensitive information that can wait until the peer's current turn ends, which may take a long time.
 - **`restart`** never for relay; it interrupts the peer's work. Use it only on the user's explicit instruction.
 
-When the target thread has a pending request, send in `queue` mode whatever the content: steering or starting a turn cancels its open question. When you replace or correct a message of yours still queued there, `t3_queue edit` it, or `cancel` it and send the new one; never leave a superseded message queued. When a message of yours is urgent, was queued, and the target is running with no pending request, `t3_queue promote_to_steer` it rather than leaving it behind a long turn.
+When the target thread has a pending request, send in `queue` mode whatever the content: steering or starting a turn cancels its open question. When you replace or correct a message of yours still queued there, `t3_queue edit` it, or `cancel` it and send the new one, rather than sending a second message beside it; never leave a superseded message queued. When a message of yours is urgent, was queued, and the target is running with no pending request, `t3_queue promote_to_steer` it rather than leaving it behind a long turn.
 
 Do not send to settled or archived Managers for routine sync; they catch up on resume. Steering does not abort the peer's turn or guarantee an immediate reply.
 
