@@ -15,7 +15,9 @@ const SLEEP_LOOP = "Sleep loops are disabled. Use t3_background_wait or Monitor.
 const CI_LOGS = "Delegate CI logs. Resume the Worker that owns the branch or dispatch an L1 Worker with the run URL.";
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
-const INHERITED_MODEL = "Built-in agents inherit the Manager's model. Use a tier agent " +
+const T3_APPROVAL = "Get it first (through the Chief PM when one is registered), then add a line " +
+  "`L3 approval: <link to the approval>` to the task and retry.";
+const INHERITED_MODEL ="Built-in agents inherit the Manager's model. Use a tier agent " +
   "(subagent_type: <role>) or pass model explicitly.";
 const INHERITING_AGENT_TYPES = new Set([undefined, null, "general-purpose", "Plan", "Explore", "claude"]);
 const MODEL_OVERRIDE = "model overrides the model in this agent's definition, so a tier agent would run on " +
@@ -633,6 +635,22 @@ function dispatchApproval(file, event, tier) {
   }
 }
 
+// The configured tier whose model or route a delegate_task model names, ignoring a provider prefix
+// such as "onsager/auto/" and a context suffix such as "[1m]".
+function modelTier(file, event, model) {
+  try {
+    const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
+    const full = String(model).replace(/\[[^\]]*\]$/, "");
+    const short = full.split("/").pop();
+    for (const [name, tier] of Object.entries(config.tiers)) {
+      if (name === full || [tier.model, tier.claude_route].some((value) => value === full || value === short)) return name;
+    }
+  } catch {
+    // Without readable configuration there is no tier to check.
+  }
+  return null;
+}
+
 function workersArgument(argv) {
   for (let index = 0; index < argv.length; index++) {
     if (argv[index] === "--workers" && index + 1 < argv.length) return argv[index + 1];
@@ -730,7 +748,17 @@ async function main() {
     }
     if (tool === "mcp__t3-code__delegate_task" || tool === "mcp__t3_code__delegate_task") {
       const target = "target" in dict(args) ? args.target : {};
-      if (!dict(target).model) [decision, reason] = ["deny", T3_MODEL];
+      const model = dict(target).model;
+      if (!model) [decision, reason] = ["deny", T3_MODEL];
+      else {
+        // T3 full-access threads accept "ask" without a prompt, so an approval-gated tier is denied
+        // until the brief records where the approval came from.
+        const tier = modelTier(workers, event, model);
+        const approval = tier && dispatchApproval(workers, event, tier);
+        if (approval && !/^L3 approval: \S/m.test(String(dict(args).task ?? ""))) {
+          [decision, reason] = ["deny", `${approval} ${T3_APPROVAL}`];
+        }
+      }
     } else if (tool === "spawn_agent") {
       const subagentType = dict(args).agent_type;
       const approval = dispatchApproval(workers, event, subagentType);

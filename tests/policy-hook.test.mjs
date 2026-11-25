@@ -221,6 +221,23 @@ describe("policy hook", () => {
     }
   });
 
+  test("T3 delegate to an approval tier is denied until the task records the approval", () => {
+    const delegate = (model, task = "Review the PR.") => invoke(JSON.stringify({
+      tool_name: "mcp__t3-code__delegate_task", tool_input: { task, target: { model } },
+    }));
+    for (const model of ["claude-opus-5-5", "opus", "onsager/auto/claude-opus-5-5[1m]"]) {
+      const decision = delegate(model);
+      assert.equal(decision.permissionDecision, "deny");
+      assert.match(decision.permissionDecisionReason, /^Worker opus at level L3 needs the user's approval/);
+      assert.match(decision.permissionDecisionReason, /`L3 approval: <link to the approval>`/);
+      assert.equal(delegate(model, "Review the PR.\nL3 approval: https://example.test/approval"), null);
+    }
+    assert.equal(delegate("claude-opus-5-5", "Mention L3 approval: inline only.").permissionDecision, "deny");
+    for (const model of ["claude-sonnet-5-5", "onsager/kiro/claude-sonnet-5-5[1m]", "unlisted/model"]) {
+      assert.equal(delegate(model), null);
+    }
+  });
+
   test("approval uses profile and event cwd", () => {
     const work = path.join(directory, "work");
     fs.mkdirSync(work);
