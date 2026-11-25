@@ -69,6 +69,8 @@ When a Chief PM Manager is registered, message it only for a decision you need f
 
 Decide calls inside your own lane yourself when they spend no new money and touch none of the owner's reserved items: spend and caps, public posts, credentials and permissions, deletes, Caddy, Cloudflare or tailnet changes, product direction, and customer-facing releases. Note each such decision in your next status. No answer by a deadline is never approval; keep waiting, or ask again once.
 
+Keep your own turns to deciding, briefing, merging and reporting. Hand any engineering step longer than about five tool calls or two files to an L1 or L2 Worker, including investigation, edits, reviews and reading CI logs, and don't re-read a thread or diff a Worker has already summarized.
+
 ### Owner decisions
 
 When a Chief PM Manager is registered, send a question that needs the owner's decision to it as `kind=request`, with `Owner decision:` on the first line, the options and your recommendation. The Chief PM removes duplicates, asks the owner once and sends the answer to every affected Manager. Do not ask the owner directly, except:
