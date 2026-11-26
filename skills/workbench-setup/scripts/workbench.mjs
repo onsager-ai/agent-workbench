@@ -783,6 +783,20 @@ export class Setup {
     return path.join(this.agents, name + ".md");
   }
 
+  nativeSkillNames(lock) {
+    const skills = lock.skills;
+    if (lock.version !== 3 || !isDict(skills)) throw new TypeError("unsupported lock");
+    const names = Object.entries(skills).filter(([name, item]) => {
+      if (name === "workbench-personal") return true;
+      if (!isDict(item)) throw new TypeError("invalid skill entry");
+      return item.source === SOURCE && item.sourceType === "github";
+    }).map(([name]) => name).sort();
+    if (!names.includes("workbench-setup") || names.some((name) => !name || name.startsWith("-") || name.includes("/"))) {
+      throw new TypeError("setup ownership is missing or names are invalid");
+    }
+    return names;
+  }
+
   workbenchSkills() {
     let lockHome = this.home;
     let lockPath = this.skillLock;
@@ -792,19 +806,13 @@ export class Setup {
     }
     inspect(lockPath, lockHome);
     if (!present(lockPath)) throw new Conflict("native skills lock is missing; install global skills first, then rerun agent-workbench install --antigravity");
-    let skills;
+    let names;
     try {
-      const lock = JSON.parse(utf8(read(lockPath)));
-      if (lock.version !== 3 || !isDict(lock.skills)) throw new TypeError("unsupported lock");
-      skills = Object.entries(lock.skills).filter(([name, item]) => {
-        if (!isDict(item)) throw new TypeError("invalid skill entry");
-        return item.source === SOURCE && item.sourceType === "github" && name !== "workbench-personal";
-      }).map(([name]) => name).sort();
-      if (!skills.includes("workbench-setup") || skills.some((name) => !ROLE.test(name))) throw new TypeError("invalid Workbench skill name");
+      names = this.nativeSkillNames(JSON.parse(utf8(read(lockPath))));
     } catch {
       throw new Conflict("unsupported native skills lock or missing repository ownership; restore a supported native skills lock, then rerun agent-workbench install --antigravity");
     }
-    return skills.filter((name) => {
+    return names.filter((name) => {
       const directory = path.join(this.home, ".agents/skills", name);
       inspect(directory, this.home, { directory: true });
       return present(directory);
@@ -1888,16 +1896,7 @@ export class Setup {
     let native;
     try {
       native = JSON.parse(utf8(read(lockFile)));
-      const skills = native.skills;
-      if (native.version !== 3 || !isDict(skills)) throw new TypeError("unsupported lock");
-      names = Object.entries(skills).filter(([name, item]) => {
-        if (name === "workbench-personal") return true;
-        if (!isDict(item)) throw new TypeError("invalid skill entry");
-        return item.source === SOURCE && item.sourceType === "github";
-      }).map(([name]) => name).sort();
-      if (!names.includes("workbench-setup") || names.some((name) => !name || name.startsWith("-") || name.includes("/"))) {
-        throw new TypeError("setup ownership is missing or names are invalid");
-      }
+      names = this.nativeSkillNames(native);
     } catch {
       throw new Conflict("unsupported native skills lock or missing repository ownership; restore a supported native skills lock, then rerun agent-workbench update");
     }

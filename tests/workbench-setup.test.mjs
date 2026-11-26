@@ -101,6 +101,18 @@ class Fixture {
     fs.mkdirSync(path.join(this.home, ".agents/skills/host-ops"), { recursive: true });
   }
 
+  nativeLockWithPersonal() {
+    const publicSkills = ["workbench-setup", "host-ops", "orchestrate-harnesses", "prompt-for-decisions", "manage-lane", "review-storybook"];
+    const skills = Object.fromEntries(publicSkills.map((name) => [name,
+      { source: "onsager-ai/agent-workbench", sourceType: "github" }]));
+    skills["workbench-personal"] = { source: "another/private-source", sourceType: "github" };
+    skills.unrelated = { source: "another/project", sourceType: "github" };
+    this.write(path.join(this.home, ".agents/.skill-lock.json"), JSON.stringify({ version: 3, skills }));
+    for (const name of publicSkills.slice(1)) fs.mkdirSync(path.join(this.home, ".agents/skills", name), { recursive: true });
+    fs.mkdirSync(path.join(this.home, ".agents/skills/workbench-personal"), { recursive: true });
+    return [...publicSkills, "workbench-personal"];
+  }
+
   fakeCommand(body) {
     const file = path.join(this.home, "fake-skills.mjs");
     this.write(file, body);
@@ -167,6 +179,25 @@ describe("workbench setup", () => {
     assert.equal(cliErrorMessage(error, "workers"), error.message);
     assert.equal(cliErrorMessage(new Error("invalid YAML in workers.yml"), "update"), "invalid YAML in workers.yml");
     assert.equal(cliErrorMessage(new Error("unknown keys in policy: stop_classifier, context"), "update"), "unknown keys in policy: stop_classifier, context");
+  });
+
+  test("Antigravity links the six public skills and personal skill from the native lock", () => {
+    const f = new Fixture();
+    const selected = f.nativeLockWithPersonal();
+    const links = path.join(f.home, ".gemini/config/skills");
+    f.run("install", ["--antigravity"]);
+    assert.deepEqual(fs.readdirSync(links).sort(), [...selected].sort());
+    for (const name of selected) {
+      assert.equal(fs.readlinkSync(path.join(links, name)), path.join(f.home, ".agents/skills", name));
+    }
+    assert.ok(!exists(path.join(links, "unrelated")));
+  });
+
+  test("default install leaves the seven-skill Antigravity inventory unlinked", () => {
+    const f = new Fixture();
+    f.nativeLockWithPersonal();
+    f.run("install");
+    assert.ok(!exists(path.join(f.home, ".gemini/config/skills")));
   });
 
   test("Antigravity preserves a correct pre-existing skill link on uninstall", () => {
