@@ -337,16 +337,28 @@ describe("policy hook", () => {
     prompt("Role: Worker\nDo the task.");
     for (const name of ["mcp__t3-code__schedule_task", "mcp__t3_code__schedule_task"]) {
       assert.equal(call(name, { environmentId: "env", projectId: "project", bindToCurrentThread: true }).permissionDecision, "deny");
+      assert.equal(call(name, { scheduledTaskId: "existing", enabled: false }), null);
     }
+    assert.equal(call("mcp__t3_code__list_scheduled_tasks"), null);
+    assert.equal(call("mcp__t3_code__delete_scheduled_task", { scheduledTaskId: "existing" }), null);
     for (const name of ["mcp__t3-code__t3_thread_launch", "mcp__t3_code__t3_thread_launch"]) {
       assert.equal(call(name, workerLaunch).permissionDecision, "deny");
     }
+    assert.equal(call("mcp__t3_code__create_threads", { threads: [{
+      target: { environmentId: "env", projectId: "project", model: "gpt-6-luna" },
+    }] }).permissionDecision, "deny");
     assert.equal(call("mcp__t3_code__t3_thread_launch", workerLaunch, { agent_id: "subagent-1" }).permissionDecision, "deny");
 
     session = "thread-policy-manager";
     prompt("Manager work approval: https://example.test/approval");
     const launch = (tool_input) => call("mcp__t3_code__t3_thread_launch", tool_input);
     assert.equal(launch(workerLaunch), null);
+    assert.equal(call("mcp__t3_code__create_threads", { threads: [{
+      target: { environmentId: "env", projectId: "project", model: "gpt-6-luna" },
+    }] }), null);
+    assert.equal(call("mcp__t3_code__create_threads", { threads: [{
+      target: { environmentId: "env", projectId: "project", model: "claude-opus-5-5" },
+    }] }).permissionDecision, "deny");
     for (const invalid of [
       { projectId: "project", modelSelection: { model: "gpt-6-luna" } },
       { environmentId: "env", projectId: " ", modelSelection: { model: "gpt-6-luna" } },
@@ -359,6 +371,50 @@ describe("policy hook", () => {
     assert.equal(call("mcp__t3_code__schedule_task", {
       environmentId: "env", projectId: "project", bindToCurrentThread: true, model: "gpt-6-luna",
     }).permissionDecision, "deny");
+  });
+
+  test("automation activation requires a matching personal registry entry", () => {
+    const home = directory;
+    const project = path.join(directory, "project");
+    fs.mkdirSync(project);
+    const registry = path.join(home, ".agents/skills/workbench-personal/automations.yml");
+    fs.mkdirSync(path.dirname(registry), { recursive: true });
+    const schedule = "7 * * * *";
+    const entry = (model = "gpt-6-luna", entryProject = project) => `automations:\n  - name: routine-check\n    owner_lane: general\n    host: ${os.hostname()}\n    project: ${entryProject}\n    model: ${model}\n    schedule: '${schedule}'\n    cost_cap: bounded\n    end: completion\n`;
+    const event = (tool_name, tool_input, extras = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: "automation-manager", cwd: project,
+      tool_name, tool_input, ...extras,
+    }), { HOME: home });
+
+    assert.equal(event("CronCreate", { cron: schedule, prompt: "Review changes." }).permissionDecision, "deny");
+    assert.equal(event("Skill", { skill: "loop", args: "Review changes." }).permissionDecision, "deny");
+    assert.equal(event("Bash", { command: "systemd-run --unit=task true" }).permissionDecision, "deny");
+    fs.writeFileSync(registry, entry());
+    assert.equal(event("CronCreate", { cron: schedule, prompt: "Review changes." }).permissionDecision, "deny");
+    invoke(JSON.stringify({ hook_event_name: "PostToolUse", session_id: "automation-manager",
+      tool_name: "Write", tool_input: { file_path: registry } }), { HOME: home });
+    assert.equal(event("CronCreate", { cron: schedule, prompt: "Review changes." }), null);
+    assert.equal(event("Skill", { skill: "loop", args: "Review changes." }), null);
+    invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "automation-manager", prompt: "Continue." }), { HOME: home });
+    assert.equal(event("CronCreate", { cron: schedule, prompt: "Review changes." }).permissionDecision, "deny");
+    invoke(JSON.stringify({ hook_event_name: "PostToolUse", session_id: "automation-manager",
+      tool_name: "Edit", tool_input: { file_path: registry } }), { HOME: home });
+    assert.equal(event("CronCreate", { cron: "0 0 * * *", prompt: "Review changes." }).permissionDecision, "deny");
+    assert.equal(event("watch_pull_request", { repository: "other/repo", number: 1 }).permissionDecision, "deny");
+    fs.writeFileSync(registry, entry("gpt-6-luna", "other/repo"));
+    assert.equal(event("watch_pull_request", { repository: "other/repo", number: 1 }), null);
+    assert.equal(event("watch_pull_request", { url: "https://github.com/other/repo/pull/1" }), null);
+    fs.writeFileSync(registry, entry("claude-opus-5-5"));
+    assert.equal(event("CronCreate", { cron: schedule, prompt: "Review changes." }).permissionDecision, "deny");
+    assert.equal(event("CronCreate", { cron: schedule, prompt: "L3 approval: https://example.test/owner\nReview changes." }), null);
+    assert.equal(event("CronCreate", { cron: schedule, prompt: "Review changes." }, { agent_id: "worker-1" }).permissionDecision, "deny");
+    invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "automation-worker",
+      prompt: "Role: Worker\nComplete the task." }), { HOME: home });
+    invoke(JSON.stringify({ hook_event_name: "PostToolUse", session_id: "automation-worker",
+      tool_name: "Write", tool_input: { file_path: registry } }), { HOME: home });
+    assert.equal(event("CronCreate", { cron: schedule, prompt: "L3 approval: https://example.test/owner" },
+      { session_id: "automation-worker" }).permissionDecision, "deny");
+    assert.equal(event("Bash", { command: "crontab -e" }).permissionDecision, "deny");
   });
 
   test("delegate_task stamps Worker role after its existing checks pass", () => {
@@ -817,12 +873,15 @@ describe("policy hook", () => {
         assert.equal(codex({ tool_name, tool_input: { environmentId: "e", projectId: "p" } }).permissionDecision, "deny");
       }
       const launch = { environmentId: "e", projectId: "p", modelSelection: { model: "gpt-6-luna" } };
-      assert.equal(codex({ tool_name: "mcp__t3_code__t3_thread_launch", tool_input: launch }), null);
-      assert.equal(codex({ tool_name: "mcp__t3_code__t3_thread_launch", tool_input: launch,
-        agent_id: "worker-1" }).permissionDecision, "deny");
-      assert.equal(codex({ tool_name: "mcp__t3_code__t3_thread_launch", tool_input: {
-        ...launch, modelSelection: { model: "claude-opus-5-5" },
-      } }).permissionDecision, "deny");
+      for (const tool_name of ["mcp__t3_code__t3_thread_launch", "mcp__t3-code__t3_thread_launch"]) {
+        assert.equal(codex({ tool_name, tool_input: launch }).permissionDecision, "deny");
+      }
+      assert.equal(codex({ tool_name: "mcp__t3_code__create_threads", tool_input: { threads: [{
+        target: { environmentId: "e", projectId: "p", model: "gpt-6-luna" },
+      }] } }).permissionDecision, "deny");
+      assert.match(codex({ tool_name: "mcp__t3_code__delegate_task", tool_input: {
+        target: { model: "gpt-6-luna" }, task: "Inspect.",
+      } }).updatedInput.task, /^Role: Worker/);
     });
 
     test("spawn_agent approval rules become deny", () => {
