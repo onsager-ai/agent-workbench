@@ -15,8 +15,13 @@ const SLEEP_LOOP = "Sleep loops are disabled. Use t3_background_wait or Monitor.
 const CI_LOGS = "Delegate CI logs. Resume the Worker that owns the branch or dispatch an L1 Worker with the run URL.";
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
+const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the user requests one; " +
+  "set nonblank environmentId and projectId and an exact configured L1/L2 model in modelSelection.model. " +
+  "Workers must not launch top-level threads. Use a Worker or current-thread wakeup for follow-up work.";
+const SCHEDULE_TASK = "New schedule_task calls are unavailable because the current T3 schema has no model selection field. " +
+  "Only disable an identified existing schedule here; use the personal automation registry before other automation activation.";
 const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
-const COUNT_EXEMPT = /^(?:mcp__t3[-_]code__)?(?:t3_thread_send|t3_thread_configure|t3_queue|send_to_user|t3_pending_request|t3_background_wait|Agent|Task|spawn_agent|delegate_task|AskUserQuestion|ToolSearch|pull_request_merge|pull_request_review|pull_request_respond|link_pull_requests?|watch_pull_request|unwatch_pull_request|pull_request_create)$/;
+const COUNT_EXEMPT = /^(?:mcp__t3[-_]code__)?(?:t3_thread_send|t3_thread_configure|schedule_task|list_scheduled_tasks|delete_scheduled_task|watch_pull_request|t3_queue|send_to_user|t3_pending_request|t3_background_wait|Agent|Task|spawn_agent|delegate_task|AskUserQuestion|ToolSearch|pull_request_merge|pull_request_review|pull_request_respond|link_pull_requests?|unwatch_pull_request|pull_request_create)$/;
 const MUTATING_GIT = new Set(["commit", "push", "tag", "merge", "rebase", "reset", "checkout", "switch", "stash", "add"]);
 const APPROVAL_LINE = "Get it first (through the Chief PM when one is registered), then add a line " +
   "`L3 approval: <link to the approval>` to the brief and retry.";
@@ -655,6 +660,38 @@ function modelTier(file, event, model) {
   return null;
 }
 
+function launchModelAllowed(file, event, model) {
+  if (typeof model !== "string" || !model.trim()) return false;
+  try {
+    const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
+    return config.ladder.some((level) => ["L1", "L2"].includes(level.level) && level.tiers.some((name) => {
+      const tier = config.tiers[name];
+      return tier && !tier.opt_in && [tier.model, tier.claude_route].some((candidate) =>
+        typeof candidate === "string" && candidate.trim() && candidate === model);
+    }));
+  } catch {
+    return false;
+  }
+}
+
+function isAutomationShellCommand(command) {
+  return /(?:^|[;&|]+\s*)(?:sudo\s+)?(?:crontab\b(?!\s+-[lr]\b)|systemctl\s+(?:enable|start|restart|daemon-reload)\b|systemd-run\b|at\b(?!q\b|rm\b)|nohup\b|daemonize\b|setsid\b)/i.test(command);
+}
+
+function hasPrWatchTarget(input) {
+  if (!isDict(input)) return false;
+  if (typeof input.threadId === "string" && input.threadId.trim()) return true;
+  if (typeof input.repository === "string" && input.repository.trim() && Number.isInteger(input.number) && input.number > 0) return true;
+  if (typeof input.url === "string") {
+    try {
+      const url = new URL(input.url);
+      return url.hostname && url.pathname.split("/").filter(Boolean).length >= 4 &&
+        (input.host === undefined || input.host === url.hostname);
+    } catch {}
+  }
+  return false;
+}
+
 // Full-access sessions accept "ask" without showing a prompt, so an approval-gated dispatch is denied
 // until its brief records where the approval came from. Missing configuration still asks.
 function gate(approval, brief) {
@@ -814,7 +851,47 @@ async function main() {
     const args = "tool_input" in event ? event.tool_input : {};
     const mainLoop = !codex && !event.agent_id;
     let managerState = readManagerState(stateFile);
-    if (mainLoop && !managerState.worker && !managerState.approved && typeof tool === "string" && !COUNT_EXEMPT.test(tool)) {
+    const workerContext = managerState.worker || Boolean(event.agent_id);
+    const canonicalTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
+    const isScheduleTask = canonicalTool === "mcp__t3_code__schedule_task";
+    const isThreadLaunch = canonicalTool === "mcp__t3_code__t3_thread_launch";
+    const isCreateThreads = canonicalTool === "mcp__t3_code__create_threads";
+    const isPrWatch = canonicalTool === "watch_pull_request" || canonicalTool === "mcp__t3_code__watch_pull_request";
+    const isLocalWakeup = tool === "CronCreate" || (tool === "Skill" && isDict(args) && args.skill === "loop");
+    const isLocalAutomation = isLocalWakeup ||
+      (tool === "Bash" && isDict(args) && isAutomationShellCommand(args.command ?? ""));
+    if (isScheduleTask) {
+      const input = isDict(args) ? args : {};
+      const safePauseKeys = new Set(["scheduledTaskId", "enabled", "environmentId"]);
+      const pauseOnly = typeof input.scheduledTaskId === "string" && input.scheduledTaskId.trim() &&
+        input.enabled === false && Object.keys(input).every((key) => safePauseKeys.has(key)) &&
+        (input.environmentId === undefined || (typeof input.environmentId === "string" && input.environmentId.trim()));
+      if (!pauseOnly) [decision, reason] = ["deny", SCHEDULE_TASK];
+    } else if (isPrWatch && !hasPrWatchTarget(args)) {
+      [decision, reason] = ["deny", "Bind a PR watch to a repository and pull request, URL, or explicit threadId."];
+    } else if ((isThreadLaunch || isCreateThreads) && workerContext) [decision, reason] = ["deny", THREAD_LAUNCH];
+    else if ((isThreadLaunch || isCreateThreads) && codex) {
+      [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; top-level thread creation is denied here."];
+    } else if (isThreadLaunch) {
+      const input = isDict(args) ? args : {};
+      const selection = isDict(input.modelSelection) ? input.modelSelection : {};
+      const model = selection.model;
+      const validIds = [input.environmentId, input.projectId].every((value) => typeof value === "string" && value.trim());
+      if (!validIds || !launchModelAllowed(workers, event, model)) [decision, reason] = ["deny", THREAD_LAUNCH];
+    } else if (isCreateThreads) {
+      const threads = isDict(args) && Array.isArray(args.threads) ? args.threads : [];
+      if (!threads.length || threads.some((thread) => {
+        const target = isDict(thread) && isDict(thread.target) ? thread.target : {};
+        return ![target.environmentId, target.projectId].every((value) => typeof value === "string" && value.trim()) ||
+          !launchModelAllowed(workers, event, target.model);
+      })) [decision, reason] = ["deny", THREAD_LAUNCH];
+    } else if (workerContext && (isPrWatch || isLocalAutomation)) {
+      [decision, reason] = ["deny", "Workers cannot create automation or initiate new watches. Use the current Manager thread for follow-up work."];
+    } else if (codex && !event.agent_id && (isPrWatch || isLocalAutomation)) {
+      [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; ambiguous automation creation is denied here."];
+    }
+    if (!decision && mainLoop && !managerState.worker && !managerState.approved && typeof tool === "string" &&
+        !COUNT_EXEMPT.test(tool) && !isLocalWakeup) {
       managerState.count++;
       writeManagerState(stateFile, managerState);
       if (managerState.count > 5) {

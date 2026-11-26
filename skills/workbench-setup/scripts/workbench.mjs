@@ -21,7 +21,7 @@ const { parse: parseToml } = await import("../vendor/smol-toml/index.js");
 
 export const VERSION = "1";
 // Agent Workbench release; tests keep it equal to package.json.
-export const RELEASE = "0.2.27";
+export const RELEASE = "0.2.28";
 const SOURCE = "onsager-ai/agent-workbench";
 const BEGIN = Buffer.from("<!-- BEGIN agent-workbench -->");
 const END = Buffer.from("<!-- END agent-workbench -->");
@@ -39,7 +39,7 @@ const CLAUDE_HOOK_MATCHERS = {
   Stop: [undefined],
 };
 const claudeHookKey = (event, matcher) => matcher === undefined ? event : `${event}:${matcher}`;
-const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send"];
+const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request"];
 const CODEX_HOOK_TIMEOUT = 30;
 
 export class Conflict extends Error {}
