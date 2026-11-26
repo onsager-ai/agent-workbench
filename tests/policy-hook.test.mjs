@@ -266,6 +266,49 @@ describe("policy hook", () => {
     for (let i = 0; i < 7; i++) assert.equal(call("Read"), null);
   });
 
+  test("manager observation reads do not use the five-call work allowance", () => {
+    const env = { AGENT_WORKBENCH_STATE_HOME: path.join(directory, "observation-state") };
+    const prompt = (session_id) => invoke(JSON.stringify({
+      hook_event_name: "UserPromptSubmit", session_id, prompt: "Continue.",
+    }), env);
+    const call = (session_id, tool_name, tool_input = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id, tool_name, tool_input,
+    }), env);
+
+    prompt("manager-observation");
+    for (const tool of [
+      "mcp__t3-code__t3_thread_list", "mcp__t3_code__t3_thread_list",
+      "mcp__t3-code__t3_thread_read", "mcp__t3_code__t3_thread_search",
+      "mcp__t3_code__t3_environment_links",
+      "mcp__t3-code__t3_thread_read",
+    ]) assert.equal(call("manager-observation", tool, { view: "activity" }), null, tool);
+    for (let index = 0; index < 5; index++) assert.equal(call("manager-observation", "Read"), null);
+    for (const tool of [
+      "mcp__t3-code__t3_thread_list", "mcp__t3_code__t3_thread_read",
+      "mcp__t3_code__t3_thread_search", "mcp__t3-code__t3_environment_links",
+    ]) assert.equal(call("manager-observation", tool), null, tool);
+    const sixth = call("manager-observation", "Read");
+    assert.equal(sixth.permissionDecision, "deny");
+    assert.match(sixth.permissionDecisionReason, /sixth counted work call \(Read\)/);
+
+    prompt("manager-observation-lookalike");
+    for (let index = 0; index < 5; index++) assert.equal(call("manager-observation-lookalike", "Read"), null);
+    for (const tool of [
+      "mcp__other__t3_thread_list", "mcp__t3-code__t3_thread_list_extra", "mcp__t3_code__t3_thread_unknown",
+      "t3_thread_list",
+    ]) assert.equal(call("manager-observation-lookalike", tool).permissionDecision, "deny", tool);
+
+    prompt("manager-observation-actions");
+    for (const [tool, input] of [
+      ["mcp__t3-code__t3_queue", { action: "list" }],
+      ["mcp__t3_code__t3_queue", { action: "cancel", queuedRunId: "queued" }],
+      ["mcp__t3-code__t3_pending_request", { action: "list" }],
+      ["mcp__t3_code__t3_pending_request", { action: "respond", requestId: "request", answers: {} }],
+    ]) assert.equal(call("manager-observation-actions", tool, input), null, tool);
+    assert.equal(call("manager-observation-actions", "Edit", { file_path: "/tmp/file" }).permissionDecision, "deny");
+    assert.equal(call("manager-observation-actions", "Bash", { command: "touch file" }).permissionDecision, "deny");
+  });
+
   test("Manager Bash denials keep the full gate reason", () => {
     const session_id = "manager-bash";
     const statePath = path.join(directory, "state", "agent-workbench", "manager-turns", `${session_id}.json`);
