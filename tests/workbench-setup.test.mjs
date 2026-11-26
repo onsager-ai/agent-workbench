@@ -535,6 +535,21 @@ describe("workbench setup", () => {
     assert.deepEqual(f.snapshot(), before);
   });
 
+  test("update hands a new policy key to freshly distributed code", () => {
+    const f = new Fixture();
+    f.write(f.overridePath, 'policy: {stop_classifier: {url: "http://127.0.0.1:9999", model: "test/model"}}\n');
+    f.run("install");
+    f.nativeLock();
+    const currentScript = fs.readFileSync(f.script, "utf8");
+    // v0.2.5 predates policy.stop_classifier; model its strict allowlist in the installed script.
+    const oldScript = currentScript.replace('"max_auto_rework", "context", "stop_classifier"', '"max_auto_rework", "context"');
+    assert.notEqual(oldScript, currentScript);
+    fs.writeFileSync(f.script, oldScript);
+    const command = f.fakeCommand(`import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(f.script)}, ${JSON.stringify(currentScript)});\n`);
+    f.run("update", ["--skills-cmd", command]);
+    assert.match(fs.readFileSync(f.script, "utf8"), /stop_classifier/);
+  });
+
   test("update only repo skills then fresh updated code", () => {
     const f = new Fixture();
     f.run("install");
