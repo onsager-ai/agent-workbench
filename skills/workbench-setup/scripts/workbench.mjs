@@ -1867,6 +1867,43 @@ function stripTrailingNewlines(data) {
   return data.subarray(0, end);
 }
 
+function antigravityWorkspace(workspace, home, remove = false) {
+  const root = path.resolve(workspace);
+  const hooksFile = path.join(root, ".agents/hooks.json");
+  inspect(hooksFile, root);
+  const adapter = path.join(home, ".agents/skills/orchestrate-harnesses/scripts/policy-hook");
+  if (!remove) {
+    let info;
+    try { info = fs.statSync(adapter); } catch {}
+    if (!info?.isFile() || !(info.mode & 0o111)) {
+      throw new Conflict(`Antigravity shell adapter is not installed or executable: ${adapter}; install orchestrate-harnesses, then retry`);
+    }
+  }
+
+  let config = {};
+  if (present(hooksFile)) {
+    try { config = JSON.parse(fs.readFileSync(hooksFile, "utf8")); }
+    catch { throw new Conflict(`invalid Antigravity hooks configuration: ${hooksFile}; correct hooks.json, then retry`); }
+    if (!isDict(config)) throw new Conflict(`invalid Antigravity hooks configuration: ${hooksFile}; correct hooks.json, then retry`);
+  }
+  const command = `${shellQuote(adapter)} --host antigravity`;
+  const owned = {
+    enabled: true,
+    PreToolUse: [{ matcher: "run_command", hooks: [{ type: "command", command }] }],
+  };
+  if (has(config, "agent-workbench")) {
+    if (!isDeepStrictEqual(config["agent-workbench"], owned)) {
+      throw new Conflict(`hooks.json already defines a different agent-workbench hook: ${hooksFile}; resolve it manually, then retry`);
+    }
+    if (!remove) return;
+    const { ["agent-workbench"]: ignored, ...remaining } = config;
+    atomic(hooksFile, Buffer.from(JSON.stringify(remaining, null, 2) + "\n"));
+    return;
+  }
+  if (remove) return;
+  atomic(hooksFile, Buffer.from(JSON.stringify({ ...config, "agent-workbench": owned }, null, 2) + "\n"));
+}
+
 const COMMANDS = {
   install: "Apply shared instructions, hooks and settings (use --antigravity to include instructions in Antigravity)",
   update: "Update distributed skills, then apply them",
@@ -1882,12 +1919,12 @@ const USAGE = "usage: workbench.mjs [--home HOME] [--skills-cmd SKILLS_CMD] [--c
   `{${Object.keys(COMMANDS).join(",")}}`;
 
 function parseArguments(argv) {
-  const options = { home: os.homedir(), skillsCmd: undefined, cwd: process.cwd(), command: undefined, json: false, antigravity: false, help: false, helpCommand: undefined };
+  const options = { home: os.homedir(), skillsCmd: undefined, cwd: process.cwd(), workspace: undefined, command: undefined, json: false, antigravity: false, help: false, helpCommand: undefined };
   const fail = (message) => {
     console.error(`${USAGE}\nworkbench.mjs: error: ${message}`);
     process.exit(2);
   };
-  const flags = { "--home": "home", "--skills-cmd": "skillsCmd", "--cwd": "cwd" };
+  const flags = { "--home": "home", "--skills-cmd": "skillsCmd", "--cwd": "cwd", "--workspace": "workspace" };
   for (let index = 0; index < argv.length; index++) {
     if (argv[index] === "--help" || argv[index] === "-h") {
       options.help = true;
@@ -1919,6 +1956,9 @@ function parseArguments(argv) {
   }
   if (options.command === undefined && options.help) return options;
   if (options.command === undefined) fail("the following arguments are required: command");
+  if (options.workspace !== undefined && (!options.antigravity || !["install", "uninstall"].includes(options.command))) {
+    fail("--workspace requires install or uninstall with --antigravity");
+  }
   if (options.command === "help") {
     options.command = undefined;
     options.help = true;
@@ -1939,7 +1979,7 @@ function printHelp(command) {
     for (const [name, description] of Object.entries(COMMANDS)) console.log(`  ${name.padEnd(10)} ${description}`);
     console.log("\nUse workbench.mjs help <command> for command options.");
   } else {
-    const args = command === "lanes" ? " [--cwd CWD] [--json]" : command === "workers" ? " [--cwd CWD]" : command === "update" ? " [--skills-cmd SKILLS_CMD]" : command === "status" ? " [--json]" : command === "install" ? " [--antigravity]" : "";
+    const args = command === "lanes" ? " [--cwd CWD] [--json]" : command === "workers" ? " [--cwd CWD]" : command === "update" ? " [--skills-cmd SKILLS_CMD]" : command === "status" ? " [--json]" : command === "install" ? " [--antigravity] [--workspace PATH]" : command === "uninstall" ? " [--antigravity] [--workspace PATH]" : "";
     console.log(`usage: workbench.mjs [--home HOME]${args} ${command}\n\n${COMMANDS[command]}`);
   }
 }
@@ -1959,11 +1999,16 @@ export function main(argv = process.argv.slice(2)) {
     if (args.command === "version") { console.log(RELEASE); return 0; }
     if (args.command === "ops") return runOps(args.ops, path.resolve(args.home));
     if (args.command === "lanes") { showLanes(args); return 0; }
+    if (args.workspace !== undefined && args.command === "uninstall") {
+      antigravityWorkspace(args.workspace, args.home, true);
+      return 0;
+    }
     const setup = new Setup(args.home, { antigravity: args.antigravity });
     if (args.command === "workers") setup.workers(args.cwd);
     else if (args.command === "update") return setup.update(args.skillsCmd);
     else if (args.command === "status") setup.status({ json: args.json });
     else setup[args.command]();
+    if (args.workspace !== undefined) antigravityWorkspace(args.workspace, args.home);
     return 0;
   } catch (error) {
     console.error(`agent-workbench: ${cliErrorMessage(error, args.command)}`);
