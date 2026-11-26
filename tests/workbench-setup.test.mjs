@@ -101,6 +101,18 @@ class Fixture {
     fs.mkdirSync(path.join(this.home, ".agents/skills/host-ops"), { recursive: true });
   }
 
+  nativeLockWithPersonal() {
+    const publicSkills = ["workbench-setup", "host-ops", "orchestrate-harnesses", "prompt-for-decisions", "manage-lane", "review-storybook"];
+    const skills = Object.fromEntries(publicSkills.map((name) => [name,
+      { source: "onsager-ai/agent-workbench", sourceType: "github" }]));
+    skills["workbench-personal"] = { source: "another/private-source", sourceType: "github" };
+    skills.unrelated = { source: "another/project", sourceType: "github" };
+    this.write(path.join(this.home, ".agents/.skill-lock.json"), JSON.stringify({ version: 3, skills }));
+    for (const name of publicSkills.slice(1)) fs.mkdirSync(path.join(this.home, ".agents/skills", name), { recursive: true });
+    fs.mkdirSync(path.join(this.home, ".agents/skills/workbench-personal"), { recursive: true });
+    return [...publicSkills, "workbench-personal"];
+  }
+
   fakeCommand(body) {
     const file = path.join(this.home, "fake-skills.mjs");
     this.write(file, body);
@@ -169,23 +181,98 @@ describe("workbench setup", () => {
     assert.equal(cliErrorMessage(new Error("unknown keys in policy: stop_classifier, context"), "update"), "unknown keys in policy: stop_classifier, context");
   });
 
+  test("Antigravity links the six public skills and personal skill from the native lock", () => {
+    const f = new Fixture();
+    const selected = f.nativeLockWithPersonal();
+    const links = path.join(f.home, ".gemini/config/skills");
+    f.run("install", ["--antigravity"]);
+    assert.deepEqual(fs.readdirSync(links).sort(), [...selected].sort());
+    for (const name of selected) {
+      assert.equal(fs.readlinkSync(path.join(links, name)), path.join(f.home, ".agents/skills", name));
+    }
+    assert.ok(!exists(path.join(links, "unrelated")));
+  });
+
+  test("Antigravity rejects selected skill names outside the role name format before changing files", () => {
+    const f = new Fixture();
+    f.nativeLockWithPersonal();
+    const lockPath = path.join(f.home, ".agents/.skill-lock.json");
+    const lock = f.json(lockPath);
+    lock.skills.bad_name = { source: "onsager-ai/agent-workbench", sourceType: "github" };
+    f.write(lockPath, JSON.stringify(lock));
+    const foreign = path.join(f.home, ".gemini/config/skills/foreign");
+    f.write(foreign, "preserve this content");
+    const before = f.snapshot();
+
+    assert.match(f.run("install", ["--antigravity"], false).stderr, /unsupported native skills lock/);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
+  test("default install leaves the seven-skill Antigravity inventory unlinked", () => {
+    const f = new Fixture();
+    f.nativeLockWithPersonal();
+    f.run("install");
+    assert.ok(!exists(path.join(f.home, ".gemini/config/skills")));
+  });
+
+  test("Antigravity preserves a correct pre-existing skill link on uninstall", () => {
+    const f = new Fixture();
+    f.nativeLock();
+    const skills = path.join(f.home, ".gemini/config/skills");
+    fs.mkdirSync(skills, { recursive: true });
+    fs.symlinkSync(path.join(f.home, ".agents/skills/host-ops"), path.join(skills, "host-ops"));
+    f.run("install", ["--antigravity"]);
+    assert.deepEqual(f.stateJson().antigravity_skills, ["workbench-setup"]);
+    f.run("uninstall");
+    assert.equal(fs.readlinkSync(path.join(skills, "host-ops")), path.join(f.home, ".agents/skills/host-ops"));
+    assert.ok(!exists(path.join(skills, "workbench-setup")));
+  });
+
+  test("Antigravity refuses foreign skill entries without changing them", () => {
+    const f = new Fixture();
+    f.nativeLock();
+    const foreign = path.join(f.home, ".gemini/config/skills/host-ops");
+    f.write(foreign, "user skill");
+    assert.match(f.run("install", ["--antigravity"], false).stderr, /foreign Antigravity skill entry/);
+    assert.equal(read(foreign).toString(), "user skill");
+  });
+
+  test("Antigravity leaves unrelated Gemini skills alone", () => {
+    const f = new Fixture();
+    f.nativeLock();
+    const unrelated = path.join(f.home, ".gemini/config/skills/unrelated");
+    f.write(unrelated, "preserve");
+    f.run("install", ["--antigravity"]);
+    f.run("uninstall");
+    assert.equal(read(unrelated).toString(), "preserve");
+  });
+
   test("Antigravity target is opt-in, preserves content and removes only its owned include", () => {
     const f = new Fixture();
+    f.nativeLock();
     const gemini = path.join(f.home, ".gemini/AGENTS.md");
     f.write(gemini, "# Existing guidance\n\nKeep this text.\n");
     f.run("install");
     assert.deepEqual(read(gemini), Buffer.from("# Existing guidance\n\nKeep this text.\n"));
     f.run("install", ["--antigravity"]);
+    const skills = path.join(f.home, ".gemini/config/skills");
+    for (const name of ["host-ops", "workbench-setup"]) {
+      assert.equal(fs.readlinkSync(path.join(skills, name)), path.join(f.home, ".agents/skills", name));
+    }
+    assert.ok(!exists(path.join(skills, "unrelated")));
     const include = Buffer.from("@[Work instructions](~/.agents/AGENTS.md)\n");
     assert.deepEqual(read(gemini), Buffer.concat([Buffer.from("# Existing guidance\n\nKeep this text.\n"), include]));
-    f.run("install", ["--antigravity"]);
+    f.run("install");
     assert.deepEqual(read(gemini), Buffer.concat([Buffer.from("# Existing guidance\n\nKeep this text.\n"), include]));
     f.run("uninstall");
     assert.deepEqual(read(gemini), Buffer.from("# Existing guidance\n\nKeep this text.\n"));
+    assert.ok(!exists(path.join(skills, "host-ops")));
+    assert.ok(!exists(path.join(skills, "workbench-setup")));
   });
 
   test("Antigravity removes its separator when original content has no newline", () => {
     const f = new Fixture();
+    f.nativeLock();
     const gemini = path.join(f.home, ".gemini/AGENTS.md");
     const original = Buffer.from("Existing guidance without a newline");
     f.write(gemini, original);
@@ -197,11 +284,20 @@ describe("workbench setup", () => {
 
   test("Antigravity uninstall removes an instruction file it created", () => {
     const f = new Fixture();
+    f.nativeLock();
     const gemini = path.join(f.home, ".gemini/AGENTS.md");
     f.run("install", ["--antigravity"]);
     assert.ok(exists(gemini));
     f.run("uninstall");
     assert.ok(!exists(gemini));
+  });
+
+  test("default install does not inspect or change Antigravity skill entries", () => {
+    const f = new Fixture();
+    const foreign = path.join(f.home, ".gemini/config/skills/host-ops");
+    f.write(foreign, "leave alone");
+    f.run("install");
+    assert.equal(read(foreign).toString(), "leave alone");
   });
 
   test("default install does not inspect or change a Gemini instruction symlink", () => {
@@ -218,6 +314,7 @@ describe("workbench setup", () => {
 
   test("Antigravity leaves an identical pre-existing include unowned", () => {
     const f = new Fixture();
+    f.nativeLock();
     const gemini = path.join(f.home, ".gemini/AGENTS.md");
     const original = Buffer.from("# Existing\r\n@[Work instructions](~/.agents/AGENTS.md)\r\nMore content\r\n");
     f.write(gemini, original);
