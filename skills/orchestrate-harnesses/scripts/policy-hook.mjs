@@ -673,11 +673,11 @@ function launchModelAllowed(file, event, model, approved = false) {
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
     const matches = (tier) => tier && [tier.model, tier.claude_route].includes(model);
-    if (approved) return MANAGER_MODELS.includes(model) || Object.values(config.tiers).some(matches);
-    return config.ladder.some((level) => ["L1", "L2"].includes(level.level) && level.tiers.some((name) => {
+    const l1L2Allowed = config.ladder.some((level) => ["L1", "L2"].includes(level.level) && level.tiers.some((name) => {
       const tier = config.tiers[name];
       return tier && !tier.opt_in && matches(tier);
     }));
+    return (approved && MANAGER_MODELS.includes(model)) || l1L2Allowed;
   } catch {
     return false;
   }

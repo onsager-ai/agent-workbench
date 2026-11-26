@@ -439,6 +439,7 @@ describe("policy hook", () => {
     }
     assert.equal(call(launchTool, launch(neon, "Run the task. L3 approval: https://example.test/approval")).permissionDecision, "deny");
     assert.equal(call(launchTool, launch("some/other-model", approval)).permissionDecision, "deny");
+    assert.equal(call(launchTool, launch("claude-opus-5-5", approval)).permissionDecision, "deny");
     assert.equal(call(launchTool, launch(astra, approval, { projectId: " " })).permissionDecision, "deny");
     assert.equal(call(launchTool, launch(astra, approval), "approved-launch", { agent_id: "subagent-1" }).permissionDecision, "deny");
 
