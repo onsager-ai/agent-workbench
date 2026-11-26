@@ -1182,7 +1182,7 @@ describe("workbench setup", () => {
   });
 
   const codexHandler = (f) => ({ type: "command", command: f.codexHookCommand, timeout: 30 });
-  const CODEX_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request"];
+  const CODEX_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__t3_thread_configure", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request"];
 
   test("codex hooks install, status and uninstall preserve foreign entries", () => {
     const f = new Fixture();
@@ -1264,7 +1264,7 @@ describe("workbench setup", () => {
     h.write(h.codexHooksPath, JSON.stringify({ hooks: { PreToolUse: [same] } }));
     h.run("install");
     assert.deepEqual(h.stateJson().codex_hooks.filter((entry) => "matcher" in entry).map((entry) => entry.matcher),
-      ["Agent|spawn_agent", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request"]);
+      ["Agent|spawn_agent", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__t3_thread_configure", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request"]);
     h.run("uninstall");
     assert.deepEqual(h.json(h.codexHooksPath).hooks.PreToolUse, [same]);
   });
