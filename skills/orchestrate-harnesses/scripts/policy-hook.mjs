@@ -4,7 +4,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseDocument } from "../../workbench-setup/vendor/yaml/index.js";
 
 const APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).";
 const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task branch, origin/main, " +
@@ -22,7 +21,7 @@ const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the u
 const SCHEDULE_TASK = "New schedule_task calls are unavailable because the current T3 schema has no model selection field. " +
   "Only disable an identified existing schedule here; use the personal automation registry before other automation activation.";
 const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
-const COUNT_EXEMPT = /^(?:mcp__t3[-_]code__)?(?:t3_thread_send|t3_thread_configure|t3_thread_launch|create_threads|schedule_task|list_scheduled_tasks|delete_scheduled_task|watch_pull_request|t3_queue|send_to_user|t3_pending_request|t3_background_wait|Agent|Task|spawn_agent|delegate_task|AskUserQuestion|ToolSearch|CronCreate|Skill|pull_request_merge|pull_request_review|pull_request_respond|link_pull_requests?|unwatch_pull_request|pull_request_create)$/;
+const COUNT_EXEMPT = /^(?:mcp__t3[-_]code__)?(?:t3_thread_send|t3_thread_configure|schedule_task|list_scheduled_tasks|delete_scheduled_task|watch_pull_request|t3_queue|send_to_user|t3_pending_request|t3_background_wait|Agent|Task|spawn_agent|delegate_task|AskUserQuestion|ToolSearch|pull_request_merge|pull_request_review|pull_request_respond|link_pull_requests?|unwatch_pull_request|pull_request_create)$/;
 const MUTATING_GIT = new Set(["commit", "push", "tag", "merge", "rebase", "reset", "checkout", "switch", "stash", "add"]);
 const APPROVAL_LINE = "Get it first (through the Chief PM when one is registered), then add a line " +
   "`L3 approval: <link to the approval>` to the brief and retry.";
@@ -675,57 +674,22 @@ function launchModelAllowed(file, event, model) {
   }
 }
 
-function configuredModelLevel(file, event, model) {
-  if (typeof model !== "string" || !model.trim()) return null;
-  try {
-    const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
-    for (const level of config.ladder) {
-      if (!level.tiers.some((name) => {
-        const tier = config.tiers[name];
-        return tier && !tier.opt_in && [tier.model, tier.claude_route].some((candidate) =>
-          typeof candidate === "string" && candidate.trim() && candidate === model);
-      })) continue;
-      return level.level;
-    }
-  } catch {}
-  return null;
-}
-
-const AUTOMATION_FIELDS = ["name", "owner_lane", "host", "project", "model", "schedule", "cost_cap", "end"];
-function automationEntries() {
-  const file = path.join(os.homedir(), ".agents", "skills", "workbench-personal", "automations.yml");
-  try {
-    const stat = fs.statSync(file);
-    if (!stat.isFile() || stat.size > 1024 * 1024) return null;
-    const document = parseDocument(fs.readFileSync(file, "utf8"), { version: "1.1", uniqueKeys: true });
-    if (document.errors.length) return null;
-    const value = document.toJSON();
-    if (!isDict(value) || !Array.isArray(value.automations)) return null;
-    if (Object.keys(value).some((key) => key !== "automations")) return null;
-    return value.automations.every((entry) => isDict(entry) &&
-      Object.keys(entry).length === AUTOMATION_FIELDS.length &&
-      AUTOMATION_FIELDS.every((key) => typeof entry[key] === "string" && entry[key].trim()))
-      ? value.automations : null;
-  } catch {
-    return null;
-  }
-}
-
-function registeredAutomation(file, event, project, prompt = "", schedule = null) {
-  const entries = automationEntries();
-  if (!entries || typeof project !== "string" || !project.trim()) return false;
-  return entries.some((entry) => {
-    if (entry.host !== os.hostname() || !(entry.project === project ||
-        (typeof event.cwd === "string" && path.isAbsolute(entry.project) &&
-          path.resolve(entry.project) === path.resolve(event.cwd))) ||
-        (schedule !== null && entry.schedule !== schedule)) return false;
-    const level = configuredModelLevel(file, event, entry.model);
-    return ["L1", "L2"].includes(level) || (level === "L3" && /^L3 approval: \S/m.test(prompt));
-  });
-}
-
 function isAutomationShellCommand(command) {
   return /(?:^|[;&|]+\s*)(?:sudo\s+)?(?:crontab\b(?!\s+-[lr]\b)|systemctl\s+(?:enable|start|restart|daemon-reload)\b|systemd-run\b|at\b(?!q\b|rm\b)|nohup\b|daemonize\b|setsid\b)/i.test(command);
+}
+
+function hasPrWatchTarget(input) {
+  if (!isDict(input)) return false;
+  if (typeof input.threadId === "string" && input.threadId.trim()) return true;
+  if (typeof input.repository === "string" && input.repository.trim() && Number.isInteger(input.number) && input.number > 0) return true;
+  if (typeof input.url === "string") {
+    try {
+      const url = new URL(input.url);
+      return url.hostname && url.pathname.split("/").filter(Boolean).length >= 4 &&
+        (input.host === undefined || input.host === url.hostname);
+    } catch {}
+  }
+  return false;
 }
 
 // Full-access sessions accept "ask" without showing a prompt, so an approval-gated dispatch is denied
@@ -766,9 +730,9 @@ function readManagerState(file) {
     const value = JSON.parse(fs.readFileSync(file, "utf8"));
     if (!isDict(value) || typeof value.worker !== "boolean" || !Number.isSafeInteger(value.count) ||
         value.count < 0 || typeof value.approved !== "boolean") throw new Error("invalid state");
-    return { ...value, registryWritten: value.registryWritten === true };
+    return value;
   } catch {
-    return { worker: false, count: 0, approved: false, registryWritten: false };
+    return { worker: false, count: 0, approved: false };
   }
 }
 
@@ -854,23 +818,12 @@ async function main() {
         const prompt = typeof event.prompt === "string" ? event.prompt : "";
         writeManagerState(stateFile, {
           worker: previous.worker || /^Role: Worker$/m.test(prompt), count: 0,
-          approved: /^Manager work approval: \S/m.test(prompt), registryWritten: false,
+          approved: /^Manager work approval: \S/m.test(prompt),
         });
       }
       return;
     }
     if (event.hook_event_name === "PostToolUse") {
-      const previous = readManagerState(stateFile);
-      if ((event.tool_name === "Write" || event.tool_name === "Edit") && !previous.worker) {
-        const input = isDict(event.tool_input) ? event.tool_input : {};
-        const target = input.file_path ?? "";
-        const registry = path.join(os.homedir(), ".agents", "skills", "workbench-personal", "automations.yml");
-        if (typeof target === "string" && path.resolve(target) === path.resolve(registry)) {
-          previous.registryWritten = true;
-          writeManagerState(stateFile, previous);
-        }
-        return;
-      }
       if (event.tool_name !== "Agent" && event.tool_name !== "Task") return;
       const context = postToolModelContext(workers, event);
       if (context) emit({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: context } });
@@ -899,15 +852,23 @@ async function main() {
     const mainLoop = !codex && !event.agent_id;
     let managerState = readManagerState(stateFile);
     const workerContext = managerState.worker || Boolean(event.agent_id);
-    const isScheduleTask = tool === "mcp__t3-code__schedule_task" || tool === "mcp__t3_code__schedule_task";
-    const isThreadLaunch = tool === "mcp__t3-code__t3_thread_launch" || tool === "mcp__t3_code__t3_thread_launch";
-    const isCreateThreads = tool === "mcp__t3-code__create_threads" || tool === "mcp__t3_code__create_threads";
-    const isPrWatch = tool === "watch_pull_request" || tool === "mcp__t3_code__watch_pull_request";
+    const canonicalTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
+    const isScheduleTask = canonicalTool === "mcp__t3_code__schedule_task";
+    const isThreadLaunch = canonicalTool === "mcp__t3_code__t3_thread_launch";
+    const isCreateThreads = canonicalTool === "mcp__t3_code__create_threads";
+    const isPrWatch = canonicalTool === "watch_pull_request" || canonicalTool === "mcp__t3_code__watch_pull_request";
+    const isLocalWakeup = tool === "CronCreate" || (tool === "Skill" && isDict(args) && args.skill === "loop");
+    const isLocalAutomation = isLocalWakeup ||
+      (tool === "Bash" && isDict(args) && isAutomationShellCommand(args.command ?? ""));
     if (isScheduleTask) {
       const input = isDict(args) ? args : {};
-      if (!(typeof input.scheduledTaskId === "string" && input.scheduledTaskId.trim() && input.enabled === false)) {
-        [decision, reason] = ["deny", SCHEDULE_TASK];
-      }
+      const safePauseKeys = new Set(["scheduledTaskId", "enabled", "environmentId"]);
+      const pauseOnly = typeof input.scheduledTaskId === "string" && input.scheduledTaskId.trim() &&
+        input.enabled === false && Object.keys(input).every((key) => safePauseKeys.has(key)) &&
+        (input.environmentId === undefined || (typeof input.environmentId === "string" && input.environmentId.trim()));
+      if (!pauseOnly) [decision, reason] = ["deny", SCHEDULE_TASK];
+    } else if (isPrWatch && !hasPrWatchTarget(args)) {
+      [decision, reason] = ["deny", "Bind a PR watch to a repository and pull request, URL, or explicit threadId."];
     } else if ((isThreadLaunch || isCreateThreads) && workerContext) [decision, reason] = ["deny", THREAD_LAUNCH];
     else if ((isThreadLaunch || isCreateThreads) && codex) {
       [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; top-level thread creation is denied here."];
@@ -924,25 +885,13 @@ async function main() {
         return ![target.environmentId, target.projectId].every((value) => typeof value === "string" && value.trim()) ||
           !launchModelAllowed(workers, event, target.model);
       })) [decision, reason] = ["deny", THREAD_LAUNCH];
-    } else if (isPrWatch || tool === "CronCreate" || (tool === "Skill" && isDict(args) && args.skill === "loop") ||
-        (tool === "Bash" && isDict(args) && isAutomationShellCommand(args.command ?? ""))) {
-      const prompt = isDict(args) ? String(args.prompt ?? args.message ?? args.command ?? "") : "";
-      let project = isPrWatch && isDict(args) ? args.repository : event.cwd;
-      if (isPrWatch && isDict(args) && typeof project !== "string" && typeof args.url === "string") {
-        try {
-          const url = new URL(args.url);
-          const parts = url.pathname.split("/").filter(Boolean);
-          if (url.hostname === "github.com" && parts.length >= 2) project = `${parts[0]}/${parts[1]}`;
-        } catch {}
-      }
-      const schedule = tool === "CronCreate" && isDict(args) ? args.cron : null;
-      const ambiguousCodex = codex && !event.agent_id;
-      if (workerContext || ambiguousCodex || !managerState.registryWritten ||
-          !registeredAutomation(workers, event, project, prompt, schedule)) {
-        [decision, reason] = ["deny", "Automation activation requires a matching personal registry entry written by a Manager in this turn. Register name, owner_lane, host, project, model, schedule, cost_cap and end first; Workers cannot create or enable it."];
-      }
+    } else if (workerContext && (isPrWatch || isLocalAutomation)) {
+      [decision, reason] = ["deny", "Workers cannot create automation or initiate new watches. Use the current Manager thread for follow-up work."];
+    } else if (codex && !event.agent_id && (isPrWatch || isLocalAutomation)) {
+      [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; ambiguous automation creation is denied here."];
     }
-    if (!decision && mainLoop && !managerState.worker && !managerState.approved && typeof tool === "string" && !COUNT_EXEMPT.test(tool)) {
+    if (!decision && mainLoop && !managerState.worker && !managerState.approved && typeof tool === "string" &&
+        !COUNT_EXEMPT.test(tool) && !isLocalWakeup) {
       managerState.count++;
       writeManagerState(stateFile, managerState);
       if (managerState.count > 5) {

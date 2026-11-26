@@ -35,11 +35,11 @@ const LEGACY_PRETOOLUSE_MATCHERS = new Set(["Agent|Task", "Bash", "mcp__t3-code_
 const CLAUDE_HOOK_MATCHERS = {
   PreToolUse: [".*"],
   UserPromptSubmit: [undefined],
-  PostToolUse: ["Agent|Task|Write|Edit"],
+  PostToolUse: ["Agent|Task"],
   Stop: [undefined],
 };
 const claudeHookKey = (event, matcher) => matcher === undefined ? event : `${event}:${matcher}`;
-const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "CronCreate|Skill", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request"];
+const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request"];
 const CODEX_HOOK_TIMEOUT = 30;
 
 export class Conflict extends Error {}

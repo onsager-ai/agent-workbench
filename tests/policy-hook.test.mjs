@@ -334,10 +334,11 @@ describe("policy hook", () => {
       environmentId: "env", projectId: "project", modelSelection: { model: "gpt-6-luna" },
     };
 
-    prompt("Role: Worker\nDo the task.");
+    prompt("Manager work approval: https://example.test/approval\nRole: Worker\nDo the task.");
     for (const name of ["mcp__t3-code__schedule_task", "mcp__t3_code__schedule_task"]) {
       assert.equal(call(name, { environmentId: "env", projectId: "project", bindToCurrentThread: true }).permissionDecision, "deny");
       assert.equal(call(name, { scheduledTaskId: "existing", enabled: false }), null);
+      assert.equal(call(name, { scheduledTaskId: "existing", enabled: false, prompt: "replace task" }).permissionDecision, "deny");
     }
     assert.equal(call("mcp__t3_code__list_scheduled_tasks"), null);
     assert.equal(call("mcp__t3_code__delete_scheduled_task", { scheduledTaskId: "existing" }), null);
@@ -350,7 +351,7 @@ describe("policy hook", () => {
     assert.equal(call("mcp__t3_code__t3_thread_launch", workerLaunch, { agent_id: "subagent-1" }).permissionDecision, "deny");
 
     session = "thread-policy-manager";
-    prompt("Manager work approval: https://example.test/approval");
+    prompt("Decide next step.");
     const launch = (tool_input) => call("mcp__t3_code__t3_thread_launch", tool_input);
     assert.equal(launch(workerLaunch), null);
     assert.equal(call("mcp__t3_code__create_threads", { threads: [{
@@ -368,53 +369,37 @@ describe("policy hook", () => {
       { environmentId: "env", projectId: "project", modelSelection: { model: "claude-opus-5-5" } },
       { environmentId: "env", projectId: "project", model: "gpt-6-luna" },
     ]) assert.equal(launch(invalid).permissionDecision, "deny");
+    session = "thread-policy-approved";
+    prompt("Manager work approval: https://example.test/approval");
     assert.equal(call("mcp__t3_code__schedule_task", {
       environmentId: "env", projectId: "project", bindToCurrentThread: true, model: "gpt-6-luna",
     }).permissionDecision, "deny");
   });
 
-  test("automation activation requires a matching personal registry entry", () => {
-    const home = directory;
-    const project = path.join(directory, "project");
-    fs.mkdirSync(project);
-    const registry = path.join(home, ".agents/skills/workbench-personal/automations.yml");
-    fs.mkdirSync(path.dirname(registry), { recursive: true });
-    const schedule = "7 * * * *";
-    const entry = (model = "gpt-6-luna", entryProject = project) => `automations:\n  - name: routine-check\n    owner_lane: general\n    host: ${os.hostname()}\n    project: ${entryProject}\n    model: ${model}\n    schedule: '${schedule}'\n    cost_cap: bounded\n    end: completion\n`;
-    const event = (tool_name, tool_input, extras = {}) => invoke(JSON.stringify({
-      hook_event_name: "PreToolUse", session_id: "automation-manager", cwd: project,
-      tool_name, tool_input, ...extras,
-    }), { HOME: home });
+  test("Managers can use current-thread wakeups and existing watches; Workers cannot create them", () => {
+    const call = (session_id, tool_name, tool_input = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id, tool_name, tool_input,
+    }));
+    invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "local-manager", prompt: "Continue." }));
+    assert.equal(call("local-manager", "CronCreate", { cron: "7 * * * *", prompt: "Check status." }), null);
+    assert.equal(call("local-manager", "Skill", { skill: "loop", args: "Check status." }), null);
+    assert.equal(call("local-manager", "Bash", { command: "systemd-run --unit=job true" }), null);
+    assert.equal(call("local-manager", "watch_pull_request").permissionDecision, "deny");
+    assert.equal(call("local-manager", "watch_pull_request", { repository: "org/project", number: 1 }), null);
+    assert.equal(call("local-manager", "mcp__t3-code__watch_pull_request", { repository: "org/project", number: 1 }), null);
 
-    assert.equal(event("CronCreate", { cron: schedule, prompt: "Review changes." }).permissionDecision, "deny");
-    assert.equal(event("Skill", { skill: "loop", args: "Review changes." }).permissionDecision, "deny");
-    assert.equal(event("Bash", { command: "systemd-run --unit=task true" }).permissionDecision, "deny");
-    fs.writeFileSync(registry, entry());
-    assert.equal(event("CronCreate", { cron: schedule, prompt: "Review changes." }).permissionDecision, "deny");
-    invoke(JSON.stringify({ hook_event_name: "PostToolUse", session_id: "automation-manager",
-      tool_name: "Write", tool_input: { file_path: registry } }), { HOME: home });
-    assert.equal(event("CronCreate", { cron: schedule, prompt: "Review changes." }), null);
-    assert.equal(event("Skill", { skill: "loop", args: "Review changes." }), null);
-    invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "automation-manager", prompt: "Continue." }), { HOME: home });
-    assert.equal(event("CronCreate", { cron: schedule, prompt: "Review changes." }).permissionDecision, "deny");
-    invoke(JSON.stringify({ hook_event_name: "PostToolUse", session_id: "automation-manager",
-      tool_name: "Edit", tool_input: { file_path: registry } }), { HOME: home });
-    assert.equal(event("CronCreate", { cron: "0 0 * * *", prompt: "Review changes." }).permissionDecision, "deny");
-    assert.equal(event("watch_pull_request", { repository: "other/repo", number: 1 }).permissionDecision, "deny");
-    fs.writeFileSync(registry, entry("gpt-6-luna", "other/repo"));
-    assert.equal(event("watch_pull_request", { repository: "other/repo", number: 1 }), null);
-    assert.equal(event("watch_pull_request", { url: "https://github.com/other/repo/pull/1" }), null);
-    fs.writeFileSync(registry, entry("claude-opus-5-5"));
-    assert.equal(event("CronCreate", { cron: schedule, prompt: "Review changes." }).permissionDecision, "deny");
-    assert.equal(event("CronCreate", { cron: schedule, prompt: "L3 approval: https://example.test/owner\nReview changes." }), null);
-    assert.equal(event("CronCreate", { cron: schedule, prompt: "Review changes." }, { agent_id: "worker-1" }).permissionDecision, "deny");
-    invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "automation-worker",
-      prompt: "Role: Worker\nComplete the task." }), { HOME: home });
-    invoke(JSON.stringify({ hook_event_name: "PostToolUse", session_id: "automation-worker",
-      tool_name: "Write", tool_input: { file_path: registry } }), { HOME: home });
-    assert.equal(event("CronCreate", { cron: schedule, prompt: "L3 approval: https://example.test/owner" },
-      { session_id: "automation-worker" }).permissionDecision, "deny");
-    assert.equal(event("Bash", { command: "crontab -e" }).permissionDecision, "deny");
+    invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "local-worker",
+      prompt: "Manager work approval: https://example.test/approval\nRole: Worker\nCheck status." }));
+    assert.equal(call("local-worker", "CronCreate", { cron: "7 * * * *", prompt: "Check status." }).permissionDecision, "deny");
+    assert.equal(call("local-worker", "Skill", { skill: "loop", args: "Check status." }).permissionDecision, "deny");
+    assert.equal(call("local-worker", "Bash", { command: "crontab -e" }).permissionDecision, "deny");
+    assert.equal(call("local-worker", "mcp__t3_code__watch_pull_request", { repository: "org/project", number: 1 }).permissionDecision, "deny");
+
+    invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "wake-cap", prompt: "Continue." }));
+    for (let index = 0; index < 5; index++) assert.equal(call("wake-cap", "Read"), null);
+    assert.equal(call("wake-cap", "CronCreate", { cron: "7 * * * *", prompt: "Check status." }), null);
+    assert.equal(call("wake-cap", "Skill", { skill: "loop", args: "Check status." }), null);
+    assert.equal(call("wake-cap", "Read").permissionDecision, "deny");
   });
 
   test("delegate_task stamps Worker role after its existing checks pass", () => {
@@ -879,6 +864,11 @@ describe("policy hook", () => {
       assert.equal(codex({ tool_name: "mcp__t3_code__create_threads", tool_input: { threads: [{
         target: { environmentId: "e", projectId: "p", model: "gpt-6-luna" },
       }] } }).permissionDecision, "deny");
+      for (const tool_name of ["mcp__t3_code__watch_pull_request", "mcp__t3-code__watch_pull_request"]) {
+        assert.equal(codex({ tool_name, tool_input: { repository: "org/project", number: 1 } }).permissionDecision, "deny");
+      }
+      assert.equal(codex({ tool_name: "Bash", tool_input: { command: "crontab -e" } }).permissionDecision, "deny");
+      assert.equal(codex({ tool_name: "Bash", tool_input: { command: "make test" } }), null);
       assert.match(codex({ tool_name: "mcp__t3_code__delegate_task", tool_input: {
         target: { model: "gpt-6-luna" }, task: "Inspect.",
       } }).updatedInput.task, /^Role: Worker/);
