@@ -98,7 +98,7 @@ When migrating an existing configuration, update the tier keys, ladder entries, 
 
 Setup reads the base `policy.context` from `workers.yml`. Claude Code uses `max_tokens` for its shared compaction window for Managers too. `manager_window` is null by default; set it to give models in `manager_models`, which defaults to `[claude-opus-5-5]`, their own window. Per-model settings require Claude Code v2.1.288 or later. A Worker using a Manager model shares that window, and install and status warn about the overlap.
 
-When `manager_window` is set, for a Codex Manager pass `-c model_auto_compact_token_limit=<manager_window>` in the harness launch arguments, for example in T3 Code's Codex provider launch arguments. Workers launched with `codex exec` keep the shared limit. At the cap, the harness compacts in place in the same thread and the Manager takes no action.
+When `manager_window` is set, for a Codex Manager pass `-c model_auto_compact_token_limit=<manager_window>` in the harness launch arguments, for example in T3 Code's Codex provider launch arguments. Workers launched with `codex exec` keep the shared limit. At the configured native threshold, the harness compacts in place in the same thread and the Manager takes no action. Managers and Workers must leave automatic compaction to that native context signal: peer or scheduled `/compact` must not be triggered by idleness, elapsed time, cost alerts, or unknown or stale size estimates, including when context looks large. This is Workbench policy and cannot control external senders; an explicit manual owner command remains available. Existing configured thresholds and restart behavior are unchanged.
 
 ## Install and update
 
