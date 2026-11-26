@@ -420,6 +420,39 @@ describe("policy hook", () => {
     }).permissionDecision, "deny");
   });
 
+  test("Claude Managers can quote approval to launch the approved Astra and Neon models", () => {
+    const astra = "onsager/codex/gpt-6.2-astra";
+    const neon = "gemini-4-neon";
+    const env = { AGENT_WORKBENCH_STATE_HOME: path.join(directory, "launch-approval-state") };
+    const ids = { environmentId: "env", projectId: "project" };
+    const approval = "Run the task.\nL3 approval: https://example.test/approval";
+    const call = (tool_name, tool_input, session_id = "approved-launch", extras = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id, tool_name, tool_input, ...extras,
+    }), env);
+    const launch = (model, message, extras = {}) => ({ ...ids, modelSelection: { model }, message, ...extras });
+    const launchTool = "mcp__t3-code__t3_thread_launch";
+    for (const model of [astra, neon]) {
+      const denied = call(launchTool, launch(model, "Run the task."));
+      assert.equal(denied.permissionDecision, "deny");
+      assert.match(denied.permissionDecisionReason, /L3 approval:/);
+      assert.equal(call(launchTool, launch(model, approval)), null);
+    }
+    assert.equal(call(launchTool, launch(neon, "Run the task. L3 approval: https://example.test/approval")).permissionDecision, "deny");
+    assert.equal(call(launchTool, launch("some/other-model", approval)).permissionDecision, "deny");
+    assert.equal(call(launchTool, launch("claude-opus-5-5", approval)).permissionDecision, "deny");
+    assert.equal(call(launchTool, launch(astra, approval, { projectId: " " })).permissionDecision, "deny");
+    assert.equal(call(launchTool, launch(astra, approval), "approved-launch", { agent_id: "subagent-1" }).permissionDecision, "deny");
+
+    const create = (...threads) => call("mcp__t3-code__create_threads", { threads });
+    const thread = (model, prompt) => ({ target: { ...ids, model }, prompt });
+    assert.equal(create(thread(astra, approval), thread(neon)).permissionDecision, "deny");
+    assert.equal(create(thread(astra, approval), thread(neon, approval), thread("gpt-6-luna")), null);
+
+    assert.equal(call("mcp__t3-code__t3_thread_configure", {
+      threadId: "thread-1", modelSelection: { model: neon },
+    }).permissionDecision, "deny");
+  });
+
   test("thread configure model changes reuse launch eligibility while reads stay exempt", () => {
     const env = { AGENT_WORKBENCH_STATE_HOME: path.join(directory, "configure-state") };
     const prompt = (session_id, text) => invoke(JSON.stringify({

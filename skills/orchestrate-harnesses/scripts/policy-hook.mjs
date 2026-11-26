@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 const APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).";
+const MANAGER_MODELS = ["onsager/codex/gpt-6.2-astra", "gemini-4-neon"];
 const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task branch, origin/main, " +
   "or git switch -c <task> origin/main.";
 const PROTECTED_BRANCHES = new Set(["main", "master"]);
@@ -16,8 +17,10 @@ const CI_LOGS = "Delegate CI logs. Resume the Worker that owns the branch or dis
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
 const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the user requests one; " +
-  "set nonblank environmentId and projectId and an exact configured L1/L2 model in modelSelection.model. " +
-  "Workers must not launch top-level threads. Use a Worker or current-thread wakeup for follow-up work.";
+  "set nonblank environmentId and projectId and select an exact configured model. " +
+  "For models outside the non-opt-in L1/L2 set, quote the user's approval in the launch text as `L3 approval: <link to the approval>`. " +
+  "Model configuration calls have no approval text field and remain limited to non-opt-in L1/L2. " +
+  "Workers must not launch top-level threads or change thread models. Use a Worker or current-thread wakeup for follow-up work.";
 const SCHEDULE_TASK = "New schedule_task calls are unavailable because the current T3 schema has no model selection field. " +
   "Only disable an identified existing schedule here; use the personal automation registry before other automation activation.";
 const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
@@ -661,15 +664,20 @@ function modelTier(file, event, model) {
   return null;
 }
 
-function launchModelAllowed(file, event, model) {
+function hasL3Approval(text) {
+  return typeof text === "string" && /^L3 approval: \S/m.test(text);
+}
+
+function launchModelAllowed(file, event, model, approved = false) {
   if (typeof model !== "string" || !model.trim()) return false;
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
-    return config.ladder.some((level) => ["L1", "L2"].includes(level.level) && level.tiers.some((name) => {
+    const matches = (tier) => tier && [tier.model, tier.claude_route].includes(model);
+    const l1L2Allowed = config.ladder.some((level) => ["L1", "L2"].includes(level.level) && level.tiers.some((name) => {
       const tier = config.tiers[name];
-      return tier && !tier.opt_in && [tier.model, tier.claude_route].some((candidate) =>
-        typeof candidate === "string" && candidate.trim() && candidate === model);
+      return tier && !tier.opt_in && matches(tier);
     }));
+    return (approved && MANAGER_MODELS.includes(model)) || l1L2Allowed;
   } catch {
     return false;
   }
@@ -698,7 +706,7 @@ function hasPrWatchTarget(input) {
 function gate(approval, brief) {
   if (!approval) return [undefined, undefined];
   if (approval === CONFIG_MISSING) return ["ask", approval];
-  if (/^L3 approval: \S/m.test(String(brief ?? ""))) return [undefined, undefined];
+  if (hasL3Approval(String(brief ?? ""))) return [undefined, undefined];
   return ["deny", `${approval} ${APPROVAL_LINE}`];
 }
 
@@ -900,7 +908,8 @@ async function main() {
       const selection = isDict(input.modelSelection) ? input.modelSelection : {};
       const model = selection.model;
       const validIds = [input.environmentId, input.projectId].every((value) => typeof value === "string" && value.trim());
-      if (!validIds || !launchModelAllowed(workers, event, model)) [decision, reason] = ["deny", THREAD_LAUNCH];
+      const approved = hasL3Approval(input.message) || hasL3Approval(input.prompt);
+      if (!validIds || !launchModelAllowed(workers, event, model, approved)) [decision, reason] = ["deny", THREAD_LAUNCH];
     } else if (configureModelSelection) {
       const selection = isDict(args.modelSelection) ? args.modelSelection : {};
       if (!launchModelAllowed(workers, event, selection.model)) [decision, reason] = ["deny", THREAD_LAUNCH];
@@ -909,7 +918,7 @@ async function main() {
       if (!threads.length || threads.some((thread) => {
         const target = isDict(thread) && isDict(thread.target) ? thread.target : {};
         return ![target.environmentId, target.projectId].every((value) => typeof value === "string" && value.trim()) ||
-          !launchModelAllowed(workers, event, target.model);
+          !launchModelAllowed(workers, event, target.model, hasL3Approval(thread?.prompt));
       })) [decision, reason] = ["deny", THREAD_LAUNCH];
     } else if (workerContext && (isPrWatch || isLocalAutomation)) {
       [decision, reason] = ["deny", "Workers cannot create automation or initiate new watches. Use the current Manager thread for follow-up work."];
