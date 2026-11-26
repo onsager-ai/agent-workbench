@@ -706,6 +706,73 @@ describe("workbench setup", () => {
     assert.deepEqual(f.snapshot(), before);
   });
 
+  test("v0.2.28 release bundle updates through its installed launcher", () => {
+    const bundle = process.env.AWB_PREVIOUS_RELEASE_BUNDLE;
+    assert.ok(bundle, "CI must provide the complete v0.2.28 release bundle");
+    const f = new Fixture();
+    fs.rmSync(f.skill, { recursive: true, force: true });
+    fs.cpSync(path.join(bundle, "skills/workbench-setup"), f.skill, { recursive: true });
+    for (const name of ["host-ops", "orchestrate-harnesses"]) {
+      fs.cpSync(path.join(bundle, "skills", name), path.join(f.home, ".agents/skills", name), { recursive: true });
+    }
+    f.run("install");
+    f.nativeLock();
+    const lockPath = path.join(f.home, ".agents/.skill-lock.json");
+    const lock = f.json(lockPath);
+    lock.skills["orchestrate-harnesses"] = { source: "onsager-ai/agent-workbench", sourceType: "github" };
+    fs.writeFileSync(lockPath, JSON.stringify(lock));
+    const config = 'policy: {stop_classifier: {url: "http://127.0.0.1:9999", model: "test/model"}}\n';
+    f.write(f.overridePath, config);
+
+    const log = path.join(f.home, "update-calls.json");
+    const updateCommand = f.fakeCommand(
+      'import fs from "node:fs";\nimport path from "node:path";\n' +
+      `fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\n` +
+      `for (const name of ["host-ops", "orchestrate-harnesses", "workbench-setup"]) {\n` +
+      `  const target = path.join(${JSON.stringify(f.home)}, ".agents/skills", name);\n` +
+      `  fs.rmSync(target, { recursive: true, force: true });\n` +
+      `  fs.cpSync(path.join(${JSON.stringify(ROOT)}, "skills", name), target, { recursive: true });\n` +
+      `}\n`);
+    const result = spawnSync(f.launcher, ["update", "--skills-cmd", updateCommand], {
+      encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: "" },
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.deepEqual(f.json(log), ["update", "host-ops", "orchestrate-harnesses", "workbench-setup", "-g", "-y"]);
+    assert.deepEqual(fs.readFileSync(f.script), fs.readFileSync(path.join(SKILL, "scripts/workbench.mjs")));
+    assert.deepEqual(fs.readFileSync(path.join(f.skill, "assets/AGENTS.md")), fs.readFileSync(path.join(SKILL, "assets/AGENTS.md")));
+    assert.deepEqual(fs.readFileSync(path.join(f.home, ".agents/skills/orchestrate-harnesses/workers.yml")), fs.readFileSync(path.join(ROOT, "skills/orchestrate-harnesses/workers.yml")));
+    assert.equal(fs.readFileSync(f.overridePath, "utf8"), config);
+    assert.ok(fs.statSync(f.launcher).mode & 0o100);
+  });
+
+  test("current update distributes before fresh validation of unknown policy keys", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    f.nativeLock();
+    const lockPath = path.join(f.home, ".agents/.skill-lock.json");
+    const lock = f.json(lockPath);
+    lock.skills["orchestrate-harnesses"] = { source: "onsager-ai/agent-workbench", sourceType: "github" };
+    fs.writeFileSync(lockPath, JSON.stringify(lock));
+    const config = 'policy: {future_classifier: true}\n';
+    f.write(f.overridePath, config);
+
+    const log = path.join(f.home, "update-calls.json");
+    const updateCommand = f.fakeCommand(
+      'import fs from "node:fs";\nimport path from "node:path";\n' +
+      `fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\n` +
+      `for (const name of ["host-ops", "orchestrate-harnesses", "workbench-setup"]) {\n` +
+      `  const target = path.join(${JSON.stringify(f.home)}, ".agents/skills", name);\n` +
+      `  fs.rmSync(target, { recursive: true, force: true });\n` +
+      `  fs.cpSync(path.join(${JSON.stringify(ROOT)}, "skills", name), target, { recursive: true });\n` +
+      `}\n`);
+    const result = f.run("update", ["--skills-cmd", updateCommand], false);
+    assert.match(result.stderr, /unknown keys in policy/);
+    assert.deepEqual(f.json(log), ["update", "host-ops", "orchestrate-harnesses", "workbench-setup", "-g", "-y"]);
+    assert.deepEqual(fs.readFileSync(f.script), fs.readFileSync(path.join(SKILL, "scripts/workbench.mjs")));
+    assert.equal(fs.readFileSync(f.overridePath, "utf8"), config);
+  });
+
   test("update only repo skills then fresh updated code", () => {
     const f = new Fixture();
     f.run("install");

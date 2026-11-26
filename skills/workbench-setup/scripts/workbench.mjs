@@ -1808,7 +1808,9 @@ export class Setup {
   }
 
   update(command) {
-    this.preflight();
+    // Config validation belongs to the fresh install after skills are updated;
+    // this script may not know keys introduced by the distributed version.
+    this.preflight({ config: false });
     if (!this.isRealHome && !command) throw new Conflict("alternate --home requires --skills-cmd; real-user npx was not invoked; rerun with --skills-cmd COMMAND");
     let lockFile = path.join(this.home, ".agents/.skill-lock.json");
     if (this.isRealHome && process.env.XDG_STATE_HOME) {

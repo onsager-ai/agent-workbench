@@ -15,6 +15,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.20'
+      - name: Prepare authentic v0.2.28 release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=0382df5a22250aeacd25c3b84078f53ffc7c122a
+          git fetch --no-tags origin refs/tags/v0.2.28:refs/tags/v0.2.28
+          actual="$(git rev-list -n 1 v0.2.28)"
+          test "$actual" = "$expected"
+          fixture="$RUNNER_TEMP/awb-v0.2.28"
+          mkdir -p "$fixture"
+          git archive "$actual" | tar -x -C "$fixture"
+          echo "AWB_PREVIOUS_RELEASE_BUNDLE=$fixture" >> "$GITHUB_ENV"
       - name: Run retained tests
         run: node --test tests/*.test.mjs
       - name: Verify npm package contents
