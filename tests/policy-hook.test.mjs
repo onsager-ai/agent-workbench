@@ -731,9 +731,28 @@ describe("policy hook", () => {
     assertAllowed("git push -u origin HEAD", feature);
   });
 
+  test("Antigravity PreToolUse adapter shares Bash classification without role metadata", () => {
+    assert.ok(fs.statSync(HOOK).mode & 0o111, "the configured hook entry point must be executable");
+    const antigravity = (toolCall) => {
+      const result = run(JSON.stringify({ toolCall }), { args: ["--workers", workers, "--host", "antigravity", "--extra", "forwarded"] });
+      return result.stdout ? JSON.parse(result.stdout) : null;
+    };
+    assert.deepEqual(antigravity({ name: "run_command", args: { CommandLine: "gh run watch 123" } }), {
+      decision: "deny", reason: "GitHub polling is disabled. Use watch_pull_request and the single-call status reads in orchestrate-harnesses' GitHub API budget section.",
+    });
+    assert.deepEqual(antigravity({ name: "run_command", args: { CommandLine: "git status --short" } }), { decision: "allow" });
+    assert.deepEqual(antigravity({ name: "run_command", args: { CommandLine: "gh run watch --help" } }), {
+      decision: "deny", reason: "GitHub polling is disabled. Use watch_pull_request and the single-call status reads in orchestrate-harnesses' GitHub API budget section.",
+    });
+    for (const toolCall of [undefined, {}, { name: "other_tool", args: { CommandLine: "gh run watch 123" } },
+      { name: "run_command", args: {} }, { name: "run_command", args: { CommandLine: 42 } }]) {
+      assert.deepEqual(antigravity(toolCall), { decision: "allow" });
+    }
+  });
+
   test("polling is denied", () => {
     for (const command of [
-      "gh run watch 123", "gh pr checks 1 --watch", "gh pr checks --watch=true",
+      "gh run watch 123", "gh run watch --help", "gh pr checks 1 --watch", "gh pr checks --watch=true",
       "cd /tmp && gh run watch 123", "gh pr checks 1 --watch --interval 30",
       "while true; do gh run list; sleep 30; done",
       "until gh pr view 1; do sleep 10; done",
@@ -902,6 +921,8 @@ describe("policy hook", () => {
     test("Bash rules and Stop still apply", () => {
       const deny = codex({ tool_name: "Bash", tool_input: { command: "gh run watch 1" } });
       assert.equal(deny.permissionDecision, "deny");
+      const help = codex({ tool_name: "Bash", tool_input: { command: "gh run watch --help" } });
+      assert.equal(help.permissionDecision, "deny");
       const loop = codex({ tool_name: "Bash", tool_input: { command: "until test -f ready; do sleep 30; done" } });
       assert.equal(loop.permissionDecision, "deny");
       assert.equal(codex({ tool_name: "Bash", tool_input: { command: "gh run view 123 --log" } }), null);

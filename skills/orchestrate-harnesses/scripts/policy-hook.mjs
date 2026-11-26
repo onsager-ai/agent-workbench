@@ -766,6 +766,17 @@ function mutatingBash(command) {
   return false;
 }
 
+function classifyBash(command, event, manager) {
+  if (typeof command !== "string") return null;
+  let reason = textShellPolicy(command, manager);
+  try {
+    reason = protectedBranchGit(command, event) ?? pollsGithub(command) ?? reason;
+  } catch {
+    // A tokenization error leaves the text-based decision in place.
+  }
+  return reason;
+}
+
 function emit(value) {
   process.stdout.write(JSON.stringify(value) + "\n");
 }
@@ -811,6 +822,15 @@ async function main() {
   try {
     const event = JSON.parse(fs.readFileSync(0, "utf8"));
     if (!isDict(event)) return;
+    if (hostArgument(process.argv.slice(2)) === "antigravity") {
+      const toolCall = isDict(event.toolCall) ? event.toolCall : {};
+      const args = isDict(toolCall.args) ? toolCall.args : {};
+      const reason = toolCall.name === "run_command" && typeof args.CommandLine === "string"
+        ? classifyBash(args.CommandLine, { cwd: args.Cwd }, false)
+        : null;
+      emit(reason ? { decision: "deny", reason } : { decision: "allow" });
+      return;
+    }
     const stateFile = managerStatePath(event);
     if (event.hook_event_name === "UserPromptSubmit") {
       if (!codex) {
@@ -952,14 +972,8 @@ async function main() {
     } else if (!decision && tool === "Bash") {
       const command = dict(args).command ?? "";
       if (typeof command !== "string") return;
-      // Claude Code supplies agent_id for subagents. A top-level --agent also sets agent_type.
       const manager = !codex && !event.agent_id;
-      reason = textShellPolicy(command, manager);
-      try {
-        reason = protectedBranchGit(command, event) ?? pollsGithub(command) ?? reason;
-      } catch {
-        // A tokenization error leaves the text-based decision in place.
-      }
+      reason = classifyBash(command, event, manager);
       if (reason) decision = "deny";
     }
   } catch {
