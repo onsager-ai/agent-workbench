@@ -361,7 +361,7 @@ function pollsGithub(command) {
   for (const [, words] of commands) {
     const [program, group, operation, ...args] = words;
     if (program !== "gh") continue;
-    if (group === "run" && operation === "watch" && !args.includes("--help")) return POLLING;
+    if (group === "run" && operation === "watch") return POLLING;
     if (group === "pr" && operation === "checks" &&
         args.some((word) => word === "--watch" || word.startsWith("--watch="))) return POLLING;
   }
