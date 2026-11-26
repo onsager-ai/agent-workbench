@@ -176,7 +176,7 @@ describe("workbench setup", () => {
   test("Antigravity leaves an identical pre-existing include unowned", () => {
     const f = new Fixture();
     const gemini = path.join(f.home, ".gemini/AGENTS.md");
-    const original = Buffer.from("# Existing\n@~/.agents/AGENTS.md\nMore content\n");
+    const original = Buffer.from("# Existing\r\n@~/.agents/AGENTS.md\r\nMore content\r\n");
     f.write(gemini, original);
     f.run("install", ["--antigravity"]);
     assert.equal(f.stateJson().antigravity_import.owned, false);

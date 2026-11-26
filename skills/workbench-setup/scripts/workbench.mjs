@@ -516,7 +516,12 @@ function removeExactLine(data, line) {
   return Buffer.concat(lines);
 }
 
-const isAgyIncludeLine = (line) => line.equals(AGY_IMPORT) || line.equals(Buffer.concat([AGY_IMPORT, Buffer.from("\n")]));
+const isAgyIncludeLine = (line) => {
+  let end = line.length;
+  if (end && line[end - 1] === 0x0a) end--;
+  if (end && line[end - 1] === 0x0d) end--;
+  return line.subarray(0, end).equals(AGY_IMPORT);
+};
 
 function syncDir(directory) {
   const descriptor = fs.openSync(directory, "r");
