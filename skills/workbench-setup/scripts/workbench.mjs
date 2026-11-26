@@ -1944,6 +1944,14 @@ function printHelp(command) {
   }
 }
 
+export function cliErrorMessage(error, command) {
+  const message = error.message;
+  if (command === "update" && /^unknown keys in policy: stop_classifier(?:;|$)/.test(message)) {
+    return `${message}\nThe installed skills may be on mixed versions; run agent-workbench install to refresh setup. Your settings do not need to be deleted.`;
+  }
+  return message;
+}
+
 export function main(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
   if (args.help) { printHelp(args.helpCommand ?? (args.command === "help" ? undefined : args.command)); return 0; }
@@ -1958,7 +1966,7 @@ export function main(argv = process.argv.slice(2)) {
     else setup[args.command]();
     return 0;
   } catch (error) {
-    console.error(`agent-workbench: ${error.message}`);
+    console.error(`agent-workbench: ${cliErrorMessage(error, args.command)}`);
     return 1;
   }
 }
