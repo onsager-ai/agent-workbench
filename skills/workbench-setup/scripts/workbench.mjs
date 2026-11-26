@@ -761,6 +761,8 @@ export class Setup {
     this.personalWorkers = path.join(this.personal, "workers.yml");
     this.personalInstructions = path.join(this.personal, "AGENTS.md");
     this.gemini = at(".gemini/AGENTS.md");
+    this.geminiSkills = at(".gemini/config/skills");
+    this.skillLock = at(".agents/.skill-lock.json");
     this.workersPath = path.join(this.root, "workers.json");
     this.worker = path.join(orchestration, "references/worker.md");
     this.policyHook = path.join(orchestration, "scripts/policy-hook");
@@ -779,6 +781,34 @@ export class Setup {
 
   agentPath(name) {
     return path.join(this.agents, name + ".md");
+  }
+
+  workbenchSkills() {
+    let lockHome = this.home;
+    let lockPath = this.skillLock;
+    if (this.isRealHome && process.env.XDG_STATE_HOME) {
+      lockHome = path.resolve(process.env.XDG_STATE_HOME);
+      lockPath = path.join(lockHome, "skills/.skill-lock.json");
+    }
+    inspect(lockPath, lockHome);
+    if (!present(lockPath)) throw new Conflict("native skills lock is missing; install global skills first, then rerun agent-workbench install --antigravity");
+    let skills;
+    try {
+      const lock = JSON.parse(utf8(read(lockPath)));
+      if (lock.version !== 3 || !isDict(lock.skills)) throw new TypeError("unsupported lock");
+      skills = Object.entries(lock.skills).filter(([name, item]) => {
+        if (!isDict(item)) throw new TypeError("invalid skill entry");
+        return item.source === SOURCE && item.sourceType === "github" && name !== "workbench-personal";
+      }).map(([name]) => name).sort();
+      if (!skills.includes("workbench-setup") || skills.some((name) => !ROLE.test(name))) throw new TypeError("invalid Workbench skill name");
+    } catch {
+      throw new Conflict("unsupported native skills lock or missing repository ownership; restore a supported native skills lock, then rerun agent-workbench install --antigravity");
+    }
+    return skills.filter((name) => {
+      const directory = path.join(this.home, ".agents/skills", name);
+      inspect(directory, this.home, { directory: true });
+      return present(directory);
+    });
   }
 
   workersBundle() {
@@ -1283,6 +1313,9 @@ export class Setup {
             (!isDict(state.antigravity_import) || Object.keys(state.antigravity_import).sort().join(",") !== "created,owned,selected,separator" ||
               typeof need(state.antigravity_import, "created") !== "boolean" || typeof need(state.antigravity_import, "owned") !== "boolean" || typeof need(state.antigravity_import, "selected") !== "boolean" ||
               typeof need(state.antigravity_import, "separator") !== "boolean"))
+          || (has(state, "antigravity_skills") && (!Array.isArray(state.antigravity_skills) ||
+            state.antigravity_skills.some((name) => typeof name !== "string" || !ROLE.test(name)) ||
+            new Set(state.antigravity_skills).size !== state.antigravity_skills.length))
           || !["", importText + "\n", "\n" + importText + "\n"].includes(need(state, "import_suffix"))) {
         throw invalid("invalid ownership metadata");
       }
@@ -1541,6 +1574,34 @@ export class Setup {
     });
   }
 
+  antigravitySkillPlans(state, selected) {
+    const previous = state?.antigravity_skills ?? [];
+    const wanted = selected ? this.workbenchSkills() : [];
+    const plans = new Map();
+    const owned = [];
+    for (const name of new Set([...previous, ...wanted])) {
+      const directory = path.join(this.home, ".agents/skills", name);
+      const link = path.join(this.geminiSkills, name);
+      inspect(link, this.home, { link: true });
+      const correct = isSymlink(link) && path.resolve(path.dirname(link), fs.readlinkSync(link)) === directory;
+      if (previous.includes(name) && (!correct || !present(link))) {
+        throw new Conflict(`owned Antigravity skill link is missing or changed: ${link}; restore it, then rerun agent-workbench install`);
+      }
+      if (wanted.includes(name)) {
+        if (present(link)) {
+          if (!correct) throw new Conflict(`foreign Antigravity skill entry; left unchanged: ${link}; move it aside, then rerun agent-workbench install --antigravity`);
+          if (previous.includes(name)) owned.push(name);
+        } else {
+          plans.set(link, ["link", directory, null]);
+          owned.push(name);
+        }
+      } else if (previous.includes(name)) {
+        plans.set(link, ["absent", null, null]);
+      }
+    }
+    return [plans, owned.sort()];
+  }
+
   install() {
     this.preflight();
     let changed = false;
@@ -1599,6 +1660,7 @@ export class Setup {
           agySeparator = false;
         }
       }
+      const [skillLinks, antigravitySkills] = this.antigravitySkillPlans(state, agySelected);
       const [nativePlans, nativeRecord] = this.nativePlans(state, this.contextValues());
       const [hookRecord] = this.hookPlans(state, nativePlans);
       const [codexHookRecord, , codexLists] = this.codexHookPlans(state, nativePlans);
@@ -1626,6 +1688,7 @@ export class Setup {
         import_suffix: suffix,
         claude_import: Setup.encodeClaudeImport(imported.owned, imported.line),
         antigravity_import: { created: agyCreated, owned: agyOwned, selected: agySelected, separator: agySeparator },
+        antigravity_skills: antigravitySkills,
         owned: { shared: "managed-block", codex: "symlink", claude: "import-line", launcher: "file" },
         agents: Object.fromEntries(Object.entries(desired).map(([name, data]) =>
           [name, { path: path.relative(this.home, this.agentPath(name)), hash: digest(data) }])),
@@ -1651,6 +1714,7 @@ export class Setup {
       if (workersBytes !== null) agents.set(this.workersPath, ["file", workersBytes, 0o600]);
       else if (state && state.workers_hash) agents.set(this.workersPath, ["absent", null, null]);
       for (const [file, plan] of agents) plans.set(file, plan);
+      for (const [file, plan] of skillLinks) plans.set(file, plan);
       for (const [file, plan] of nativePlans) plans.set(file, plan);
       transaction(plans, () => {
         changed = atomic(this.shared, shared);
@@ -1666,6 +1730,10 @@ export class Setup {
           } else {
             changed = atomic(file, plan[1]) || changed;
           }
+        }
+        for (const [file, plan] of skillLinks) {
+          if (plan[0] === "absent") { fs.unlinkSync(file); syncDir(path.dirname(file)); }
+          else changed = atomicLink(file, plan[1]) || changed;
         }
         for (const [file, plan] of nativePlans) changed = atomic(file, plan[1]) || changed;
         if (agySelected || agyOwned || state?.antigravity_import?.owned) changed = atomic(this.gemini, gemini) || changed;
@@ -1769,6 +1837,7 @@ export class Setup {
           claude = removeExactLine(claude, imported.line);
         }
       }
+      const [skillLinks] = this.antigravitySkillPlans(state, false);
       const [nativePlans] = this.nativePlans(state, null, { uninstall: true });
       this.hookPlans(state, nativePlans, { uninstall: true });
       this.codexHookPlans(state, nativePlans, { uninstall: true });
@@ -1777,7 +1846,7 @@ export class Setup {
       // Keep current personal bytes, never restore an old snapshot over them.
       const agents = new Map(Object.keys(state.agents).map((name) => [this.agentPath(name), ["absent", null, null]]));
       if (state.workers_hash) agents.set(this.workersPath, ["absent", null, null]);
-      const plans = new Map([...agents, [this.shared, ["file", private_, 0o600]], [this.codex, ["file", private_, 0o600]],
+      const plans = new Map([...agents, ...skillLinks, [this.shared, ["file", private_, 0o600]], [this.codex, ["file", private_, 0o600]],
         [this.claude, ["file", claude, 0o600]], [this.launcher, ["absent", null, null]],
         [this.statePath, ["absent", null, null]], ...nativePlans]);
       if (state.antigravity_import?.owned) plans.set(this.gemini,
@@ -1793,6 +1862,7 @@ export class Setup {
         atomic(this.shared, private_);
         atomic(this.codex, private_);
         atomic(this.claude, claude);
+        for (const file of skillLinks.keys()) { fs.unlinkSync(file); syncDir(path.dirname(file)); }
         for (const file of agents.keys()) if (present(file)) fs.unlinkSync(file);
         fs.unlinkSync(this.launcher);
         fs.unlinkSync(this.statePath);
