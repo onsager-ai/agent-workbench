@@ -791,7 +791,7 @@ export class Setup {
       if (!isDict(item)) throw new TypeError("invalid skill entry");
       return item.source === SOURCE && item.sourceType === "github";
     }).map(([name]) => name).sort();
-    if (!names.includes("workbench-setup") || names.some((name) => !name || name.startsWith("-") || name.includes("/"))) {
+    if (!names.includes("workbench-setup") || names.some((name) => !ROLE.test(name))) {
       throw new TypeError("setup ownership is missing or names are invalid");
     }
     return names;

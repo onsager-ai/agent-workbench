@@ -193,6 +193,21 @@ describe("workbench setup", () => {
     assert.ok(!exists(path.join(links, "unrelated")));
   });
 
+  test("Antigravity rejects selected skill names outside the role name format before changing files", () => {
+    const f = new Fixture();
+    f.nativeLockWithPersonal();
+    const lockPath = path.join(f.home, ".agents/.skill-lock.json");
+    const lock = f.json(lockPath);
+    lock.skills.bad_name = { source: "onsager-ai/agent-workbench", sourceType: "github" };
+    f.write(lockPath, JSON.stringify(lock));
+    const foreign = path.join(f.home, ".gemini/config/skills/foreign");
+    f.write(foreign, "preserve this content");
+    const before = f.snapshot();
+
+    assert.match(f.run("install", ["--antigravity"], false).stderr, /unsupported native skills lock/);
+    assert.deepEqual(f.snapshot(), before);
+  });
+
   test("default install leaves the seven-skill Antigravity inventory unlinked", () => {
     const f = new Fixture();
     f.nativeLockWithPersonal();
