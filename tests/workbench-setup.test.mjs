@@ -158,6 +158,64 @@ const read = (file) => fs.readFileSync(file);
 const hex = (data) => crypto.createHash("sha256").update(data).digest("hex");
 
 describe("workbench setup", () => {
+  test("Antigravity target is opt-in, preserves content and removes only its owned include", () => {
+    const f = new Fixture();
+    const gemini = path.join(f.home, ".gemini/AGENTS.md");
+    f.write(gemini, "# Existing guidance\n\nKeep this text.\n");
+    f.run("install");
+    assert.deepEqual(read(gemini), Buffer.from("# Existing guidance\n\nKeep this text.\n"));
+    f.run("install", ["--antigravity"]);
+    const include = Buffer.from("@[Work instructions](~/.agents/AGENTS.md)\n");
+    assert.deepEqual(read(gemini), Buffer.concat([Buffer.from("# Existing guidance\n\nKeep this text.\n"), include]));
+    f.run("install", ["--antigravity"]);
+    assert.deepEqual(read(gemini), Buffer.concat([Buffer.from("# Existing guidance\n\nKeep this text.\n"), include]));
+    f.run("uninstall");
+    assert.deepEqual(read(gemini), Buffer.from("# Existing guidance\n\nKeep this text.\n"));
+  });
+
+  test("Antigravity removes its separator when original content has no newline", () => {
+    const f = new Fixture();
+    const gemini = path.join(f.home, ".gemini/AGENTS.md");
+    const original = Buffer.from("Existing guidance without a newline");
+    f.write(gemini, original);
+    f.run("install", ["--antigravity"]);
+    assert.equal(f.stateJson().antigravity_import.separator, true);
+    f.run("uninstall");
+    assert.deepEqual(read(gemini), original);
+  });
+
+  test("Antigravity uninstall removes an instruction file it created", () => {
+    const f = new Fixture();
+    const gemini = path.join(f.home, ".gemini/AGENTS.md");
+    f.run("install", ["--antigravity"]);
+    assert.ok(exists(gemini));
+    f.run("uninstall");
+    assert.ok(!exists(gemini));
+  });
+
+  test("default install does not inspect or change a Gemini instruction symlink", () => {
+    const f = new Fixture();
+    const gemini = path.join(f.home, ".gemini/AGENTS.md");
+    const external = path.join(f.temporary, "outside-gemini.md");
+    f.write(external, "leave alone");
+    fs.mkdirSync(path.dirname(gemini), { recursive: true });
+    fs.symlinkSync(external, gemini);
+    f.run("install");
+    assert.ok(isLink(gemini));
+    assert.deepEqual(read(external), Buffer.from("leave alone"));
+  });
+
+  test("Antigravity leaves an identical pre-existing include unowned", () => {
+    const f = new Fixture();
+    const gemini = path.join(f.home, ".gemini/AGENTS.md");
+    const original = Buffer.from("# Existing\r\n@[Work instructions](~/.agents/AGENTS.md)\r\nMore content\r\n");
+    f.write(gemini, original);
+    f.run("install", ["--antigravity"]);
+    assert.equal(f.stateJson().antigravity_import.owned, false);
+    f.run("uninstall");
+    assert.deepEqual(read(gemini), original);
+  });
+
   test("fresh install, status and launcher", () => {
     const f = new Fixture();
     const help = spawnSync(process.execPath, [f.script, "help"], { encoding: "utf8" });
