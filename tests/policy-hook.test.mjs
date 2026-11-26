@@ -731,6 +731,22 @@ describe("policy hook", () => {
     assertAllowed("git push -u origin HEAD", feature);
   });
 
+  test("Antigravity PreToolUse adapter shares Bash classification without role metadata", () => {
+    const antigravity = (toolCall) => {
+      const result = run(JSON.stringify({ toolCall }), { args: ["--host", "antigravity"] });
+      return result.stdout ? JSON.parse(result.stdout) : null;
+    };
+    assert.deepEqual(antigravity({ name: "run_command", args: { CommandLine: "gh run watch 123" } }), {
+      decision: "deny", reason: "GitHub polling is disabled. Use watch_pull_request and the single-call status reads in orchestrate-harnesses' GitHub API budget section.",
+    });
+    assert.deepEqual(antigravity({ name: "run_command", args: { CommandLine: "git status --short" } }), { decision: "allow" });
+    assert.deepEqual(antigravity({ name: "run_command", args: { CommandLine: "gh run watch --help" } }), { decision: "allow" });
+    for (const toolCall of [undefined, {}, { name: "other_tool", args: { CommandLine: "gh run watch 123" } },
+      { name: "run_command", args: {} }, { name: "run_command", args: { CommandLine: 42 } }]) {
+      assert.deepEqual(antigravity(toolCall), { decision: "allow" });
+    }
+  });
+
   test("polling is denied", () => {
     for (const command of [
       "gh run watch 123", "gh pr checks 1 --watch", "gh pr checks --watch=true",

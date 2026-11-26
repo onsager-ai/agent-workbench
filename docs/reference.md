@@ -65,6 +65,8 @@ Workbench has no custom orchestration runtime, task database, or process supervi
 
 Codex CLI 0.141 or newer (hooks are on by default) gets the same policy hook through `~/.codex/hooks.json` when `~/.codex` exists. Codex hooks cannot ask, so the interactive L3 and approval-required tier approvals become denials that tell the model to get your approval and retry, and the built-in-agent model inheritance rule is not applied. Codex runs hooks only after you trust them. Install leaves them untrusted and says so; run `agent-workbench trust` (it asks before recording trust hashes in `~/.codex/config.toml`) or run `/hooks` in Codex once. `agent-workbench status` shows `codex_hooks` and `codex_trust`.
 
+Antigravity CLI can use the shared shell checks through a manually configured `PreToolUse` hook matching `run_command` and invoking `~/.agents/skills/orchestrate-harnesses/scripts/policy-hook --host antigravity`. This adapter handles only `toolCall.name` and string `toolCall.args.CommandLine`; it shares role-independent shell checks such as protected branches and GitHub polling. Missing or unsupported tool-call fields continue with `{decision: "allow"}`. It does not infer a Manager or Worker role and does not provide policy-hook parity. Review and explicitly select this hook in Antigravity before activation; Workbench does not install or enable it.
+
 ### Neutral profile for provider switching
 
 For a gateway or CC Switch setup, copy this profile into `~/.agents/skills/workbench-personal/workers.yml` or `~/.config/agent-workbench/workers.yml`. If the file already has a `profiles` mapping, add `neutral` under it.
