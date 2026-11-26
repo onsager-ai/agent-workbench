@@ -420,14 +420,9 @@ describe("policy hook", () => {
     }).permissionDecision, "deny");
   });
 
-  test("Claude Managers can quote approval to launch configured models outside L1/L2", () => {
-    const astra = "test-gateway/astra";
-    const neon = "test-gateway/neon";
-    const tiers = bundle.profiles[bundle.profile].tiers;
-    tiers.astra = { ...tiers.sol, model: astra, opt_in: true };
-    tiers.neon = { ...tiers.sol, model: neon };
-    fs.writeFileSync(workers, JSON.stringify(bundle));
-
+  test("Claude Managers can quote approval to launch the approved Astra and Neon models", () => {
+    const astra = "onsager/codex/gpt-6.2-astra";
+    const neon = "gemini-4-neon";
     const env = { AGENT_WORKBENCH_STATE_HOME: path.join(directory, "launch-approval-state") };
     const ids = { environmentId: "env", projectId: "project" };
     const approval = "Run the task.\nL3 approval: https://example.test/approval";
@@ -443,7 +438,7 @@ describe("policy hook", () => {
       assert.equal(call(launchTool, launch(model, approval)), null);
     }
     assert.equal(call(launchTool, launch(neon, "Run the task. L3 approval: https://example.test/approval")).permissionDecision, "deny");
-    assert.equal(call(launchTool, launch("unknown-model", approval)).permissionDecision, "deny");
+    assert.equal(call(launchTool, launch("some/other-model", approval)).permissionDecision, "deny");
     assert.equal(call(launchTool, launch(astra, approval, { projectId: " " })).permissionDecision, "deny");
     assert.equal(call(launchTool, launch(astra, approval), "approved-launch", { agent_id: "subagent-1" }).permissionDecision, "deny");
 

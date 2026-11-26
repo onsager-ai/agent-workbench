@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 const APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).";
+const MANAGER_MODELS = ["onsager/codex/gpt-6.2-astra", "gemini-4-neon"];
 const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task branch, origin/main, " +
   "or git switch -c <task> origin/main.";
 const PROTECTED_BRANCHES = new Set(["main", "master"]);
@@ -672,7 +673,7 @@ function launchModelAllowed(file, event, model, approved = false) {
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
     const matches = (tier) => tier && [tier.model, tier.claude_route].includes(model);
-    if (approved) return Object.values(config.tiers).some(matches);
+    if (approved) return MANAGER_MODELS.includes(model) || Object.values(config.tiers).some(matches);
     return config.ladder.some((level) => ["L1", "L2"].includes(level.level) && level.tiers.some((name) => {
       const tier = config.tiers[name];
       return tier && !tier.opt_in && matches(tier);
