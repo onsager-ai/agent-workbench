@@ -253,9 +253,10 @@ describe("policy hook", () => {
     for (const tool of ["t3_thread_send", "t3_queue", "send_to_user", "t3_pending_request",
       "t3_background_wait", "AskUserQuestion", "ToolSearch", "pull_request_merge",
       "pull_request_review", "pull_request_respond", "link_pull_request", "link_pull_requests",
-      "watch_pull_request", "unwatch_pull_request", "pull_request_create"]) {
+      "unwatch_pull_request", "pull_request_create"]) {
       assert.equal(call(tool), null, tool);
     }
+    assert.equal(call("watch_pull_request", { repository: "org/project", number: 1 }), null);
     for (let i = 0; i < 5; i++) assert.equal(call("Read"), null);
     assert.equal(call("mcp__t3-code__t3_thread_configure"), null);
     const afterConfigure = call("Read");
@@ -869,9 +870,10 @@ describe("policy hook", () => {
       }
       assert.equal(codex({ tool_name: "Bash", tool_input: { command: "crontab -e" } }).permissionDecision, "deny");
       assert.equal(codex({ tool_name: "Bash", tool_input: { command: "make test" } }), null);
-      assert.match(codex({ tool_name: "mcp__t3_code__delegate_task", tool_input: {
+      // The Claude Manager loop stamps the role; Codex leaves delegation input unchanged.
+      assert.equal(codex({ tool_name: "mcp__t3_code__delegate_task", tool_input: {
         target: { model: "gpt-6-luna" }, task: "Inspect.",
-      } }).updatedInput.task, /^Role: Worker/);
+      } }), null);
     });
 
     test("spawn_agent approval rules become deny", () => {
