@@ -21,6 +21,7 @@ const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the u
 const SCHEDULE_TASK = "New schedule_task calls are unavailable because the current T3 schema has no model selection field. " +
   "Only disable an identified existing schedule here; use the personal automation registry before other automation activation.";
 const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
+const OBSERVATION_COUNT_EXEMPT = /^mcp__t3[-_]code__(?:t3_thread_list|t3_thread_read|t3_thread_search|t3_environment_links)$/;
 const COUNT_EXEMPT = /^(?:mcp__t3[-_]code__)?(?:t3_thread_send|t3_thread_configure|schedule_task|list_scheduled_tasks|delete_scheduled_task|watch_pull_request|t3_queue|send_to_user|t3_pending_request|t3_background_wait|Agent|Task|spawn_agent|delegate_task|AskUserQuestion|ToolSearch|pull_request_merge|pull_request_review|pull_request_respond|link_pull_requests?|unwatch_pull_request|pull_request_create)$/;
 const MUTATING_GIT = new Set(["commit", "push", "tag", "merge", "rebase", "reset", "checkout", "switch", "stash", "add"]);
 const APPROVAL_LINE = "Get it first (through the Chief PM when one is registered), then add a line " +
@@ -916,7 +917,7 @@ async function main() {
       [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; ambiguous automation creation is denied here."];
     }
     if (!decision && mainLoop && !managerState.worker && !managerState.approved && typeof tool === "string" &&
-        !COUNT_EXEMPT.test(tool) && !isLocalWakeup) {
+        !COUNT_EXEMPT.test(tool) && !OBSERVATION_COUNT_EXEMPT.test(tool) && !isLocalWakeup) {
       managerState.count++;
       writeManagerState(stateFile, managerState);
       if (managerState.count > 5) {
