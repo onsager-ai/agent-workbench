@@ -875,11 +875,13 @@ async function main() {
     const canonicalTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
     const isScheduleTask = canonicalTool === "mcp__t3_code__schedule_task";
     const isThreadLaunch = canonicalTool === "mcp__t3_code__t3_thread_launch";
+    const isThreadConfigure = canonicalTool === "mcp__t3_code__t3_thread_configure";
     const isCreateThreads = canonicalTool === "mcp__t3_code__create_threads";
     const isPrWatch = canonicalTool === "watch_pull_request" || canonicalTool === "mcp__t3_code__watch_pull_request";
     const isLocalWakeup = tool === "CronCreate" || (tool === "Skill" && isDict(args) && args.skill === "loop");
     const isLocalAutomation = isLocalWakeup ||
       (tool === "Bash" && isDict(args) && isAutomationShellCommand(args.command ?? ""));
+    const configureModelSelection = isThreadConfigure && isDict(args) && Object.hasOwn(args, "modelSelection");
     if (isScheduleTask) {
       const input = isDict(args) ? args : {};
       const safePauseKeys = new Set(["scheduledTaskId", "enabled", "environmentId"]);
@@ -889,15 +891,18 @@ async function main() {
       if (!pauseOnly) [decision, reason] = ["deny", SCHEDULE_TASK];
     } else if (isPrWatch && !hasPrWatchTarget(args)) {
       [decision, reason] = ["deny", "Bind a PR watch to a repository and pull request, URL, or explicit threadId."];
-    } else if ((isThreadLaunch || isCreateThreads) && workerContext) [decision, reason] = ["deny", THREAD_LAUNCH];
-    else if ((isThreadLaunch || isCreateThreads) && codex) {
-      [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; top-level thread creation is denied here."];
+    } else if ((isThreadLaunch || isCreateThreads || configureModelSelection) && workerContext) [decision, reason] = ["deny", THREAD_LAUNCH];
+    else if ((isThreadLaunch || isCreateThreads || configureModelSelection) && codex) {
+      [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; top-level thread creation and model changes are denied here."];
     } else if (isThreadLaunch) {
       const input = isDict(args) ? args : {};
       const selection = isDict(input.modelSelection) ? input.modelSelection : {};
       const model = selection.model;
       const validIds = [input.environmentId, input.projectId].every((value) => typeof value === "string" && value.trim());
       if (!validIds || !launchModelAllowed(workers, event, model)) [decision, reason] = ["deny", THREAD_LAUNCH];
+    } else if (configureModelSelection) {
+      const selection = isDict(args.modelSelection) ? args.modelSelection : {};
+      if (!launchModelAllowed(workers, event, selection.model)) [decision, reason] = ["deny", THREAD_LAUNCH];
     } else if (isCreateThreads) {
       const threads = isDict(args) && Array.isArray(args.threads) ? args.threads : [];
       if (!threads.length || threads.some((thread) => {

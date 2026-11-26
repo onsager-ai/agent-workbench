@@ -377,6 +377,47 @@ describe("policy hook", () => {
     }).permissionDecision, "deny");
   });
 
+  test("thread configure model changes reuse launch eligibility while reads stay exempt", () => {
+    const env = { AGENT_WORKBENCH_STATE_HOME: path.join(directory, "configure-state") };
+    const prompt = (session_id, text) => invoke(JSON.stringify({
+      hook_event_name: "UserPromptSubmit", session_id, prompt: text,
+    }), env);
+    const call = (session_id, tool_name, tool_input, host = "claude") => {
+      const result = run(JSON.stringify({ hook_event_name: "PreToolUse", session_id, tool_name, tool_input }), {
+        env, args: ["--workers", workers, "--host", host],
+      });
+      return result.stdout ? JSON.parse(result.stdout).hookSpecificOutput : null;
+    };
+
+    prompt("configure-manager", "Continue.");
+    for (let index = 0; index < 5; index++) assert.equal(call("configure-manager", "Read"), null);
+    for (const name of ["mcp__t3-code__t3_thread_configure", "mcp__t3_code__t3_thread_configure"]) {
+      assert.equal(call("configure-manager", name, { threadId: "thread-1" }), null);
+      assert.equal(call("configure-manager", name, {
+        threadId: "thread-1", modelSelection: { model: "gpt-6-luna" },
+      }), null);
+      for (const modelSelection of [null, {}, { model: " " }, { provider: "openai" }, { model: "claude-opus-5-5" }]) {
+        assert.equal(call("configure-manager", name, { threadId: "thread-1", modelSelection }).permissionDecision, "deny");
+      }
+    }
+    assert.equal(call("configure-manager", "Read").permissionDecision, "deny");
+
+    prompt("configure-approved", "Manager work approval: https://example.test/approval");
+    assert.equal(call("configure-approved", "mcp__t3_code__t3_thread_configure", {
+      threadId: "thread-1", modelSelection: { model: "claude-opus-5-5" },
+    }).permissionDecision, "deny");
+
+    prompt("configure-worker", "Role: Worker\nConfigure the thread.");
+    assert.equal(call("configure-worker", "mcp__t3_code__t3_thread_configure", {
+      threadId: "thread-1", modelSelection: { model: "gpt-6-luna" },
+    }).permissionDecision, "deny");
+
+    assert.equal(call("configure-codex", "mcp__t3_code__t3_thread_configure", { threadId: "thread-1" }, "codex"), null);
+    assert.equal(call("configure-codex", "mcp__t3_code__t3_thread_configure", {
+      threadId: "thread-1", modelSelection: { model: "gpt-6-luna" },
+    }, "codex").permissionDecision, "deny");
+  });
+
   test("Managers can use current-thread wakeups and existing watches; Workers cannot create them", () => {
     const call = (session_id, tool_name, tool_input = {}) => invoke(JSON.stringify({
       hook_event_name: "PreToolUse", session_id, tool_name, tool_input,
