@@ -1113,7 +1113,7 @@ describe("workbench setup", () => {
   });
 
   const codexHandler = (f) => ({ type: "command", command: f.codexHookCommand, timeout: 30 });
-  const CODEX_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send"];
+  const CODEX_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__schedule_task"];
 
   test("codex hooks install, status and uninstall preserve foreign entries", () => {
     const f = new Fixture();
@@ -1132,7 +1132,8 @@ describe("workbench setup", () => {
     assert.deepEqual(f.stateJson().hooks.length, 4);
     assert.deepEqual(JSON.parse(f.run("status").stdout).codex_hooks, {
       "Agent|spawn_agent": "applied", Bash: "applied", mcp__t3_code__delegate_task: "applied",
-      mcp__t3_code__t3_thread_send: "applied", Stop: "applied",
+      mcp__t3_code__t3_thread_send: "applied", mcp__t3_code__t3_thread_launch: "applied",
+      mcp__t3_code__schedule_task: "applied", Stop: "applied",
     });
     const before = f.snapshot();
     assert.match(f.run("install").stdout, /no-op/);
@@ -1193,7 +1194,7 @@ describe("workbench setup", () => {
     h.write(h.codexHooksPath, JSON.stringify({ hooks: { PreToolUse: [same] } }));
     h.run("install");
     assert.deepEqual(h.stateJson().codex_hooks.filter((entry) => "matcher" in entry).map((entry) => entry.matcher),
-      ["Agent|spawn_agent", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send"]);
+      ["Agent|spawn_agent", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__schedule_task"]);
     h.run("uninstall");
     assert.deepEqual(h.json(h.codexHooksPath).hooks.PreToolUse, [same]);
   });
@@ -1262,10 +1263,11 @@ describe("workbench setup", () => {
     const toml = read(config).toString("utf8");
     assert.ok(toml.includes(`[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = "${codexHookHash("PreToolUse", "Bash", handler)}"\n`));
     assert.ok(toml.includes(`${f.codexHooksPath}:stop:0:0`));
-    assert.equal(f.stateJson().codex_trust.length, 5);
+    assert.equal(f.stateJson().codex_trust.length, 7);
     assert.deepEqual(JSON.parse(f.run("status").stdout).codex_trust, {
       "Agent|spawn_agent": "trusted", Bash: "trusted", mcp__t3_code__delegate_task: "trusted",
-      mcp__t3_code__t3_thread_send: "trusted", Stop: "trusted",
+      mcp__t3_code__t3_thread_send: "trusted", mcp__t3_code__t3_thread_launch: "trusted",
+      mcp__t3_code__schedule_task: "trusted", Stop: "trusted",
     });
     // A second install neither prompts nor changes anything.
     const before = f.snapshot();
@@ -1287,7 +1289,7 @@ describe("workbench setup", () => {
       { input: "y\n", encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: "" } });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /Trust agent-workbench's Codex hooks now\? \[y\/N\]/);
-    assert.equal(f.stateJson().codex_trust.length, 5);
+    assert.equal(f.stateJson().codex_trust.length, 7);
     assert.equal(JSON.parse(f.run("status").stdout).codex_trust.Bash, "trusted");
   });
 
@@ -1325,7 +1327,7 @@ describe("workbench setup", () => {
     const lines = quiet(() => trustSetup.trust());
     assert.ok(lines.some((line) => line.includes("foreign") && line.includes(foreignKey)));
     assert.equal(JSON.parse(f.run("status").stdout).codex_trust["Agent|spawn_agent"], "modified");
-    assert.equal(f.stateJson().codex_trust.length, 4);
+    assert.equal(f.stateJson().codex_trust.length, 6);
     // Edit one owned table: uninstall keeps it and removes the rest.
     const edited = read(config).toString("utf8").replace(/(pre_tool_use:1:0"\]\ntrusted_hash = ")sha256:[0-9a-f]+/, "$1sha256:edited");
     fs.writeFileSync(config, edited);

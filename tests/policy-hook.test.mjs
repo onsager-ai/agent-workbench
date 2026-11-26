@@ -321,6 +321,46 @@ describe("policy hook", () => {
     }
   });
 
+  test("T3 task creation is gated before exemptions and approval", () => {
+    let session = "thread-policy";
+    const env = { AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") };
+    const prompt = (text) => invoke(JSON.stringify({
+      hook_event_name: "UserPromptSubmit", session_id: session, prompt: text,
+    }), env);
+    const call = (tool_name, tool_input, extras = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_name, tool_input, ...extras,
+    }), env);
+    const workerLaunch = {
+      environmentId: "env", projectId: "project", modelSelection: { model: "gpt-6-luna" },
+    };
+
+    prompt("Role: Worker\nDo the task.");
+    for (const name of ["mcp__t3-code__schedule_task", "mcp__t3_code__schedule_task"]) {
+      assert.equal(call(name, { environmentId: "env", projectId: "project", bindToCurrentThread: true }).permissionDecision, "deny");
+    }
+    for (const name of ["mcp__t3-code__t3_thread_launch", "mcp__t3_code__t3_thread_launch"]) {
+      assert.equal(call(name, workerLaunch).permissionDecision, "deny");
+    }
+    assert.equal(call("mcp__t3_code__t3_thread_launch", workerLaunch, { agent_id: "subagent-1" }).permissionDecision, "deny");
+
+    session = "thread-policy-manager";
+    prompt("Manager work approval: https://example.test/approval");
+    const launch = (tool_input) => call("mcp__t3_code__t3_thread_launch", tool_input);
+    assert.equal(launch(workerLaunch), null);
+    for (const invalid of [
+      { projectId: "project", modelSelection: { model: "gpt-6-luna" } },
+      { environmentId: "env", projectId: " ", modelSelection: { model: "gpt-6-luna" } },
+      { environmentId: "env", projectId: "project", modelSelection: {} },
+      { environmentId: "env", projectId: "project", modelSelection: { model: "prefix-gpt-6-luna" } },
+      { environmentId: "env", projectId: "project", modelSelection: { model: "gpt-6-luna-extra" } },
+      { environmentId: "env", projectId: "project", modelSelection: { model: "claude-opus-5-5" } },
+      { environmentId: "env", projectId: "project", model: "gpt-6-luna" },
+    ]) assert.equal(launch(invalid).permissionDecision, "deny");
+    assert.equal(call("mcp__t3_code__schedule_task", {
+      environmentId: "env", projectId: "project", bindToCurrentThread: true, model: "gpt-6-luna",
+    }).permissionDecision, "deny");
+  });
+
   test("delegate_task stamps Worker role after its existing checks pass", () => {
     for (const tool_name of ["mcp__t3-code__delegate_task", "mcp__t3_code__delegate_task"]) {
       const result = invoke(JSON.stringify({ tool_name, session_id: "stamp-session", tool_input: {
@@ -770,6 +810,19 @@ describe("policy hook", () => {
       assert.equal(codex({
         tool_name: "mcp__t3_code__delegate_task", tool_input: { target: { model: "gpt-6-luna" } },
       }), null);
+    });
+
+    test("task creation checks use the sanitized tool names", () => {
+      for (const tool_name of ["mcp__t3_code__schedule_task", "mcp__t3-code__schedule_task"]) {
+        assert.equal(codex({ tool_name, tool_input: { environmentId: "e", projectId: "p" } }).permissionDecision, "deny");
+      }
+      const launch = { environmentId: "e", projectId: "p", modelSelection: { model: "gpt-6-luna" } };
+      assert.equal(codex({ tool_name: "mcp__t3_code__t3_thread_launch", tool_input: launch }), null);
+      assert.equal(codex({ tool_name: "mcp__t3_code__t3_thread_launch", tool_input: launch,
+        agent_id: "worker-1" }).permissionDecision, "deny");
+      assert.equal(codex({ tool_name: "mcp__t3_code__t3_thread_launch", tool_input: {
+        ...launch, modelSelection: { model: "claude-opus-5-5" },
+      } }).permissionDecision, "deny");
     });
 
     test("spawn_agent approval rules become deny", () => {
