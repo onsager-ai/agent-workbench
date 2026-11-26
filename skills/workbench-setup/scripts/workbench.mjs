@@ -29,7 +29,7 @@ const PERSONAL_BEGIN = Buffer.from("<!-- BEGIN agent-workbench personal -->");
 const PERSONAL_END = Buffer.from("<!-- END agent-workbench personal -->");
 const MARKERS = [BEGIN, END, PERSONAL_BEGIN, PERSONAL_END];
 const IMPORT = Buffer.from("@~/.agents/AGENTS.md");
-const AGY_IMPORT = Buffer.from("@~/.agents/AGENTS.md");
+const AGY_IMPORT = Buffer.from("@[Work instructions](~/.agents/AGENTS.md)");
 const LIMIT = 10 * 1024 * 1024;
 const ROLE = /^[a-z][a-z0-9-]*$/;
 const LEGACY_PRETOOLUSE_MATCHERS = new Set(["Agent|Task", "Bash", "mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_send"]);
@@ -521,6 +521,16 @@ const isAgyIncludeLine = (line) => {
   if (end && line[end - 1] === 0x0a) end--;
   if (end && line[end - 1] === 0x0d) end--;
   return line.subarray(0, end).equals(AGY_IMPORT);
+};
+
+function removeAgyInclude(data, separator) {
+  const lines = splitByteLines(data);
+  const index = lines.findIndex(isAgyIncludeLine);
+  if (index === -1) throw new Conflict("managed Antigravity include missing or modified; left unchanged; restore it in ~/.gemini/AGENTS.md, then rerun agent-workbench install");
+  const start = lines.slice(0, index).reduce((total, line) => total + line.length, 0);
+  const end = start + lines[index].length;
+  const removeStart = separator && end === data.length && start > 0 && data[start - 1] === 0x0a ? start - 1 : start;
+  return Buffer.concat([data.subarray(0, removeStart), data.subarray(end)]);
 };
 
 function syncDir(directory) {
@@ -1270,8 +1280,9 @@ export class Setup {
           || digest(Buffer.from(need(state, "block_text"), "utf8")) !== state.block_hash
           || typeof need(state, "import_added") !== "boolean"
           || (has(state, "antigravity_import") && state.antigravity_import !== null &&
-            (!isDict(state.antigravity_import) || Object.keys(state.antigravity_import).sort().join(",") !== "owned,selected" ||
-              typeof need(state.antigravity_import, "owned") !== "boolean" || typeof need(state.antigravity_import, "selected") !== "boolean"))
+            (!isDict(state.antigravity_import) || Object.keys(state.antigravity_import).sort().join(",") !== "created,owned,selected,separator" ||
+              typeof need(state.antigravity_import, "created") !== "boolean" || typeof need(state.antigravity_import, "owned") !== "boolean" || typeof need(state.antigravity_import, "selected") !== "boolean" ||
+              typeof need(state.antigravity_import, "separator") !== "boolean"))
           || !["", importText + "\n", "\n" + importText + "\n"].includes(need(state, "import_suffix"))) {
         throw invalid("invalid ownership metadata");
       }
@@ -1371,7 +1382,7 @@ export class Setup {
     const state = this.load();
     for (const file of [this.shared, this.claude, this.launcher]) inspect(file, this.home);
     inspect(this.codex, this.home, { link: true });
-    inspect(this.gemini, this.home);
+    if (this.antigravity || state?.antigravity_import?.selected || state?.antigravity_import?.owned) inspect(this.gemini, this.home);
     inspect(this.lockPath, this.home, { directory: true });
     inspect(path.join(this.root, "backups"), this.home, { directory: true });
     for (const name of ["shared", "codex", "claude", "launcher", "claude_settings", "codex_settings", "codex_hooks"]) {
@@ -1410,7 +1421,7 @@ export class Setup {
     } else if (state) {
       throw new Conflict("owned launcher is missing; restore it from backup, then rerun agent-workbench install");
     }
-    if (state?.antigravity_import?.owned && !splitByteLines(read(this.gemini)).some(isAgyIncludeLine)) {
+    if (state?.antigravity_import?.owned && splitByteLines(read(this.gemini)).filter(isAgyIncludeLine).length !== 1) {
       throw new Conflict("managed Antigravity include missing or modified; restore it in ~/.gemini/AGENTS.md, then rerun agent-workbench install");
     }
     const data = read(this.shared);
@@ -1568,17 +1579,25 @@ export class Setup {
         claude = Buffer.concat([claude, Buffer.from(suffix)]);
         imported = { owned: true, line: Buffer.concat([IMPORT, Buffer.from("\n")]) };
       }
-      let gemini = read(this.gemini);
-      const agyLine = Buffer.concat([AGY_IMPORT, Buffer.from("\n")]);
-      const hasAgyLine = splitByteLines(gemini).some(isAgyIncludeLine);
       const agySelected = this.antigravity || state?.antigravity_import?.selected === true;
+      let gemini = null;
       let agyOwned = Boolean(state?.antigravity_import?.owned);
-      if (agySelected && !hasAgyLine) {
-        gemini = Buffer.concat([gemini, gemini.length && gemini[gemini.length - 1] !== 0x0a ? Buffer.from("\n") : Buffer.alloc(0), agyLine]);
-        agyOwned = true;
-      } else if (!agySelected && agyOwned) {
-        gemini = removeExactLine(gemini, agyLine);
-        agyOwned = false;
+      let agySeparator = Boolean(state?.antigravity_import?.separator);
+      let agyCreated = Boolean(state?.antigravity_import?.created);
+      if (agySelected || agyOwned) {
+        if (!state?.antigravity_import?.selected && !state?.antigravity_import?.owned) agyCreated = !present(this.gemini);
+        gemini = read(this.gemini);
+        const agyLine = Buffer.concat([AGY_IMPORT, Buffer.from("\n")]);
+        const hasAgyLine = splitByteLines(gemini).some(isAgyIncludeLine);
+        if (agySelected && !hasAgyLine) {
+          agySeparator = gemini.length > 0 && gemini[gemini.length - 1] !== 0x0a;
+          gemini = Buffer.concat([gemini, agySeparator ? Buffer.from("\n") : Buffer.alloc(0), agyLine]);
+          agyOwned = true;
+        } else if (!agySelected && agyOwned) {
+          gemini = removeAgyInclude(gemini, agySeparator);
+          agyOwned = false;
+          agySeparator = false;
+        }
       }
       const [nativePlans, nativeRecord] = this.nativePlans(state, this.contextValues());
       const [hookRecord] = this.hookPlans(state, nativePlans);
@@ -1606,7 +1625,7 @@ export class Setup {
         launcher_hash: digest(launcher), import_added: Boolean(added),
         import_suffix: suffix,
         claude_import: Setup.encodeClaudeImport(imported.owned, imported.line),
-        antigravity_import: { owned: agyOwned, selected: agySelected },
+        antigravity_import: { created: agyCreated, owned: agyOwned, selected: agySelected, separator: agySeparator },
         owned: { shared: "managed-block", codex: "symlink", claude: "import-line", launcher: "file" },
         agents: Object.fromEntries(Object.entries(desired).map(([name, data]) =>
           [name, { path: path.relative(this.home, this.agentPath(name)), hash: digest(data) }])),
@@ -1624,7 +1643,7 @@ export class Setup {
       const plans = new Map([[this.shared, ["file", shared, 0o600]], [this.codex, ["link", this.target, null]],
         [this.claude, ["file", claude, 0o600]], [this.launcher, ["file", launcher, 0o700]],
         [this.statePath, ["file", stateBytes, 0o600]]]);
-      if (this.antigravity || state?.antigravity_import?.owned) plans.set(this.gemini, ["file", gemini, 0o600]);
+      if (agySelected || agyOwned || state?.antigravity_import?.owned) plans.set(this.gemini, ["file", gemini, 0o600]);
       const agents = new Map();
       for (const name of new Set([...Object.keys(state ? state.agents : {}), ...Object.keys(desired)])) {
         agents.set(this.agentPath(name), has(desired, name) ? ["file", desired[name], 0o600] : ["absent", null, null]);
@@ -1649,6 +1668,7 @@ export class Setup {
           }
         }
         for (const [file, plan] of nativePlans) changed = atomic(file, plan[1]) || changed;
+        if (agySelected || agyOwned || state?.antigravity_import?.owned) changed = atomic(this.gemini, gemini) || changed;
         changed = atomic(this.statePath, stateBytes) || changed;
       });
     });
@@ -1737,8 +1757,8 @@ export class Setup {
     this.withLock(() => {
       const [state, , private_] = this.preflight({ uninstall: true });
       let claude = read(this.claude);
-      let gemini = read(this.gemini);
-      if (state.antigravity_import?.owned) gemini = removeExactLine(gemini, Buffer.concat([AGY_IMPORT, Buffer.from("\n")]));
+      let gemini = null;
+      if (state.antigravity_import?.owned) gemini = removeAgyInclude(read(this.gemini), state.antigravity_import.separator);
       const imported = Setup.claudeImportRecord(state);
       if (imported.owned) {
         const suffix = state.import_added ? Buffer.from(state.import_suffix) : Buffer.alloc(0);
@@ -1760,9 +1780,16 @@ export class Setup {
       const plans = new Map([...agents, [this.shared, ["file", private_, 0o600]], [this.codex, ["file", private_, 0o600]],
         [this.claude, ["file", claude, 0o600]], [this.launcher, ["absent", null, null]],
         [this.statePath, ["absent", null, null]], ...nativePlans]);
-      if (state.antigravity_import?.owned) plans.set(this.gemini, ["file", gemini, 0o600]);
+      if (state.antigravity_import?.owned) plans.set(this.gemini,
+        state.antigravity_import.created && gemini.length === 0 ? ["absent", null, null] : ["file", gemini, 0o600]);
       transaction(plans, () => {
         for (const [file, plan] of nativePlans) atomic(file, plan[1]);
+        if (state.antigravity_import?.owned) {
+          if (state.antigravity_import.created && gemini.length === 0) {
+            fs.unlinkSync(this.gemini);
+            syncDir(path.dirname(this.gemini));
+          } else atomic(this.gemini, gemini);
+        }
         atomic(this.shared, private_);
         atomic(this.codex, private_);
         atomic(this.claude, claude);
