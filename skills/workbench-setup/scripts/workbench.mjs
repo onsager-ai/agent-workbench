@@ -791,7 +791,7 @@ export class Setup {
       if (!isDict(item)) throw new TypeError("invalid skill entry");
       return item.source === SOURCE && item.sourceType === "github";
     }).map(([name]) => name).sort();
-    if (!names.includes("workbench-setup") || names.some((name) => !ROLE.test(name))) {
+    if (!names.includes("workbench-setup") || names.some((name) => !name || name.startsWith("-") || name.includes("/"))) {
       throw new TypeError("setup ownership is missing or names are invalid");
     }
     return names;
@@ -809,6 +809,7 @@ export class Setup {
     let names;
     try {
       names = this.nativeSkillNames(JSON.parse(utf8(read(lockPath))));
+      if (names.some((name) => !ROLE.test(name))) throw new TypeError("invalid Antigravity skill name");
     } catch {
       throw new Conflict("unsupported native skills lock or missing repository ownership; restore a supported native skills lock, then rerun agent-workbench install --antigravity");
     }
