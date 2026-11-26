@@ -535,36 +535,45 @@ describe("workbench setup", () => {
     assert.deepEqual(f.snapshot(), before);
   });
 
-  test("v0.2.5 setup hands compatible config to current assets, then accepts new policy keys", () => {
-    const previousSetup = process.env.AWB_PREVIOUS_SETUP_DIR;
-    assert.ok(previousSetup, "CI must provide the authentic v0.2.5 setup assets");
+  test("current updater hands a new policy key from authentic v0.1.1 assets to current code", () => {
+    const previousSkills = process.env.AWB_PREVIOUS_RELEASE_SKILLS;
+    assert.ok(previousSkills, "CI must provide authentic v0.1.1 setup and policy assets");
     const f = new Fixture();
     fs.rmSync(f.skill, { recursive: true, force: true });
-    fs.cpSync(previousSetup, f.skill, { recursive: true });
+    fs.cpSync(path.join(previousSkills, "workbench-setup"), f.skill, { recursive: true });
+    const orchestration = path.join(f.home, ".agents/skills/orchestrate-harnesses");
+    fs.cpSync(path.join(previousSkills, "orchestrate-harnesses"), orchestration, { recursive: true });
     f.run("install");
     f.nativeLock();
+    const lockPath = path.join(f.home, ".agents/.skill-lock.json");
+    const lock = f.json(lockPath);
+    lock.skills["orchestrate-harnesses"] = { source: "onsager-ai/agent-workbench", sourceType: "github" };
+    fs.writeFileSync(lockPath, JSON.stringify(lock));
 
+    // Invoke the patched updater with state created by the real older setup and policy assets.
+    fs.copyFileSync(path.join(SKILL, "scripts/workbench.mjs"), f.script);
     const log = path.join(f.home, "update-calls.json");
+    const futureCommand = f.fakeCommand(
+      'import fs from "node:fs";\n' +
+      `fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\n` +
+      'process.exit(7);\n');
+    f.write(f.overridePath, 'policy: {stop_classifier: {url: "http://127.0.0.1:9999", model: "test/model"}, future_classifier: true}\n');
+    const handoff = f.run("update", ["--skills-cmd", futureCommand], false);
+    assert.match(handoff.stderr, /native skills update failed \(7\)/);
+    assert.deepEqual(f.json(log), ["update", "host-ops", "orchestrate-harnesses", "workbench-setup", "-g", "-y"]);
+
     const updateCommand = f.fakeCommand(
       'import fs from "node:fs";\nimport path from "node:path";\n' +
       `fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\n` +
-      `for (const name of ["host-ops", "workbench-setup"]) {\n` +
+      `for (const name of ["host-ops", "orchestrate-harnesses", "workbench-setup"]) {\n` +
       `  const target = path.join(${JSON.stringify(f.home)}, ".agents/skills", name);\n` +
       `  fs.rmSync(target, { recursive: true, force: true });\n` +
       `  fs.cpSync(path.join(${JSON.stringify(ROOT)}, "skills", name), target, { recursive: true });\n` +
       `}\n`);
 
-    const newPolicy = 'policy: {stop_classifier: {url: "http://127.0.0.1:9999", model: "test/model"}}\n';
-    f.write(f.overridePath, newPolicy);
-    assert.match(f.run("update", ["--skills-cmd", updateCommand], false).stderr, /unknown keys in policy/);
-    assert.ok(!fs.existsSync(log), "v0.2.5 rejected the key before invoking the skill updater");
-
-    fs.unlinkSync(f.overridePath);
+    f.write(f.overridePath, 'policy: {stop_classifier: {url: "http://127.0.0.1:9999", model: "test/model"}}\n');
     f.run("update", ["--skills-cmd", updateCommand]);
-    assert.deepEqual(f.json(log), ["update", "host-ops", "workbench-setup", "-g", "-y"]);
-
-    f.write(f.overridePath, newPolicy);
-    f.run("update", ["--skills-cmd", updateCommand]);
+    assert.deepEqual(f.json(log), ["update", "host-ops", "orchestrate-harnesses", "workbench-setup", "-g", "-y"]);
     assert.match(fs.readFileSync(f.script, "utf8"), /stop_classifier/);
     f.write(f.overridePath, 'policy: {stop_classifier: {url: "http://127.0.0.1:9999", model: "test/model", token: "invalid"}}\n');
     assert.match(f.run("install", [], false).stderr, /unknown keys in policy\.stop_classifier/);
