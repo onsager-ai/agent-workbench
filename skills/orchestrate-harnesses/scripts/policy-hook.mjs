@@ -16,7 +16,7 @@ const CI_LOGS = "Delegate CI logs. Resume the Worker that owns the branch or dis
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
 const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
-const COUNT_EXEMPT = /^(?:mcp__t3[-_]code__)?(?:t3_thread_send|t3_queue|send_to_user|t3_pending_request|t3_background_wait|Agent|Task|spawn_agent|delegate_task|AskUserQuestion|ToolSearch|pull_request_merge|pull_request_review|pull_request_respond|link_pull_requests?|watch_pull_request|unwatch_pull_request|pull_request_create)$/;
+const COUNT_EXEMPT = /^(?:mcp__t3-code__t3_thread_configure|(?:mcp__t3[-_]code__)?(?:t3_thread_send|t3_queue|send_to_user|t3_pending_request|t3_background_wait|Agent|Task|spawn_agent|delegate_task|AskUserQuestion|ToolSearch|pull_request_merge|pull_request_review|pull_request_respond|link_pull_requests?|watch_pull_request|unwatch_pull_request|pull_request_create))$/;
 const MUTATING_GIT = new Set(["commit", "push", "tag", "merge", "rebase", "reset", "checkout", "switch", "stash", "add"]);
 const APPROVAL_LINE = "Get it first (through the Chief PM when one is registered), then add a line " +
   "`L3 approval: <link to the approval>` to the brief and retry.";
