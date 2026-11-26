@@ -15,6 +15,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.20'
+      - name: Prepare authentic v0.2.5 upgrade fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=e1c73f5d5f67a6b598e3cde03d4789bd1e011d27
+          git fetch --no-tags origin refs/tags/v0.2.5:refs/tags/v0.2.5
+          actual="$(git rev-list -n 1 v0.2.5)"
+          test "$actual" = "$expected"
+          fixture="$RUNNER_TEMP/awb-v0.2.5"
+          mkdir -p "$fixture"
+          git archive "$actual" skills/workbench-setup | tar -x -C "$fixture"
+          echo "AWB_PREVIOUS_SETUP_DIR=$fixture/skills/workbench-setup" >> "$GITHUB_ENV"
       - name: Run retained tests
         run: node --test tests/*.test.mjs
       - name: Verify npm package contents
