@@ -39,6 +39,7 @@ class Fixture {
     this.temporary = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "workbench-setup-")));
     temporaries.push(this.temporary);
     this.configureHome(path.join(this.temporary, "selected"));
+    this.nodeExecutable = process.execPath;
   }
 
   configureHome(home) {
@@ -60,7 +61,7 @@ class Fixture {
 
   run(command, args = [], ok = true, env = {}) {
     assert.notEqual(this.home, os.homedir());
-    const result = spawnSync(process.execPath, [this.script, "--home", this.home, command, ...args,
+    const result = spawnSync(this.nodeExecutable, [this.script, "--home", this.home, command, ...args,
       ...(command === "status" && !args.includes("--json") ? ["--json"] : [])],
       { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: "", ...env } });
     assert.equal(result.status === 0, ok, result.stdout + result.stderr);
@@ -167,6 +168,107 @@ describe("workbench setup", () => {
     assert.equal(cliErrorMessage(error, "workers"), error.message);
     assert.equal(cliErrorMessage(new Error("invalid YAML in workers.yml"), "update"), "invalid YAML in workers.yml");
     assert.equal(cliErrorMessage(new Error("unknown keys in policy: stop_classifier, context"), "update"), "unknown keys in policy: stop_classifier, context");
+  });
+
+  test("instruction-only Antigravity opt-in and updates do not register workspace hooks", () => {
+    const f = new Fixture();
+    const workspace = path.join(f.temporary, "workspace with spaces");
+    fs.mkdirSync(workspace);
+    f.installOrchestration();
+    f.run("install", ["--antigravity"]);
+    f.run("install");
+    assert.ok(!exists(path.join(workspace, ".agents/hooks.json")));
+    f.nativeLock();
+    f.run("update", ["--skills-cmd", f.fakeCommand("process.exit(0);")]);
+    assert.ok(!exists(path.join(workspace, ".agents/hooks.json")));
+  });
+
+  test("explicit Antigravity workspace hook records ownership and removes only its unchanged group", () => {
+    const f = new Fixture();
+    f.configureHome(path.join(f.temporary, "selected home 'quotes'"));
+    const workspace = path.join(f.temporary, "workspace with spaces and 'quotes'");
+    const hooksFile = path.join(workspace, ".agents/hooks.json");
+    fs.mkdirSync(workspace);
+    f.installOrchestration();
+    f.write(hooksFile, JSON.stringify({ foreign: { enabled: true, PreToolUse: [{ matcher: "other", hooks: [{ type: "command", command: "foreign" }] }] } }));
+    f.run("install", ["--antigravity", "--workspace", workspace]);
+    const expectedCommand = [path.resolve(process.execPath), path.resolve(f.hook), "--host", "antigravity"].map(shellQuote).join(" ");
+    const expectedGroup = { enabled: true, PreToolUse: [{ matcher: "run_command", hooks: [{ type: "command", command: expectedCommand }] }] };
+    assert.deepEqual(f.json(hooksFile), {
+      foreign: { enabled: true, PreToolUse: [{ matcher: "other", hooks: [{ type: "command", command: "foreign" }] }] },
+      "agent-workbench": expectedGroup,
+    });
+    const ownershipDir = path.join(f.state, "antigravity-workspaces");
+    const records = fs.readdirSync(ownershipDir);
+    assert.equal(records.length, 1);
+    const ownershipFile = path.join(ownershipDir, records[0]);
+    const ownership = f.json(ownershipFile);
+    assert.deepEqual(ownership, { schema: 1, workspace, group: expectedGroup });
+    assert.equal(mode(ownershipFile), 0o600);
+    f.run("install", ["--antigravity", "--workspace", workspace]);
+    assert.deepEqual(f.json(hooksFile)["agent-workbench"], expectedGroup);
+    fs.unlinkSync(f.hook);
+    f.run("uninstall", ["--antigravity", "--workspace", workspace]);
+    assert.deepEqual(f.json(hooksFile), {
+      foreign: { enabled: true, PreToolUse: [{ matcher: "other", hooks: [{ type: "command", command: "foreign" }] }] },
+    });
+    assert.ok(!exists(ownershipFile));
+  });
+
+  test("identical preexisting Antigravity hook is never adopted or removed", () => {
+    const f = new Fixture();
+    const workspace = path.join(f.temporary, "workspace");
+    const hooksFile = path.join(workspace, ".agents/hooks.json");
+    fs.mkdirSync(workspace);
+    f.installOrchestration();
+    const command = [path.resolve(process.execPath), path.resolve(f.hook), "--host", "antigravity"].map(shellQuote).join(" ");
+    const foreign = { enabled: true, PreToolUse: [{ matcher: "run_command", hooks: [{ type: "command", command }] }] };
+    f.write(hooksFile, JSON.stringify({ "agent-workbench": foreign, other: { enabled: true } }));
+    assert.match(f.run("install", ["--antigravity", "--workspace", workspace], false).stderr, /unowned agent-workbench group/);
+    assert.deepEqual(f.json(hooksFile), { "agent-workbench": foreign, other: { enabled: true } });
+    f.run("uninstall", ["--antigravity", "--workspace", workspace]);
+    assert.deepEqual(f.json(hooksFile), { "agent-workbench": foreign, other: { enabled: true } });
+    assert.ok(!exists(path.join(f.state, "antigravity-workspaces")));
+  });
+
+  test("changed Antigravity hook is retained until restored to its ownership record", () => {
+    const f = new Fixture();
+    const workspace = path.join(f.temporary, "workspace");
+    const hooksFile = path.join(workspace, ".agents/hooks.json");
+    fs.mkdirSync(workspace);
+    f.installOrchestration();
+    f.run("install", ["--antigravity", "--workspace", workspace]);
+    const ownershipFile = path.join(f.state, "antigravity-workspaces", fs.readdirSync(path.join(f.state, "antigravity-workspaces"))[0]);
+    const ownership = f.json(ownershipFile);
+    const changed = { ...ownership.group, enabled: false };
+    f.write(hooksFile, JSON.stringify({ "agent-workbench": changed, other: { enabled: true } }));
+    const before = read(hooksFile);
+    assert.match(f.run("uninstall", ["--antigravity", "--workspace", workspace], false).stderr, /hook was changed/);
+    assert.deepEqual(read(hooksFile), before);
+    assert.deepEqual(f.json(ownershipFile), ownership);
+    assert.match(f.run("install", ["--antigravity", "--workspace", workspace], false).stderr, /conflicts with its ownership record/);
+    assert.deepEqual(read(hooksFile), before);
+    f.write(hooksFile, JSON.stringify({ "agent-workbench": ownership.group, other: { enabled: true } }));
+    f.run("uninstall", ["--antigravity", "--workspace", workspace]);
+    assert.deepEqual(f.json(hooksFile), { other: { enabled: true } });
+    assert.ok(!exists(ownershipFile));
+  });
+
+  test("workspace hook registration conflicts on unsafe config or missing adapter", () => {
+    const f = new Fixture();
+    const workspace = path.join(f.temporary, "workspace");
+    fs.mkdirSync(workspace);
+    const hooksFile = path.join(workspace, ".agents/hooks.json");
+    f.installOrchestration();
+    f.write(hooksFile, "{broken");
+    assert.match(f.run("install", ["--antigravity", "--workspace", workspace], false).stderr, /invalid Antigravity hooks/);
+    fs.rmSync(hooksFile);
+    fs.chmodSync(f.hook, 0o600);
+    assert.match(f.run("install", ["--antigravity", "--workspace", workspace], false).stderr, /not installed or executable/);
+    fs.chmodSync(f.hook, 0o700);
+    f.write(hooksFile, JSON.stringify({ "agent-workbench": { enabled: true, PreToolUse: [] } }));
+    assert.match(f.run("install", ["--antigravity", "--workspace", workspace], false).stderr, /unowned agent-workbench group/);
+    assert.deepEqual(f.json(hooksFile), { "agent-workbench": { enabled: true, PreToolUse: [] } });
   });
 
   test("Antigravity target is opt-in, preserves content and removes only its owned include", () => {

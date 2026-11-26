@@ -587,6 +587,11 @@ function snapshot(target) {
 
 const sameValue = (a, b) => (Buffer.isBuffer(a) && Buffer.isBuffer(b) ? a.equals(b) : a === b);
 
+function unchangedSnapshot(target, expected) {
+  const current = snapshot(target);
+  return current[0] === expected[0] && sameValue(current[1], expected[1]) && current[2] === expected[2];
+}
+
 // Roll back this operation's writes, retaining independently changed entries.
 function transaction(plans, action) {
   const before = new Map([...plans.keys()].map((target) => [target, snapshot(target)]));
@@ -1867,6 +1872,110 @@ function stripTrailingNewlines(data) {
   return data.subarray(0, end);
 }
 
+function validAntigravityGroup(group) {
+  if (!isDict(group) || Object.keys(group).sort().join(",") !== "PreToolUse,enabled" || group.enabled !== true ||
+      !Array.isArray(group.PreToolUse) || group.PreToolUse.length !== 1) return false;
+  const [entry] = group.PreToolUse;
+  if (!isDict(entry) || Object.keys(entry).sort().join(",") !== "hooks,matcher" || entry.matcher !== "run_command" ||
+      !Array.isArray(entry.hooks) || entry.hooks.length !== 1) return false;
+  const [handler] = entry.hooks;
+  if (!isDict(handler) || Object.keys(handler).sort().join(",") !== "command,type" || handler.type !== "command" ||
+      typeof handler.command !== "string") return false;
+  try {
+    const parts = shellSplit(handler.command);
+    return parts.length === 4 && path.isAbsolute(parts[0]) && path.isAbsolute(parts[1]) &&
+      parts[2] === "--host" && parts[3] === "antigravity" && parts.map(shellQuote).join(" ") === handler.command;
+  } catch {
+    return false;
+  }
+}
+
+function antigravityWorkspace(workspace, setup, remove = false) {
+  const root = path.resolve(workspace);
+  const hooksFile = path.join(root, ".agents/hooks.json");
+  const ownershipDir = path.join(setup.root, "antigravity-workspaces");
+  const ownershipFile = path.join(ownershipDir, `${digest(Buffer.from(root))}.json`);
+  inspect(hooksFile, root);
+  inspect(ownershipFile, setup.home);
+
+  return setup.withLock(() => {
+    const hooksBefore = snapshot(hooksFile);
+    const ownershipBefore = snapshot(ownershipFile);
+    if (!["absent", "file"].includes(hooksBefore[0]) || !["absent", "file"].includes(ownershipBefore[0])) {
+      throw new Conflict("Antigravity hook or ownership path changed to an unsafe file type; resolve it manually before retrying");
+    }
+    let owned;
+    if (ownershipBefore[0] === "file") {
+      let record;
+      try { record = JSON.parse(utf8(ownershipBefore[1])); }
+      catch { throw new Conflict(`invalid Antigravity workspace ownership record: ${ownershipFile}; preserve it and resolve it manually`); }
+      if (!isDict(record) || Object.keys(record).sort().join(",") !== "group,schema,workspace" ||
+          record.schema !== 1 || record.workspace !== root || !validAntigravityGroup(record.group)) {
+        throw new Conflict(`invalid Antigravity workspace ownership record: ${ownershipFile}; preserve it and resolve it manually`);
+      }
+      owned = record.group;
+    }
+
+    let config = {};
+    if (hooksBefore[0] === "file") {
+      try { config = JSON.parse(utf8(hooksBefore[1])); }
+      catch { throw new Conflict(`invalid Antigravity hooks configuration: ${hooksFile}; correct hooks.json, then retry`); }
+      if (!isDict(config)) throw new Conflict(`invalid Antigravity hooks configuration: ${hooksFile}; correct hooks.json, then retry`);
+    }
+    const hasGroup = has(config, "agent-workbench");
+    const current = config["agent-workbench"];
+
+    if (remove) {
+      if (!owned) return;
+      if (hasGroup && !isDeepStrictEqual(current, owned)) {
+        throw new Conflict(`Agent Workbench Antigravity hook was changed: ${hooksFile}; restore the recorded group or resolve it manually before uninstalling`);
+      }
+      const { ["agent-workbench"]: ignored, ...remaining } = config;
+      const plans = new Map([[ownershipFile, ["absent", null, null]]]);
+      if (hasGroup) plans.set(hooksFile, ["file", Buffer.from(JSON.stringify(remaining, null, 2) + "\n"), 0o600]);
+      return transaction(plans, () => {
+        if (!unchangedSnapshot(hooksFile, hooksBefore) || !unchangedSnapshot(ownershipFile, ownershipBefore)) {
+          throw new Conflict("Antigravity hooks or ownership changed during removal; no further changes were made");
+        }
+        if (hasGroup) atomic(hooksFile, plans.get(hooksFile)[1], 0o600);
+        fs.unlinkSync(ownershipFile);
+        syncDir(path.dirname(ownershipFile));
+      });
+    }
+
+    let group = owned;
+    if (!group) {
+      if (hasGroup) throw new Conflict(`hooks.json already contains an unowned agent-workbench group: ${hooksFile}; resolve it manually; the existing hook was not adopted`);
+      const adapter = path.resolve(setup.policyHook);
+      let info;
+      try { info = fs.statSync(adapter); } catch {}
+      if (!info?.isFile() || !(info.mode & 0o111)) {
+        throw new Conflict(`Antigravity shell adapter is not installed or executable: ${adapter}; install orchestrate-harnesses, then retry`);
+      }
+      const command = [path.resolve(process.execPath), adapter, "--host", "antigravity"].map(shellQuote).join(" ");
+      group = { enabled: true, PreToolUse: [{ matcher: "run_command", hooks: [{ type: "command", command }] }] };
+    }
+    if (hasGroup) {
+      if (!owned || !isDeepStrictEqual(current, owned)) {
+        throw new Conflict(`Agent Workbench Antigravity hook conflicts with its ownership record: ${hooksFile}; changed configuration was left untouched`);
+      }
+      return;
+    }
+
+    mkdirLeaf(ownershipDir, 0o700);
+    const record = Buffer.from(JSON.stringify({ schema: 1, workspace: root, group }, null, 2) + "\n");
+    const hookBytes = Buffer.from(JSON.stringify({ ...config, "agent-workbench": group }, null, 2) + "\n");
+    const plans = new Map([[hooksFile, ["file", hookBytes, 0o600]], [ownershipFile, ["file", record, 0o600]]]);
+    return transaction(plans, () => {
+      if (!unchangedSnapshot(hooksFile, hooksBefore) || !unchangedSnapshot(ownershipFile, ownershipBefore)) {
+        throw new Conflict("Antigravity hooks or ownership changed during installation; no further changes were made");
+      }
+      atomic(hooksFile, hookBytes, 0o600);
+      atomic(ownershipFile, record, 0o600);
+    });
+  });
+}
+
 const COMMANDS = {
   install: "Apply shared instructions, hooks and settings (use --antigravity to include instructions in Antigravity)",
   update: "Update distributed skills, then apply them",
@@ -1882,12 +1991,12 @@ const USAGE = "usage: workbench.mjs [--home HOME] [--skills-cmd SKILLS_CMD] [--c
   `{${Object.keys(COMMANDS).join(",")}}`;
 
 function parseArguments(argv) {
-  const options = { home: os.homedir(), skillsCmd: undefined, cwd: process.cwd(), command: undefined, json: false, antigravity: false, help: false, helpCommand: undefined };
+  const options = { home: os.homedir(), skillsCmd: undefined, cwd: process.cwd(), workspace: undefined, command: undefined, json: false, antigravity: false, help: false, helpCommand: undefined };
   const fail = (message) => {
     console.error(`${USAGE}\nworkbench.mjs: error: ${message}`);
     process.exit(2);
   };
-  const flags = { "--home": "home", "--skills-cmd": "skillsCmd", "--cwd": "cwd" };
+  const flags = { "--home": "home", "--skills-cmd": "skillsCmd", "--cwd": "cwd", "--workspace": "workspace" };
   for (let index = 0; index < argv.length; index++) {
     if (argv[index] === "--help" || argv[index] === "-h") {
       options.help = true;
@@ -1919,6 +2028,9 @@ function parseArguments(argv) {
   }
   if (options.command === undefined && options.help) return options;
   if (options.command === undefined) fail("the following arguments are required: command");
+  if (options.workspace !== undefined && (!options.antigravity || !["install", "uninstall"].includes(options.command))) {
+    fail("--workspace requires install or uninstall with --antigravity");
+  }
   if (options.command === "help") {
     options.command = undefined;
     options.help = true;
@@ -1939,7 +2051,7 @@ function printHelp(command) {
     for (const [name, description] of Object.entries(COMMANDS)) console.log(`  ${name.padEnd(10)} ${description}`);
     console.log("\nUse workbench.mjs help <command> for command options.");
   } else {
-    const args = command === "lanes" ? " [--cwd CWD] [--json]" : command === "workers" ? " [--cwd CWD]" : command === "update" ? " [--skills-cmd SKILLS_CMD]" : command === "status" ? " [--json]" : command === "install" ? " [--antigravity]" : "";
+    const args = command === "lanes" ? " [--cwd CWD] [--json]" : command === "workers" ? " [--cwd CWD]" : command === "update" ? " [--skills-cmd SKILLS_CMD]" : command === "status" ? " [--json]" : command === "install" ? " [--antigravity] [--workspace PATH]" : command === "uninstall" ? " [--antigravity] [--workspace PATH]" : "";
     console.log(`usage: workbench.mjs [--home HOME]${args} ${command}\n\n${COMMANDS[command]}`);
   }
 }
@@ -1959,11 +2071,16 @@ export function main(argv = process.argv.slice(2)) {
     if (args.command === "version") { console.log(RELEASE); return 0; }
     if (args.command === "ops") return runOps(args.ops, path.resolve(args.home));
     if (args.command === "lanes") { showLanes(args); return 0; }
+    if (args.workspace !== undefined && args.command === "uninstall") {
+      antigravityWorkspace(args.workspace, new Setup(args.home), true);
+      return 0;
+    }
     const setup = new Setup(args.home, { antigravity: args.antigravity });
     if (args.command === "workers") setup.workers(args.cwd);
     else if (args.command === "update") return setup.update(args.skillsCmd);
     else if (args.command === "status") setup.status({ json: args.json });
     else setup[args.command]();
+    if (args.workspace !== undefined) antigravityWorkspace(args.workspace, setup);
     return 0;
   } catch (error) {
     console.error(`agent-workbench: ${cliErrorMessage(error, args.command)}`);
