@@ -44,6 +44,7 @@ describe("worker configuration", () => {
     const codex = bundle.profiles.codex;
     assert.deepEqual(new Set(Object.keys(codex.tiers)), new Set(["haiku", "sonnet", "opus", "luna", "sol", "terra"]));
     assert.deepEqual(codex.ladder.map((entry) => entry.tiers), [["luna", "haiku"], ["sol", "sonnet"], ["opus"]]);
+    assert.equal(Object.values(codex.tiers).some((tier) => tier.model.toLowerCase().includes("neon")), false);
     for (const [name, model] of [["luna", "gpt-6-luna"], ["sol", "gpt-6.2-sol"], ["terra", "gpt-6.1-terra"]]) {
       assert.equal(codex.tiers[name].harness, "codex");
       assert.equal(codex.tiers[name].model, model);
