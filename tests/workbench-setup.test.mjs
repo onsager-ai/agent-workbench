@@ -8,7 +8,7 @@ import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
-import { Setup, codexHookHash, codexHookKey, effectiveWorkers, shellQuote, shellSplit } from "../skills/workbench-setup/scripts/workbench.mjs";
+import { Setup, cliErrorMessage, codexHookHash, codexHookKey, effectiveWorkers, shellQuote, shellSplit } from "../skills/workbench-setup/scripts/workbench.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SKILL = path.join(ROOT, "skills/workbench-setup");
@@ -158,6 +158,17 @@ const read = (file) => fs.readFileSync(file);
 const hex = (data) => crypto.createHash("sha256").update(data).digest("hex");
 
 describe("workbench setup", () => {
+  test("update gives targeted guidance for the mixed-version stop_classifier error only", () => {
+    const error = new Error("unknown keys in policy: stop_classifier; remove or correct those keys in workers.yml, then rerun the command");
+    const message = cliErrorMessage(error, "update");
+    assert.ok(message.startsWith(error.message));
+    assert.match(message, /mixed versions; run agent-workbench install/);
+    assert.match(message, /settings do not need to be deleted/);
+    assert.equal(cliErrorMessage(error, "workers"), error.message);
+    assert.equal(cliErrorMessage(new Error("invalid YAML in workers.yml"), "update"), "invalid YAML in workers.yml");
+    assert.equal(cliErrorMessage(new Error("unknown keys in policy: stop_classifier, context"), "update"), "unknown keys in policy: stop_classifier, context");
+  });
+
   test("Antigravity target is opt-in, preserves content and removes only its owned include", () => {
     const f = new Fixture();
     const gemini = path.join(f.home, ".gemini/AGENTS.md");

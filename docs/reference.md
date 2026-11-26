@@ -145,7 +145,7 @@ npx skills remove -g thermal-guard disk-cleanup
 npx skills add onsager-ai/agent-workbench -g -a codex -a claude-code --skill host-ops -y
 ```
 
-Run `agent-workbench update` to refresh the installed skills and setup. If you manage skills directly, update `workbench-setup` and `host-ops` through the skills CLI. Update `@onsager/awb` too if you use the npm CLI.
+Run `agent-workbench update` to refresh the installed skills and setup. If update reports `unknown keys in policy: stop_classifier`, the distributed skills and setup command may be on mixed versions; run `agent-workbench install` to refresh setup. This does not require deleting user settings. A command already running from an older installed script cannot display this newer recovery guidance; run the updated command again after refreshing the skills. If you manage skills directly, update `workbench-setup` and `host-ops` through the skills CLI. Update `@onsager/awb` too if you use the npm CLI.
 
 ## Thermal operations
 
