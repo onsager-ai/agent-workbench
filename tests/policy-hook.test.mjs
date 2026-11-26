@@ -256,7 +256,6 @@ describe("policy hook", () => {
       "watch_pull_request", "unwatch_pull_request", "pull_request_create"]) {
       assert.equal(call(tool), null, tool);
     }
-    prompt("Configure at the cap.");
     for (let i = 0; i < 5; i++) assert.equal(call("Read"), null);
     assert.equal(call("mcp__t3-code__t3_thread_configure"), null);
     const afterConfigure = call("Read");
