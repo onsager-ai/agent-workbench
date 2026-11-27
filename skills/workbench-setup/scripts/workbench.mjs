@@ -23,6 +23,7 @@ export const VERSION = "1";
 // Agent Workbench release; tests keep it equal to package.json.
 export const RELEASE = "0.2.34";
 const SOURCE = "onsager-ai/agent-workbench";
+const WORKERS_SOURCE_MISSING = "regeneration needs workers.yml restored";
 const BEGIN = Buffer.from("<!-- BEGIN agent-workbench -->");
 const END = Buffer.from("<!-- END agent-workbench -->");
 const PERSONAL_BEGIN = Buffer.from("<!-- BEGIN agent-workbench personal -->");
@@ -598,8 +599,8 @@ function syncDir(directory) {
 
 const temporaryName = (directory) => path.join(directory, `.agent-workbench-${crypto.randomBytes(6).toString("hex")}`);
 
-function atomic(target, data, mode = 0o600) {
-  if (present(target) && !isSymlink(target) && read(target).equals(data)) return false;
+function atomic(target, data, mode = 0o600, publish = null) {
+  if (!publish && present(target) && !isSymlink(target) && read(target).equals(data)) return false;
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const name = temporaryName(path.dirname(target));
   try {
@@ -611,7 +612,8 @@ function atomic(target, data, mode = 0o600) {
     } finally {
       fs.closeSync(descriptor);
     }
-    fs.renameSync(name, target);
+    if (publish) publish(name, target);
+    else fs.renameSync(name, target);
     syncDir(path.dirname(target));
   } finally {
     if (present(name)) fs.unlinkSync(name);
@@ -647,18 +649,22 @@ function unchangedSnapshot(target, expected) {
 }
 
 // Roll back this operation's writes, retaining independently changed entries.
+// An exclusively created file supplies a predicate confirming the write belongs to this transaction.
 function transaction(plans, action) {
-  const before = new Map([...plans.keys()].map((target) => [target, snapshot(target)]));
+  const before = new Map([...plans].map(([target, [, , , ownsNewFile]]) =>
+    [target, ownsNewFile ? ["absent", null, null] : snapshot(target)]));
   try {
     return action();
   } catch (original) {
     const problems = [];
     for (const target of [...plans.keys()].reverse()) {
       try {
+        const planned = plans.get(target);
+        const ownsNewFile = planned[3];
+        if (ownsNewFile && !ownsNewFile()) continue;
         const current = snapshot(target);
         const old = before.get(target);
         if (current[0] === old[0] && sameValue(current[1], old[1]) && current[2] === old[2]) continue;
-        const planned = plans.get(target);
         if (current[0] !== planned[0] || !sameValue(current[1], planned[1])) {
           problems.push(`changed foreign entry retained: ${target}`);
           continue;
@@ -1676,11 +1682,11 @@ export class Setup {
       const bundle = this.workersBundle();
       const workersBytes = bundle ? Buffer.from(dumps(bundle, { indent: 2 }) + "\n") : null;
       const currentWorkers = present(this.workersPath) ? read(this.workersPath) : null;
-      if (this.resolvedWorkersDrift(state, currentWorkers) === "edited") {
-        if (workersBytes === null) throw new Conflict(`cannot regenerate resolved Worker configuration: ${this.workersPath}; distribute orchestrate-harnesses, then rerun agent-workbench install`);
-        workersAside = `${this.workersPath}.edited-${new Date().toISOString()}`;
-        if (present(workersAside)) throw new Conflict(`resolved Worker configuration backup already exists: ${workersAside}; rerun agent-workbench install`);
+      const workersDrift = this.resolvedWorkersDrift(state, currentWorkers);
+      if (workersDrift && workersBytes === null) {
+        throw new Conflict(`resolved Worker configuration is ${workersDrift}: ${this.workersPath}; ${WORKERS_SOURCE_MISSING}`);
       }
+      if (workersDrift === "edited") workersAside = `${this.workersPath}.edited-${new Date().toISOString()}`;
       for (const name of ["shared", "codex", "claude", "launcher"]) this.backup(name, this[name]);
       for (const file of nativePlans.keys()) this.backup(this.backupName(file), file);
       const launcher = this.launcherBytes();
@@ -1722,9 +1728,22 @@ export class Setup {
       else if (state && state.workers_hash) agents.set(this.workersPath, ["absent", null, null]);
       for (const [file, plan] of agents) plans.set(file, plan);
       for (const [file, plan] of nativePlans) plans.set(file, plan);
-      if (workersAside) plans.set(workersAside, ["file", currentWorkers, 0o600]);
+      let publishedAside;
+      if (workersAside) plans.set(workersAside, ["file", currentWorkers, 0o600, () => {
+        if (!publishedAside) return false;
+        const current = fs.lstatSync(workersAside, { throwIfNoEntry: false });
+        return current?.dev === publishedAside.dev && current.ino === publishedAside.ino;
+      }]);
       transaction(plans, () => {
-        if (workersAside) atomic(workersAside, currentWorkers);
+        if (workersAside) atomic(workersAside, currentWorkers, 0o600, (temporary, aside) => {
+          const info = fs.lstatSync(temporary);
+          try { fs.linkSync(temporary, aside); }
+          catch (error) {
+            if (error.code !== "EEXIST") throw error;
+            throw new Conflict(`resolved Worker configuration backup already exists: ${aside}; rerun agent-workbench install`);
+          }
+          publishedAside = info;
+        });
         changed = atomic(this.shared, shared);
         changed = atomicLink(this.codex, this.target) || changed;
         changed = atomic(this.claude, claude) || changed;
@@ -1769,7 +1788,8 @@ export class Setup {
     catch (error) { codexHookStatus = { error: error.message }; }
     const currentWorkers = present(this.workersPath) ? read(this.workersPath) : null;
     const workersDrift = this.resolvedWorkersDrift(state, currentWorkers);
-    const workersStatus = workersDrift ? `${workersDrift} (install will regenerate)` : state.workers_hash ? "applied" : "not installed";
+    const workersRecovery = present(this.models) ? "install will regenerate" : WORKERS_SOURCE_MISSING;
+    const workersStatus = workersDrift ? `${workersDrift} (${workersRecovery})` : state.workers_hash ? "applied" : "not installed";
     const report = {
       installed_version: state.version, available_version: VERSION,
       installed_template_hash: state.template_hash,

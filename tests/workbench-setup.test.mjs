@@ -1877,6 +1877,47 @@ select:
     }
   }
 
+  test("resolved workers recovery preserves a backup created during publication", (t) => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.run("install");
+    const file = path.join(f.state, "workers.json");
+    const edited = Buffer.from("hand-edited workers\n");
+    f.write(file, edited);
+    const before = f.snapshot();
+    const link = fs.linkSync;
+    let aside;
+    t.mock.method(fs, "linkSync", (temporary, destination) => {
+      aside = destination;
+      // Identical bytes must not make the competing backup look like our write.
+      fs.writeFileSync(aside, edited, { mode: 0o600, flag: "wx" });
+      link(temporary, aside);
+    });
+    assert.throws(() => new Setup(f.home).install(), /backup already exists/);
+    assert.ok(aside.startsWith(`${file}.edited-`));
+    assert.deepEqual(read(file), edited);
+    assert.deepEqual(read(aside), edited);
+    const after = f.snapshot();
+    delete after[path.relative(f.home, aside)];
+    assert.deepEqual(after, before);
+  });
+
+  for (const drift of ["missing", "edited"]) {
+    test(`${drift} resolved workers require the YAML source to regenerate`, () => {
+      const f = new Fixture();
+      f.installOrchestration();
+      f.run("install");
+      const file = path.join(f.state, "workers.json");
+      fs.unlinkSync(new Setup(f.home).models);
+      if (drift === "missing") fs.unlinkSync(file);
+      else f.write(file, "edited workers");
+      const before = f.snapshot();
+      assert.equal(JSON.parse(f.run("status").stdout).resolved_workers, `${drift} (regeneration needs workers.yml restored)`);
+      assert.match(f.run("install", [], false).stderr, /regeneration needs workers\.yml restored/);
+      assert.deepEqual(f.snapshot(), before);
+    });
+  }
+
   test("resolved workers recovery still refuses edited owned agents", () => {
     const f = new Fixture();
     f.installOrchestration();
