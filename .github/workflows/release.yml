@@ -1,6 +1,7 @@
 name: Release
 
 # Push a tag vX.Y.Z matching package.json to publish @onsager/awb to npm.
+# A tag push also creates a GitHub release with generated notes.
 # Publishing uses npm trusted publishing (OIDC), so no npm token is stored.
 # A manual run (workflow_dispatch) does a dry run and never publishes.
 
@@ -17,7 +18,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +40,11 @@ jobs:
       - name: Publish
         if: github.event_name == 'push'
         run: npm publish --access public
+      - name: Create GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag
       - name: Dry run
         if: github.event_name != 'push'
         run: npm publish --access public --dry-run
