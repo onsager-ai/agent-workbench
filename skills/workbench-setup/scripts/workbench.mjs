@@ -193,7 +193,13 @@ function validateWorkerShape(config, { profile = false } = {}) {
     }
   }
   if (has(config, "policy")) {
-    keys(config.policy, ["max_auto_rework", "context", "stop_classifier", "browser", "schedules"], "policy");
+    keys(config.policy, ["max_auto_rework", "context", "stop_classifier", "browser", "schedules", "manager_models"], "policy");
+    if (has(config.policy, "manager_models")) {
+      const { manager_models } = config.policy;
+      if (!Array.isArray(manager_models) || manager_models.some((model) => typeof model !== "string" || !model.trim())) {
+        throw new Conflict("policy.manager_models must be a list of nonblank model strings; correct it in workers.yml");
+      }
+    }
     if (has(config.policy, "browser")) {
       const { browser } = config.policy;
       keys(browser, ["profiles"], "policy.browser");

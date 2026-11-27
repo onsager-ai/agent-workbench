@@ -49,6 +49,8 @@ Unknown keys and invalid configuration fail installation without changing manage
 
 `timeout_s` is a ceiling: size each dispatch to the task, up to the configured value, and state it in the brief. Generated Claude Code subagents carry model, effort and `disallowedTools: AskUserQuestion`; track elapsed time and stop overruns using native controls.
 
+`policy.manager_models` lists exact T3 model IDs that a Manager can use when launching or creating a thread with a quoted `L3 approval: <link to the approval>` in its launch text or prompt. Set it to a list of nonblank strings such as `[example/manager-model]`. The default `[]` grants no exception. Profiles inherit the base list and can replace it. Thread model configuration remains limited to eligible L1/L2 models.
+
 ### Context windows
 
 Installation uses the base `policy.context` because native harness settings are shared across directories. `max_tokens` sets Claude Code's `autoCompactWindow` and Codex's `model_auto_compact_token_limit`. `gateway_window` still sets the assumed window for unknown Claude gateway IDs without `[1m]`. `codex_window` optionally sets Codex's `model_context_window`.

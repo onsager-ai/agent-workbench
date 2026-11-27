@@ -7,7 +7,6 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 const APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).";
-const MANAGER_MODELS = ["onsager/codex/gpt-6.2-astra", "codex/gpt-6.2-astra", "gpt-6-astra", "gemini-4-neon"];
 const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task branch, origin/main, " +
   "or git switch -c <task> origin/main.";
 const PROTECTED_BRANCHES = new Set(["main", "master"]);
@@ -20,7 +19,7 @@ const T3_MODEL = "Set target.model (and effort in target.options) for the Worker
 const READ_ONLY_STAMP = "This Worker is read-only: no file edits, commits, pushes, PRs, or state changes.";
 const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the user requests one; " +
   "set nonblank environmentId and projectId and select an exact configured model. " +
-  "For models outside the non-opt-in L1/L2 set, quote the user's approval in the launch text as `L3 approval: <link to the approval>`. " +
+  "For models listed in policy.manager_models, quote the user's approval in the launch text as `L3 approval: <link to the approval>`. " +
   "Model configuration calls have no approval text field and remain limited to non-opt-in L1/L2. " +
   "Workers must not launch top-level threads or change thread models. Use a Worker or current-thread wakeup for follow-up work.";
 const SCHEDULE_TASK = "New schedule_task calls are unavailable because the current T3 schema has no model selection field. " +
@@ -696,7 +695,7 @@ function launchModelAllowed(file, event, model, approved = false) {
       const tier = config.tiers[name];
       return tier && !tier.opt_in && matches(tier);
     }));
-    return (approved && MANAGER_MODELS.includes(model)) || l1L2Allowed;
+    return l1L2Allowed || (approved && config.policy.manager_models?.some((id) => id === model) === true);
   } catch {
     return false;
   }
