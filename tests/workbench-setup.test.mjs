@@ -727,26 +727,34 @@ describe("workbench setup", () => {
     assert.ok(read(f.shared).includes("new public template"));
   });
 
-  test("update includes personal package from any source", () => {
-    const f = new Fixture();
-    f.run("install");
-    f.nativeLock();
-    const lockPath = path.join(f.home, ".agents/.skill-lock.json");
-    const lock = f.json(lockPath);
-    lock.skills["workbench-personal"] = { source: "private/personal", sourceType: "git" };
-    fs.writeFileSync(lockPath, JSON.stringify(lock));
-    const log = path.join(f.home, "calls.json");
-    const personal = f.personalFile();
-    fs.mkdirSync(path.dirname(personal), { recursive: true });
-    const command = f.fakeCommand(
-      'import fs from "node:fs";\nimport path from "node:path";\n' +
-      `fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\n` +
-      `fs.mkdirSync(path.dirname(${JSON.stringify(personal)}), { recursive: true });\n` +
-      `fs.writeFileSync(${JSON.stringify(personal)}, "updated personal rules");\n`);
-    f.run("update", ["--skills-cmd", command]);
-    assert.deepEqual(f.json(log), ["update", "host-ops", "workbench-personal", "workbench-setup", "-g", "-y"]);
-    assert.ok(read(f.shared).includes("updated personal rules"));
-  });
+  for (const repaired of [true, false]) {
+    test(`update refreshes a private personal skill and validates the ${repaired ? "fixed" : "still invalid"} config`, () => {
+      const f = new Fixture();
+      f.installOrchestration();
+      f.run("install");
+      f.nativeLock();
+      const lockPath = path.join(f.home, ".agents/.skill-lock.json");
+      const lock = f.json(lockPath);
+      lock.skills["workbench-personal"] = { source: "private/personal", sourceType: "git" };
+      fs.writeFileSync(lockPath, JSON.stringify(lock));
+      const log = path.join(f.home, "calls.json");
+      const personal = f.personalFile("workers.yml");
+      f.write(personal, "defaults: {unknown: true}\n");
+      const command = f.fakeCommand(
+        'import fs from "node:fs";\n' +
+        `fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\n` +
+        (repaired ? `fs.writeFileSync(${JSON.stringify(personal)}, "defaults: {timeout_s: 800}\\n");\n` : ""));
+      const before = read(path.join(f.state, "workers.json"));
+      const result = f.run("update", ["--skills-cmd", command], repaired);
+      assert.deepEqual(f.json(log), ["update", "host-ops", "workbench-personal", "workbench-setup", "-g", "-y"]);
+      if (repaired) {
+        assert.equal(f.json(path.join(f.state, "workers.json")).base.defaults.timeout_s, 800);
+      } else {
+        assert.match(result.stderr, /unknown keys in defaults: unknown/);
+        assert.deepEqual(read(path.join(f.state, "workers.json")), before);
+      }
+    });
+  }
 
   test("update drops owned lock entries whose skill was deleted locally", () => {
     const f = new Fixture();

@@ -883,13 +883,13 @@ export class Setup {
     return path.join(this.agents, name + ".md");
   }
 
-  workersBundle() {
+  workersBundle({ config = true } = {}) {
     inspect(this.models, this.home);
     inspect(this.personalWorkers, this.home);
     if (present(this.override)) {
       inspect(this.override, isRelativeTo(this.override, this.home) ? this.home : path.dirname(this.override));
     }
-    if (!present(this.models)) return null;
+    if (!config || !present(this.models)) return null;
     return workerBundle(this.models, [this.personalWorkers, this.override], this.home);
   }
 
@@ -938,8 +938,8 @@ export class Setup {
   }
 
   // Render the union of tiers routable from Claude across all profiles.
-  desiredAgents({ warn = true } = {}) {
-    const bundle = this.workersBundle();
+  desiredAgents({ warn = true, config = true } = {}) {
+    const bundle = this.workersBundle({ config });
     inspect(this.worker, this.home);
     if (bundle === null || !present(this.worker)) return {};
     const body = utf8(read(this.worker));
@@ -1564,10 +1564,7 @@ export class Setup {
       if (drift) throw new Conflict(`resolved Worker configuration is ${drift}: ${this.workersPath}; run agent-workbench install to regenerate it, then retry uninstall`);
     }
     if (!uninstall) {
-      if (config) {
-        this.workersBundle();
-        this.desiredAgents({ warn: false });
-      }
+      this.desiredAgents({ warn: false, config });
       inspect(this.script, this.home);
       inspect(this.template, this.home);
       if (!isFile(this.script) || !isFile(this.template)) {
@@ -1933,7 +1930,8 @@ export class Setup {
   }
 
   update(command) {
-    this.preflight();
+    // The installed config may need the refresh before it can be validated.
+    this.preflight({ config: false });
     if (!this.isRealHome && !command) throw new Conflict("alternate --home requires --skills-cmd; real-user npx was not invoked; rerun with --skills-cmd COMMAND");
     let lockFile = path.join(this.home, ".agents/.skill-lock.json");
     if (this.isRealHome && process.env.XDG_STATE_HOME) {
@@ -1946,14 +1944,14 @@ export class Setup {
     if (!present(lockFile)) throw new Conflict("native skills lock is missing; install global skills first, then rerun agent-workbench update");
     let names;
     let native;
+    const personalName = path.basename(this.personal);
     try {
       native = JSON.parse(utf8(read(lockFile)));
       const skills = native.skills;
       if (native.version !== 3 || !isDict(skills)) throw new TypeError("unsupported lock");
       names = Object.entries(skills).filter(([name, item]) => {
-        if (name === "workbench-personal") return true;
         if (!isDict(item)) throw new TypeError("invalid skill entry");
-        return item.source === SOURCE && item.sourceType === "github";
+        return name === personalName || (item.source === SOURCE && item.sourceType === "github");
       }).map(([name]) => name).sort();
       if (!names.includes("workbench-setup") || names.some((name) => !name || name.startsWith("-") || name.includes("/"))) {
         throw new TypeError("setup ownership is missing or names are invalid");
@@ -1962,11 +1960,12 @@ export class Setup {
       throw new Conflict("unsupported native skills lock or missing repository ownership; restore a supported native skills lock, then rerun agent-workbench update");
     }
     // Skills removed upstream and already deleted locally would make the native update warn every run.
-    const stale = names.filter((name) => name !== "workbench-setup" && !present(path.join(this.home, ".agents/skills", name)));
+    const stale = names.filter((name) => name !== "workbench-setup" && name !== personalName &&
+      !present(path.join(this.home, ".agents/skills", name)));
     const args = command ? shellSplit(command) : ["npx", "--yes", "skills@1.7.4"];
     if (!args.length) throw new Conflict("empty skills command; provide an executable command with --skills-cmd");
     this.withLock(() => {
-      this.preflight();
+      this.preflight({ config: false });
       if (stale.length) {
         for (const name of stale) delete native.skills[name];
         const temporary = `${lockFile}.${process.pid}.tmp`;

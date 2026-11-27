@@ -80,11 +80,24 @@ if (command === "setup") {
     console.error("awb: --skills-cmd must name a command");
     process.exit(2);
   }
-  const result = run(skillArgs[0], [
-    ...skillArgs.slice(1), "add", "onsager-ai/agent-workbench", "-g", "-a", "codex",
+  const [skills, ...prefix] = skillArgs;
+  const runSkills = (parameters) => run(skills, [...prefix, ...parameters], { env: { ...process.env, HOME: home } });
+  const result = runSkills([
+    "add", "onsager-ai/agent-workbench", "-g", "-a", "codex",
     "-a", "claude-code", "--skill", "*", "-y",
-  ], { env: { ...process.env, HOME: home } });
+  ]);
   if (result !== 0) process.exit(result);
+  const personal = "workbench-personal";
+  const lock = process.env.XDG_STATE_HOME
+    ? path.join(process.env.XDG_STATE_HOME, "skills", ".skill-lock.json")
+    : path.join(home, ".agents", ".skill-lock.json");
+  if (pathExists(path.join(home, ".agents", "skills", personal)) && pathExists(lock)) {
+    const native = JSON.parse(fs.readFileSync(lock, "utf8"));
+    if (native?.version === 3 && native.skills && Object.hasOwn(native.skills, personal)) {
+      const updateResult = runSkills(["update", personal, "-g", "-y"]);
+      if (updateResult !== 0) process.exit(updateResult);
+    }
+  }
   const installResult = runWorkbench(["install"]);
   if (installResult !== 0) process.exit(installResult);
   process.exit(runWorkbench(["status"]));

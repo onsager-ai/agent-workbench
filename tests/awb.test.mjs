@@ -17,10 +17,16 @@ function fixture() {
   fs.writeFileSync(skillsCmd, `#!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
-const target = path.join(process.env.AWB_TEST_HOME, '.agents', 'skills', 'workbench-setup');
-fs.mkdirSync(path.dirname(target), { recursive: true });
-fs.writeFileSync(path.join(path.dirname(target), 'skills-home'), process.env.HOME);
-fs.cpSync(process.env.AWB_TEST_SOURCE, target, { recursive: true });
+const skills = path.join(process.env.AWB_TEST_HOME, '.agents', 'skills');
+fs.mkdirSync(skills, { recursive: true });
+fs.writeFileSync(path.join(skills, 'skills-home'), process.env.HOME);
+const args = process.argv.slice(2);
+fs.appendFileSync(path.join(skills, 'skills-calls'), JSON.stringify(args) + '\\n');
+if (args[0] === 'update') {
+  fs.writeFileSync(path.join(skills, 'workbench-personal', 'workers.yml'), 'defaults: {timeout_s: 800}\\n');
+} else {
+  fs.cpSync(process.env.AWB_TEST_SOURCE, path.join(skills, 'workbench-setup'), { recursive: true });
+}
 `, { mode: 0o755 });
   return { dir, home, skillsCmd, env: { ...process.env, AWB_TEST_HOME: home, AWB_TEST_SOURCE: path.join(root, "skills", "workbench-setup") } };
 }
@@ -212,6 +218,30 @@ test("setup installs skills, then applies and reports setup", (t) => {
   assert.match(result.stdout, /^ok  setup: applied$/m);
   assert.equal(fs.readFileSync(path.join(f.home, ".agents", "skills", "skills-home"), "utf8"), f.home);
   assert.ok(fs.existsSync(path.join(f.home, ".local", "bin", "agent-workbench")));
+});
+
+test("setup refreshes a locked personal skill before validating its workers", (t) => {
+  const f = fixture();
+  t.after(() => fs.rmSync(f.dir, { recursive: true, force: true }));
+  const skills = path.join(f.home, ".agents", "skills");
+  const personal = path.join(skills, "workbench-personal");
+  fs.mkdirSync(personal, { recursive: true });
+  fs.writeFileSync(path.join(personal, "workers.yml"), "defaults: {unknown: true}\n");
+  fs.cpSync(path.join(root, "skills", "orchestrate-harnesses"), path.join(skills, "orchestrate-harnesses"), { recursive: true });
+  const stateHome = path.join(f.home, "state");
+  fs.mkdirSync(path.join(stateHome, "skills"), { recursive: true });
+  fs.writeFileSync(path.join(stateHome, "skills", ".skill-lock.json"), JSON.stringify({
+    version: 3, skills: { "workbench-personal": { source: "private/personal", sourceType: "git" } },
+  }));
+
+  const setup = run(f.home, ["--skills-cmd", f.skillsCmd, "setup"], { ...f.env, XDG_STATE_HOME: stateHome });
+  assert.equal(setup.status, 0, setup.stderr);
+  const calls = fs.readFileSync(path.join(skills, "skills-calls"), "utf8").trim().split("\n").map(JSON.parse);
+  assert.deepEqual(calls.map(([command]) => command), ["add", "update"]);
+  assert.deepEqual(calls[1], ["update", "workbench-personal", "-g", "-y"]);
+  const workers = run(f.home, ["workers"], f.env);
+  assert.equal(workers.status, 0, workers.stderr);
+  assert.equal(JSON.parse(workers.stdout).defaults.timeout_s, 800);
 });
 
 test("skills failure stops setup and preserves its exit code", (t) => {
