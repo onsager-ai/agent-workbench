@@ -1084,6 +1084,9 @@ describe("workbench setup", () => {
       configure([{ ...interval, schedule }]);
       assert.throws(() => setup.workersBundle(), /policy\.schedules|everyMs/, JSON.stringify(schedule));
     }
+    // Keep the YAML literal intact; a JavaScript numeric literal rounds before serialization.
+    f.write(f.overridePath, JSON.stringify({ policy: { schedules: [interval] } }).replace("60000", "9007199254740993"));
+    assert.throws(() => setup.workersBundle(), /everyMs must be a safe integer/);
   });
 
   test("no agents without orchestration skill", () => {

@@ -695,7 +695,7 @@ function scheduleCreateAllowed(file, event, input) {
       (Object.hasOwn(input, "enabled") && input.enabled !== true) ||
       !Object.keys(input).every((key) => SCHEDULE_CREATE_KEYS.has(key)) ||
       !["interval", "fixed_time"].includes(input.schedule?.type)) return false;
-  const thread = t3Identity()?.[1];
+  const thread = process.env.T3CODE_THREAD_ID?.trim();
   if (!thread) return false;
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
@@ -1058,7 +1058,7 @@ async function main() {
       auditBrowserCall(stateFile, event, isDict(args) ? args : {}, managerState.botProfile, "status", null, browserWorker);
       return;
     }
-    const isScheduleTask = canonicalTool === "mcp__t3_code__schedule_task";
+    const isScheduleTask = /^mcp__t3_code(?:_direct)?__schedule_task$/.test(canonicalTool);
     const isThreadLaunch = canonicalTool === "mcp__t3_code__t3_thread_launch";
     const isThreadConfigure = canonicalTool === "mcp__t3_code__t3_thread_configure";
     const isCreateThreads = canonicalTool === "mcp__t3_code__create_threads";
@@ -1105,7 +1105,7 @@ async function main() {
       [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; ambiguous automation creation is denied here."];
     }
     if (!decision && mainLoop && !managerState.worker && !managerState.approved && typeof tool === "string" &&
-        !COUNT_EXEMPT.test(tool) && !OBSERVATION_COUNT_EXEMPT.test(tool) && !isLocalWakeup) {
+        !isScheduleTask && !COUNT_EXEMPT.test(tool) && !OBSERVATION_COUNT_EXEMPT.test(tool) && !isLocalWakeup) {
       try {
         managerState = updateManagerState(stateFile, (current) => current.turn !== managerState.turn
           ? current : { ...current, count: current.count + 1 });

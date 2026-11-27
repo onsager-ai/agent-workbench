@@ -640,6 +640,7 @@ describe("policy hook", () => {
     const input = { title, prompt: "Check service health.", bindToCurrentThread: true, schedule: interval };
     const env = t3Env(thread);
     const tool_name = "mcp__t3-code__schedule_task";
+    const direct = { tool_name: "mcp__t3_code_direct__schedule_task" };
     const call = (session_id, tool_input, extras = {}, hookEnv = env) => invoke(JSON.stringify({
       hook_event_name: "PreToolUse", session_id, tool_name, tool_input, ...extras,
     }), hookEnv);
@@ -653,6 +654,12 @@ describe("policy hook", () => {
 
     prompt("schedule-unconfigured");
     deny(call("schedule-unconfigured", input), "no schedule config");
+    prompt("schedule-direct-worker", "Role: Worker\nDo the assigned work.");
+    deny(call("schedule-direct-worker", input, direct), "unregistered direct Worker call");
+    prompt("schedule-direct-pause");
+    assert.equal(call("schedule-direct-pause", { scheduledTaskId: "existing", enabled: false }, direct), null);
+    const managerTurns = path.join(directory, "state/agent-workbench/manager-turns");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(managerTurns, "schedule-direct-pause.json"), "utf8")).count, 0);
 
     const overlay = path.join(directory, "schedule-workers.yml");
     fs.writeFileSync(overlay, JSON.stringify({ policy: { schedules: [
@@ -663,8 +670,12 @@ describe("policy hook", () => {
 
     prompt("schedule-interval");
     assert.equal(call("schedule-interval", input), null);
-    const state = path.join(directory, "state/agent-workbench/manager-turns/schedule-interval.json");
-    assert.equal(JSON.parse(fs.readFileSync(state, "utf8")).count, 0);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(managerTurns, "schedule-interval.json"), "utf8")).count, 0);
+
+    prompt("schedule-no-environment-id");
+    assert.equal(call("schedule-no-environment-id", input, direct, {
+      ...env, T3CODE_HOME: path.join(directory, "t3-without-environment-id"), T3CODE_THREAD_ID: ` ${thread} `,
+    }), null);
 
     prompt("schedule-fixed");
     const fixedInput = { ...input, title: "Scheduled review", enabled: true, clientRequestId: "request-1",
@@ -692,7 +703,7 @@ describe("policy hook", () => {
     prompt("schedule-worker", "Role: Worker\nDo the assigned work.");
     deny(call("schedule-worker", input), "Worker main loop");
     deny(call("schedule-no-state", input), "missing state");
-    fs.writeFileSync(path.join(path.dirname(state), "schedule-invalid-state.json"), "not JSON");
+    fs.writeFileSync(path.join(managerTurns, "schedule-invalid-state.json"), "not JSON");
     deny(call("schedule-invalid-state", input), "invalid state");
 
     const session_id = "schedule-codex";

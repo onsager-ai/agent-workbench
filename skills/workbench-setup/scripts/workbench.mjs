@@ -224,8 +224,8 @@ function validateWorkerShape(config, { profile = false } = {}) {
         const { schedule } = entry;
         if (schedule?.type === "interval") {
           keys(schedule, ["type", "everyMs"], `${where}.schedule`);
-          if (!isInt(schedule.everyMs) || schedule.everyMs < 60000) {
-            throw new Conflict(`${where}.schedule.everyMs must be an integer of at least 60000; correct it in workers.yml`);
+          if (!Number.isSafeInteger(schedule.everyMs) || schedule.everyMs < 60000) {
+            throw new Conflict(`${where}.schedule.everyMs must be a safe integer of at least 60000; correct it in workers.yml`);
           }
         } else if (schedule?.type === "fixed_time") {
           keys(schedule, ["type", "timeOfDay", "weekdays"], `${where}.schedule`);
