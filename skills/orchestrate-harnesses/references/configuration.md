@@ -6,6 +6,12 @@ The distributed `workers.yml` supplies schema version 2 defaults. It is overlaid
 
 Tier names are configurable. Each tier identifies its client with `harness` (`codex` or `claude`) and `model`, with optional `effort`, `timeout_s`, `budget_usd`, route, quota brake and opt-in settings. Harness identifies the client, not the model vendor. A positive finite `budget_usd` is a Claude-only target; null adds no monetary cap. Never invent a cost amount. Native billing and quota limits still apply. The interactive Manager keeps its selected model and permissions.
 
+A tier with `provider` uses that nonblank T3 provider instance ID and dispatches only through `delegate_task`. `harness` is optional for that tier; if present, it does not select the route. No native agent or CLI route is generated. For T3 delegation, use the exact tier `model` and pass `options`, a map of string or boolean values, as `target.options`.
+
+`access` defaults to `write`. `isolation` lists the modes allowed for `delegate_task`: `shared`, `worktree`, or both. A write tier defaults to both. A `read-only` tier defaults to `shared` and cannot list `worktree`. An omitted dispatch isolation counts as `shared`. `stamp` adds text after `Role: Worker`; if unset, read-only tiers get a line forbidding file edits, commits, pushes, PRs, and state changes. The stamp is an instruction, not a permissions setting.
+
+Optional `routing` maps free-form job kinds to ordered lists of configured tier names. Managers follow the effective `routing` shown by `agent-workbench workers`; the hook does not enforce the order. Ladder approval and opt-in rules still apply.
+
 ## Profiles and installation
 
 `claude_route` is a Codex tier's model ID for dispatch from Claude Code. Null leaves it as a [Codex Worker](codex-workers.md). Claude tiers use their `model` directly. The optional `codex` profile leaves Luna, Terra and Sol routes null. Users may supply gateway IDs; gateway routing relies on workbench-setup's absolute compaction window and `policy.context.gateway_window`. Without them, Claude Code assumes 200k for those IDs, and routed Codex subagents can compact early, thrash autocompact, and stop using tools.

@@ -22,6 +22,12 @@ Model IDs, efforts, timeouts, optional monetary caps, rework policy, and context
 
 Worker configuration is YAML loaded with the vendored `yaml` package without `npm install` or network access. Put partial overrides in `~/.config/agent-workbench/workers.yml` (or the absolute `$XDG_CONFIG_HOME` equivalent). Mappings merge, lists replace, and null tiers are deleted. Run `agent-workbench workers --cwd PATH` to inspect the selected profile and resolved configuration, then `agent-workbench install` to apply agent and hook changes.
 
+A tier with `provider` uses T3 `delegate_task` only. Set `target.providerInstanceId` to the tier's `provider`, `target.model` to its exact `model`, and `target.options` to its `options` map. `harness` is optional for these tiers and does not select their route. No native agent or CLI route is generated. If the active profile names a provider, the hook requires an exact model match for that provider. Other providers keep the existing lookup.
+
+`access` defaults to `write`. The `isolation` list defaults to `[shared, worktree]` for write tiers and `[shared]` for read-only tiers. A read-only tier cannot list `worktree`. Shared is the default when a dispatch omits `isolation`. `stamp` adds text to the Worker brief; read-only tiers get a default no-changes line if `stamp` is unset. Some child hooks only see shell calls; use those providers on read-only tiers, and do not treat the stamp as a sandbox.
+
+Optional `routing` maps job kinds to lists of tier names in fallback order. Managers follow the effective order printed by `agent-workbench workers`. The hook does not enforce this order, and existing ladder approval and opt-in rules still apply.
+
 For a corporate setup, add a profile and select it for your work directory:
 
 ```yaml
@@ -273,7 +279,7 @@ The package's `AGENTS.md` is applied immediately after the public block, inside 
 
 The exact public markers are `<!-- BEGIN agent-workbench -->` and `<!-- END agent-workbench -->`. Put machine-local personal rules outside both managed blocks in `~/.agents/AGENTS.md`. On first installation, existing Codex regular-file bytes are kept outside the block unchanged. Existing Claude text stays in place. Neither npx distribution nor this setup changes project instructions, agent settings outside the managed entries, credentials, or native permissions.
 
-Generated agents let a Claude Manager dispatch each tier as `subagent_type: haiku`, `sonnet`, and so on. A tier is generated when its role has `harness: claude` or a non-null `claude_route`. Setup generates the union across profiles. The shipped configuration generates `haiku`, `sonnet`, and `opus`. A Claude Manager uses `codex exec` for Codex tiers whose routes are null. Gateway prefixes are installation-specific; set `profiles.codex.tiers.luna.claude_route: <your-gateway>/gpt-6-luna` and `policy.context.gateway_window` in your partial override to generate that route. Rerun `agent-workbench install` after editing the override. Generated files are owned by hash: setup refuses to overwrite a foreign or edited file, leaves other files in `~/.claude/agents` alone, and `uninstall` removes only unmodified owned files.
+Generated agents let a Claude Manager dispatch each tier as `subagent_type: haiku`, `sonnet`, and so on. A tier with no `provider` is generated if it has `harness: claude` or a non-null `claude_route`. Setup generates the union across profiles. The shipped configuration generates `haiku`, `sonnet`, and `opus`. A Claude Manager uses `codex exec` for Codex tiers whose routes are null. Gateway prefixes are installation-specific; set `profiles.codex.tiers.luna.claude_route: <your-gateway>/gpt-6-luna` and `policy.context.gateway_window` in your partial override to generate that route. Rerun `agent-workbench install` after editing the override. Generated files are owned by hash: setup refuses to overwrite a foreign or edited file, leaves other files in `~/.claude/agents` alone, and `uninstall` removes only unmodified owned files.
 
 Setup applies the configured compaction target to owned Claude and Codex config keys when their config directories exist, preserving existing provider routing. Compaction is advisory, not a hard request-token cap; restart running sessions to pick up changes. Setup preserves personal text outside its managed block.
 
