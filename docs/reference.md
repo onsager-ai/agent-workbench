@@ -223,7 +223,7 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 | `~/.codex/AGENTS.md` | Native Codex symlink to the shared file |
 | `~/.claude/CLAUDE.md` | Existing Claude text plus native `@~/.agents/AGENTS.md` import |
 | `~/.local/bin/agent-workbench` | Thin launcher for the installed setup skill |
-| `~/.local/state/agent-workbench/workers.json` | Owned resolved base and profile policy used by the dispatch hook |
+| `~/.local/state/agent-workbench/workers.json` | Generated base and profile policy used by the dispatch hook |
 | `~/.claude/agents/<tier>.md` | Generated Claude Code subagents, one per routable Worker tier when `orchestrate-harnesses` is installed; each blocks `AskUserQuestion`, and optional `worker_window` sets a minimum-only compaction target for these subagents |
 | `~/.claude/settings.json` → `autoCompactWindow`, `modelSettings.<model>.autoCompactWindow`, and optional `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` | Shared and per-model compaction windows and optional gateway context size |
 | `~/.codex/config.toml` → `model_auto_compact_token_limit` and optional `model_context_window` | Shared Codex compaction limit and optional context size |
@@ -232,6 +232,8 @@ Use `agent-workbench` directly when `~/.local/bin` is already on your PATH. The 
 | `~/.local/state/agent-workbench/` | Ownership, hashes, exclusive lock, private backups |
 
 ## Managed files and ownership
+
+Install and update regenerate missing or edited `workers.json` from the YAML sources. Setup saves edits in a private `workers.json.edited-<UTC timestamp>` file and prints the path. Use `agent-workbench status` to see whether the file needs regeneration.
 
 The package's `AGENTS.md` is applied immediately after the public block, inside `<!-- BEGIN agent-workbench personal -->` and `<!-- END agent-workbench personal -->`. Keep machine-local private text outside both blocks. Edit personal instructions in the package; edits inside either installed managed instruction block cause a conflict. Install removes the owned personal block if the package or its `AGENTS.md` disappears. Status reports package presence and applied personal files.
 
