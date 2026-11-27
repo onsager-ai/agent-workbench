@@ -1829,6 +1829,58 @@ select:
     assert.deepEqual(f.snapshot(), before);
   });
 
+  test("provider tiers and routing are resolved without generating native agents", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    f.write(f.overridePath, `tiers:
+  remote: {provider: example-provider, model: example-model, access: read-only, options: {reasoning: high}}
+  tagged: {provider: example-provider, model: another-model, harness: claude, isolation: [shared], stamp: Review only.}
+  routed: {provider: example-provider, model: third-model, harness: codex, claude_route: example/route}
+routing:
+  independent review: [remote, tagged, routed, haiku]
+profiles:
+  selected:
+    routing:
+      independent review: [tagged, remote]
+profile: selected
+`);
+    f.run("install");
+    const resolved = JSON.parse(f.run("workers").stdout);
+    const bundle = f.json(path.join(f.state, "workers.json"));
+    assert.equal(resolved.profile, "selected");
+    assert.deepEqual(resolved.routing["independent review"], ["tagged", "remote"]);
+    assert.deepEqual(bundle.base.routing["independent review"], ["remote", "tagged", "routed", "haiku"]);
+    assert.deepEqual(resolved.tiers.remote, bundle.profiles.selected.tiers.remote);
+    assert.equal(resolved.tiers.remote.harness, undefined);
+    assert.equal(resolved.tiers.remote.access, "read-only");
+    assert.deepEqual(resolved.tiers.remote.options, { reasoning: "high" });
+    for (const tier of ["remote", "tagged", "routed"]) assert.ok(!exists(f.agent(tier)), tier);
+    assert.ok(exists(f.agent("haiku")));
+  });
+
+  test("install and workers reject invalid provider tier and routing fields", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    for (const [text, error] of [
+      ["tiers: {haiku: {access: read-only, isolation: [worktree]}}", /read-only tiers cannot list worktree/],
+      ["routing: {research: [missing]}", /routing for research must be a list of configured tier names/],
+      ['tiers: {haiku: {provider: " "}}', /provider must be a nonblank string/],
+      ["tiers: {haiku: {provider: 12}}", /provider must be a nonblank string/],
+      ["tiers: {haiku: {access: readonly}}", /access must be write or read-only/],
+      ["tiers: {haiku: {isolation: [private]}}", /isolation must be a nonempty list of shared or worktree/],
+      ["tiers: {haiku: {options: {reasoning: 1}}}", /options must be a mapping of strings or booleans/],
+      ["tiers: {haiku: {stamp: false}}", /stamp must be a nonblank string/],
+      ['tiers: {haiku: {access: read-only, stamp: ""}}', /stamp must be a nonblank string/],
+      ['tiers: {haiku: {stamp: "  "}}', /stamp must be a nonblank string/],
+    ]) {
+      f.write(f.overridePath, text);
+      const before = f.snapshot();
+      assert.match(f.run("workers", [], false).stderr, error);
+      assert.match(f.run("install", [], false).stderr, error);
+      assert.deepEqual(f.snapshot(), before, text);
+    }
+  });
+
   test("invalid workers refuse without writes", () => {
     const invalid = [
       "version: 1", "roles: {}", "sol_weekly_brake_percent: 100", "tiers: []",

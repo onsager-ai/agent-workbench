@@ -179,15 +179,16 @@ const positive = (value) => typeof value === "number" && Number.isFinite(value) 
 const nonEmptyString = (value) => typeof value === "string" && value !== "";
 
 function validateWorkerShape(config, { profile = false } = {}) {
-  keys(config, profile ? ["defaults", "tiers", "ladder", "policy"] :
-    ["version", "defaults", "tiers", "ladder", "policy", "profiles", "profile", "select"], "workers");
+  keys(config, profile ? ["defaults", "tiers", "ladder", "policy", "routing"] :
+    ["version", "defaults", "tiers", "ladder", "policy", "routing", "profiles", "profile", "select"], "workers");
   if (has(config, "defaults")) keys(config.defaults, ["effort", "timeout_s", "budget_usd"], "defaults");
   if (has(config, "tiers")) {
     keys(config.tiers, config.tiers, "tiers");
     for (const [name, tier] of Object.entries(config.tiers)) {
       if (!ROLE.test(name)) throw new Conflict(`invalid tier name: ${name}; rename it to lowercase letters, numbers or hyphens in workers.yml`);
       if (tier !== null) {
-        keys(tier, ["harness", "model", "effort", "timeout_s", "budget_usd", "claude_route", "weekly_brake_percent", "opt_in"], `tier ${name}`);
+        keys(tier, ["harness", "model", "effort", "timeout_s", "budget_usd", "claude_route", "weekly_brake_percent", "opt_in",
+          "provider", "options", "access", "isolation", "stamp"], `tier ${name}`);
       }
     }
   }
@@ -286,8 +287,31 @@ export function resolveWorkerConfig(config) {
     const tier = { ...defaults, opt_in: false, ...raw };
     tiers[name] = tier;
     const harness = tier.harness;
-    if (!["codex", "claude"].includes(harness) || !nonEmptyString(tier.model)) {
-      throw new Conflict(`tier ${name} needs a harness (codex|claude) and model string; correct its entry in workers.yml`);
+    const hasProvider = has(tier, "provider");
+    if (hasProvider && (!nonEmptyString(tier.provider) || !tier.provider.trim())) {
+      throw new Conflict(`tier ${name}: provider must be a nonblank string; correct it in workers.yml`);
+    }
+    if (!nonEmptyString(tier.model) || ((!hasProvider || has(tier, "harness")) && !["codex", "claude"].includes(harness))) {
+      throw new Conflict(`tier ${name} needs a model string and, unless provider is set, a harness; correct its entry in workers.yml`);
+    }
+    if (has(tier, "options") && (!isDict(tier.options) ||
+        Object.values(tier.options).some((value) => typeof value !== "string" && typeof value !== "boolean"))) {
+      throw new Conflict(`tier ${name}: options must be a mapping of strings or booleans; correct it in workers.yml`);
+    }
+    if (has(tier, "access") && !["write", "read-only"].includes(tier.access)) {
+      throw new Conflict(`tier ${name}: access must be write or read-only; correct it in workers.yml`);
+    }
+    if (has(tier, "isolation")) {
+      if (!Array.isArray(tier.isolation) || !tier.isolation.length ||
+          tier.isolation.some((value) => !["shared", "worktree"].includes(value))) {
+        throw new Conflict(`tier ${name}: isolation must be a nonempty list of shared or worktree; correct it in workers.yml`);
+      }
+      if (tier.access === "read-only" && tier.isolation.includes("worktree")) {
+        throw new Conflict(`tier ${name}: read-only tiers cannot list worktree in isolation; correct it in workers.yml`);
+      }
+    }
+    if (has(tier, "stamp") && (typeof tier.stamp !== "string" || !tier.stamp.trim())) {
+      throw new Conflict(`tier ${name}: stamp must be a nonblank string; correct it in workers.yml`);
     }
     if (!nonEmptyString(tier.effort)) throw new Conflict(`tier ${name}: effort must be a nonempty string; set it in workers.yml`);
     if (!isInt(tier.timeout_s) || tier.timeout_s <= 0) throw new Conflict(`tier ${name}: timeout_s must be a positive integer; correct it in workers.yml`);
@@ -302,6 +326,14 @@ export function resolveWorkerConfig(config) {
     if (typeof tier.opt_in !== "boolean") throw new Conflict(`tier ${name}: opt_in must be boolean; correct it in workers.yml`);
     if (has(tier, "weekly_brake_percent") && (!positive(tier.weekly_brake_percent) || tier.weekly_brake_percent > 100)) {
       throw new Conflict(`tier ${name}: weekly_brake_percent must be > 0 and <= 100; correct it in workers.yml`);
+    }
+  }
+  if (has(result, "routing")) {
+    keys(result.routing, result.routing, "routing");
+    for (const [kind, names] of Object.entries(result.routing)) {
+      if (!Array.isArray(names) || names.some((name) => typeof name !== "string" || !has(tiers, name))) {
+        throw new Conflict(`routing for ${kind} must be a list of configured tier names; correct it in workers.yml`);
+      }
     }
   }
   const seenLevels = new Set();
@@ -369,7 +401,7 @@ export function workerBundle(distributed, overlays = [], home = null) {
   for (const overlay of overlays) if (present(overlay)) config = mergeWorkers(config, load(overlay));
   if (config.version !== 2) throw new Conflict("workers version must be 2; update workers.yml");
   const base = {};
-  for (const key of ["defaults", "tiers", "ladder", "policy"]) if (has(config, key)) base[key] = config[key];
+  for (const key of ["defaults", "tiers", "ladder", "policy", "routing"]) if (has(config, key)) base[key] = config[key];
   const profiles = {};
   for (const [name, profile] of Object.entries(has(config, "profiles") ? config.profiles : {})) {
     profiles[name] = resolveWorkerConfig(mergeWorkers(base, profile));
@@ -917,7 +949,7 @@ export class Setup {
     const signatures = {};
     for (const config of [bundle.base, ...Object.values(bundle.profiles)]) {
       for (const [name, tier] of Object.entries(config.tiers)) {
-        const model = tier.harness === "claude" ? tier.model : tier.claude_route ?? null;
+        const model = tier.provider ? null : tier.harness === "claude" ? tier.model : tier.claude_route ?? null;
         const signature = JSON.stringify([tier.model, model, tier.effort]);
         if (has(signatures, name) && signatures[name] !== signature) {
           throw new Conflict(`tier ${name} has different model/route/effort across profiles; rename it in workers.yml, then rerun the command`);
@@ -952,6 +984,7 @@ export class Setup {
       const sharedModels = new Map();
       for (const config of [bundle.base, ...Object.values(bundle.profiles)]) {
         for (const [name, tier] of Object.entries(config.tiers)) {
+          if (tier.provider) continue;
           const model = tier.harness === "claude" ? tier.model : tier.claude_route;
           if (context.manager_models.includes(model)) sharedModels.set(name, model);
         }

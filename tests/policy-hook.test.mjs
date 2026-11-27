@@ -858,6 +858,73 @@ describe("policy hook", () => {
     }
   });
 
+  test("delegate_task matches provider tiers only by exact provider and model", () => {
+    bundle.profile = null; // This fixture adds its tier to the base profile.
+    bundle.base.tiers.remote = { provider: "example-provider", model: "catalog/example-model", access: "read-only" };
+    bundle.base.ladder[0].tiers.push("remote");
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    const target = { providerInstanceId: "example-provider", model: "catalog/example-model", options: { reasoning: "high" } };
+    const delegate = (providerTarget, args = {}) => invoke(JSON.stringify({
+      session_id: "provider-manager", tool_name: "mcp__t3-code__delegate_task",
+      tool_input: { task: "Review this change.", target: providerTarget, ...args },
+    }));
+    const task = "Role: Worker\nThis Worker is read-only: no file edits, commits, pushes, PRs, or state changes.\nReview this change.";
+    assert.deepEqual(delegate(target).updatedInput, { task, target });
+    assert.equal(delegate(target, { task: "Role: Worker\nReview this change." }).updatedInput.task, task);
+    assert.equal(delegate(target, { task }), null);
+    for (const model of ["other-model", "example-model", "catalog/example-model[1m]", "remote", "haiku"]) {
+      const denied = delegate({ ...target, model });
+      assert.equal(denied.permissionDecision, "deny", model);
+      assert.match(denied.permissionDecisionReason, /target\.model must exactly match/);
+    }
+    const denied = delegate(target, { isolation: "worktree" });
+    assert.equal(denied.permissionDecision, "deny");
+    assert.match(denied.permissionDecisionReason, /does not allow worktree isolation/);
+    assert.equal(delegate({ ...target, providerInstanceId: "other-provider" }, { isolation: "worktree" }).updatedInput.task,
+      "Role: Worker\nReview this change.");
+    for (const bypass of [
+      { driverKind: "example-provider", model: "other-model" },
+      { driverKind: "example-provider", providerInstanceId: "other-provider", model: "other-model" },
+      { model: target.model },
+    ]) {
+      const result = delegate(bypass);
+      assert.equal(result.permissionDecision, "deny", JSON.stringify(bypass));
+      assert.match(result.permissionDecisionReason, /Set target\.providerInstanceId/);
+    }
+    assert.equal(delegate({ model: "remote" }, { isolation: "worktree" }).updatedInput.task,
+      "Role: Worker\nReview this change.");
+  });
+
+  test("delegate_task leaves isolation to T3 for a legacy tier", () => {
+    const result = invoke(JSON.stringify({
+      session_id: "legacy-manager", tool_name: "mcp__t3-code__delegate_task", tool_input: {
+        target: { model: "haiku" }, isolation: "future-mode", task: "Review this change.",
+      },
+    }));
+    assert.equal(result.updatedInput.task, "Role: Worker\nReview this change.");
+    assert.equal(result.updatedInput.isolation, "future-mode");
+  });
+
+  test("delegate_task applies explicit isolation and custom stamps without bypassing approval", () => {
+    bundle.profile = null; // This fixture adds its tier to the base profile.
+    bundle.base.tiers.remote = {
+      provider: "example-provider", model: "example-model", access: "write", isolation: ["worktree"],
+      stamp: "Only edit the assigned files.",
+    };
+    bundle.base.ladder[2].tiers.push("remote");
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    const delegate = (args) => invoke(JSON.stringify({
+      session_id: "provider-manager", tool_name: "mcp__t3_code__delegate_task", tool_input: {
+        task: "Fix the issue.", target: { providerInstanceId: "example-provider", model: "example-model" }, ...args,
+      },
+    }));
+    assert.match(delegate({}).permissionDecisionReason, /does not allow shared isolation/);
+    assert.match(delegate({ isolation: "worktree" }).permissionDecisionReason, /needs the user's approval/);
+    const task = "Fix the issue.\nL3 approval: https://example.test/approval";
+    assert.equal(delegate({ isolation: "worktree", task }).updatedInput.task,
+      `Role: Worker\nOnly edit the assigned files.\n${task}`);
+  });
+
   test("neutral profile keeps L3 approval and disallows named model overrides", () => {
     bundle = workerBundle(WORKERS, [NEUTRAL_OVERRIDE]);
     fs.writeFileSync(workers, JSON.stringify(bundle));

@@ -17,6 +17,7 @@ const SLEEP_LOOP = "Sleep loops are disabled. Use t3_background_wait or Monitor.
 const CI_LOGS = "Delegate CI logs. Resume the Worker that owns the branch or dispatch an L1 Worker with the run URL.";
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
+const READ_ONLY_STAMP = "This Worker is read-only: no file edits, commits, pushes, PRs, or state changes.";
 const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the user requests one; " +
   "set nonblank environmentId and projectId and select an exact configured model. " +
   "For models outside the non-opt-in L1/L2 set, quote the user's approval in the launch text as `L3 approval: <link to the approval>`. " +
@@ -567,7 +568,7 @@ function postToolModelContext(workers, event) {
     const bundle = JSON.parse(fs.readFileSync(workers, "utf8"));
     const { config } = selectWorkerProfile(bundle, event);
     const tier = config.tiers[agentType];
-    if (!tier) return null;
+    if (!tier || tier.provider) return null;
     const configured = tier.harness === "codex" ? tier.claude_route : tier.model;
     if (configured == null) return null;
     const alias = /^(haiku|sonnet|opus|fable)$/.test(configured);
@@ -653,20 +654,32 @@ function dispatchApproval(file, event, tier) {
   }
 }
 
-// The configured tier whose model or route a delegate_task model names, ignoring a provider prefix
-// such as "onsager/auto/" and a context suffix such as "[1m]".
-function modelTier(file, event, model) {
+function delegateTier(file, event, { model, providerInstanceId, driverKind }) {
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
+    const entries = Object.entries(config.tiers);
+    const providerTiers = entries.filter(([, tier]) => tier.provider);
+    const providers = new Set(providerTiers.map(([, tier]) => tier.provider));
+    if (providers.has(providerInstanceId)) {
+      const match = providerTiers.find(([, tier]) => tier.provider === providerInstanceId && tier.model === model);
+      if (match) return { name: match[0], tier: match[1] };
+      return { denial: "For this provider, target.model must exactly match a configured Worker model in the active profile." };
+    }
+    if (providers.has(driverKind) || (!providerInstanceId && providerTiers.some(([, tier]) => tier.model === model))) {
+      return { denial: "Set target.providerInstanceId to the provider of the configured Worker tier in the active profile." };
+    }
+    // Legacy matching accepts tier names, model IDs and routes, ignoring prefixes and context suffixes.
     const full = String(model).replace(/\[[^\]]*\]$/, "");
     const short = full.split("/").pop();
-    for (const [name, tier] of Object.entries(config.tiers)) {
-      if (name === full || [tier.model, tier.claude_route].some((value) => value === full || value === short)) return name;
+    for (const [name, tier] of entries) {
+      if (!tier.provider && (name === full || [tier.model, tier.claude_route].some((value) => value === full || value === short))) {
+        return { name, tier };
+      }
     }
   } catch {
     // Without readable configuration there is no tier to check.
   }
-  return null;
+  return {};
 }
 
 function hasL3Approval(text) {
@@ -677,7 +690,7 @@ function launchModelAllowed(file, event, model, approved = false) {
   if (typeof model !== "string" || !model.trim()) return false;
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
-    const matches = (tier) => tier && ([tier.model, tier.claude_route].includes(model) ||
+    const matches = (tier) => tier && !tier.provider && ([tier.model, tier.claude_route].includes(model) ||
       (tier.harness === "codex" && model === `codex/${tier.model}`));
     const l1L2Allowed = config.ladder.some((level) => ["L1", "L2"].includes(level.level) && level.tiers.some((name) => {
       const tier = config.tiers[name];
@@ -1225,15 +1238,31 @@ async function main() {
       return;
     }
     if (!decision && isDelegateTask) {
-      const target = "target" in dict(args) ? args.target : {};
-      const model = dict(target).model;
-      if (!model) [decision, reason] = ["deny", T3_MODEL];
+      const input = dict(args);
+      const target = dict(input.target);
+      if (!target.model) [decision, reason] = ["deny", T3_MODEL];
       else {
-        const tier = modelTier(workers, event, model);
-        [decision, reason] = gate(tier && dispatchApproval(workers, event, tier), dict(args).task);
-        if (!decision && mainLoop) {
-          const task = typeof dict(args).task === "string" ? dict(args).task : "";
-          if (!/^Role: Worker$/m.test(task)) emit({ hookSpecificOutput: { hookEventName: "PreToolUse", ...(codex ? { permissionDecision: "allow" } : {}), updatedInput: { ...dict(args), task: `Role: Worker\n${task}` } } });
+        const { name, tier, denial } = delegateTier(workers, event, target);
+        const readOnly = tier?.access === "read-only";
+        const isolation = tier?.isolation ?? (readOnly ? ["shared"] : ["shared", "worktree"]);
+        const requestedIsolation = input.isolation ?? "shared";
+        if (denial) {
+          [decision, reason] = ["deny", denial];
+        } else if ((tier?.provider || tier?.isolation || tier?.access) && !isolation.includes(requestedIsolation)) {
+          [decision, reason] = ["deny", `Worker ${name} does not allow ${requestedIsolation} isolation; use ${isolation.join(" or ")}.`];
+        } else {
+          [decision, reason] = gate(name && dispatchApproval(workers, event, name), input.task);
+        }
+        const extra = tier?.stamp ?? (readOnly ? READ_ONLY_STAMP : "");
+        if (!decision && (mainLoop || extra)) {
+          const task = typeof input.task === "string" ? input.task : "";
+          const role = /^Role: Worker$/m;
+          let stamped = role.test(task) ? task : `Role: Worker\n${task}`;
+          if (extra) {
+            const header = `Role: Worker\n${extra}`;
+            if (!stamped.includes(`${header}\n`) && !stamped.endsWith(header)) stamped = stamped.replace(role, () => header);
+          }
+          if (stamped !== task) emit({ hookSpecificOutput: { hookEventName: "PreToolUse", ...(codex ? { permissionDecision: "allow" } : {}), updatedInput: { ...input, task: stamped } } });
           return;
         }
       }
