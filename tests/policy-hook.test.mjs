@@ -1515,7 +1515,11 @@ describe("policy hook", () => {
     test("enrolled Codex Managers use the launch and configure rules under both T3 namespaces", () => {
       const ids = { environmentId: "env", projectId: "project" };
       const approved = "Run the task.\nL3 approval: https://example.test/approval";
-      const launch = { ...ids, modelSelection: { model: "gpt-6-astra" } };
+      const model = "example/manager-model";
+      const overlay = path.join(directory, "manager-models.yml");
+      fs.writeFileSync(overlay, JSON.stringify({ profile: "codex", policy: { manager_models: [model] } }));
+      fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
+      const launch = { ...ids, modelSelection: { model } };
       const configure = { threadId: "thread-1", modelSelection: { model: "gpt-6-luna" } };
       const create = { threads: [{ target: { ...ids, model: "gpt-6-luna" }, prompt: "Inspect the project." }] };
       for (const namespace of ["mcp__t3_code__", "mcp__t3_code_direct__"]) {
@@ -1530,7 +1534,7 @@ describe("policy hook", () => {
         assert.equal(tool(session, launchTool, { ...launch, message: approved }), null);
         assert.equal(tool(session, launchTool, { ...launch, projectId: "", message: approved }).permissionDecision, "deny");
         assert.equal(tool(session, createTool, create), null);
-        assert.equal(tool(session, createTool, { threads: [{ target: { ...ids, model: "gpt-6-astra" } }] }).permissionDecision, "deny");
+        assert.equal(tool(session, createTool, { threads: [{ target: { ...ids, model } }] }).permissionDecision, "deny");
         assert.equal(tool(session, configureTool, configure), null);
         assert.equal(tool(session, configureTool, { ...configure, modelSelection: launch.modelSelection }).permissionDecision, "deny");
         prompt(worker, `Role: Worker\n${APPROVED}`);
