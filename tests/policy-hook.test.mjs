@@ -95,9 +95,9 @@ describe("policy hook", () => {
   const APPROVED = "Manager work approval: https://example.test/approval";
   const BROWSER_TASK = `Browser task: ${BOT} https://example.test/task`;
 
-  function configureBrowser() {
+  function configureBrowser(extra = "") {
     const overlay = path.join(directory, "browser-workers.yml");
-    fs.writeFileSync(overlay, `policy: { browser: { profiles: { ${BOT}: { urls: [${BOT_URL}] } } } }\n`);
+    fs.writeFileSync(overlay, `policy: { browser: { profiles: { ${BOT}: { urls: [${BOT_URL}] }${extra} } } }\n`);
     bundle = workerBundle(WORKERS, [overlay]);
     fs.writeFileSync(workers, JSON.stringify(bundle));
   }
@@ -126,21 +126,21 @@ describe("policy hook", () => {
 
   test("browser open requires a configured profile and a current approved Manager grant", () => {
     browserPrompt("no-config", `${APPROVED}\n${BROWSER_TASK}`);
-    assert.match(preview("no-config", "open", { profileId: BOT }).permissionDecisionReason, /not configured/);
+    assert.match(preview("no-config", "open", { profileId: BOT, reuseExistingTab: false }).permissionDecisionReason, /not configured/);
     configureBrowser();
     for (const [session, prompt] of [
       ["unapproved", BROWSER_TASK], ["no-grant", APPROVED], ["missing-link", `${APPROVED}\nBrowser task: ${BOT}`],
       ["child", `Role: Worker\n${APPROVED}\n${BROWSER_TASK}`],
     ]) {
       browserPrompt(session, prompt);
-      assert.match(preview(session, "open", { profileId: BOT }).permissionDecisionReason, /current approved Manager turn/);
+      assert.match(preview(session, "open", { profileId: BOT, reuseExistingTab: false }).permissionDecisionReason, /current approved Manager turn/);
     }
     browserPrompt("approved", `${APPROVED}\n${BROWSER_TASK}`);
-    assert.equal(preview("approved", "open", { profileId: BOT }), null);
+    assert.equal(preview("approved", "open", { profileId: BOT, reuseExistingTab: false }), null);
     assert.equal(preview("approved", "snapshot", { tabId: "tab-1" }), null);
     assert.match(preview("approved", "evaluate", { expression: "1 + 1" }).permissionDecisionReason, /evaluation/);
     browserPrompt("approved", APPROVED);
-    assert.equal(preview("approved", "open", { profileId: BOT }).permissionDecision, "deny");
+    assert.equal(preview("approved", "open", { profileId: BOT, reuseExistingTab: false }).permissionDecision, "deny");
     assert.equal(preview("approved", "snapshot", { tabId: "tab-1" }).permissionDecision, "deny");
     assert.equal(preview("approved", "status"), null);
     browserPrompt("approved", `${APPROVED}\n${BROWSER_TASK}`);
@@ -148,13 +148,11 @@ describe("policy hook", () => {
   });
 
   test("a session stays pinned to one bot profile", () => {
-    configureBrowser();
-    bundle.base.policy.browser.profiles["bot-other"] = { urls: ["https://other.test/"] };
-    fs.writeFileSync(workers, JSON.stringify(bundle));
+    configureBrowser(", bot-other: { urls: [https://other.test/] }");
     const session = "browser-pinned";
     browserPrompt(session, `${APPROVED}\n${BROWSER_TASK}\nBrowser task: bot-other https://example.test/task`);
-    assert.equal(preview(session, "open", { profileId: BOT }), null);
-    assert.match(preview(session, "open", { profileId: "bot-other" }).permissionDecisionReason, /fresh session/);
+    assert.equal(preview(session, "open", { profileId: BOT, reuseExistingTab: false }), null);
+    assert.match(preview(session, "open", { profileId: "bot-other", reuseExistingTab: false }).permissionDecisionReason, /fresh session/);
     assert.equal(preview(session, "navigate", { url: "https://other.test/" }).permissionDecision, "deny");
   });
 
@@ -167,12 +165,12 @@ describe("policy hook", () => {
     for (const [index, url] of denied.entries()) {
       const session = `browser-lookalike-${index}`;
       browserPrompt(session, `${APPROVED}\n${BROWSER_TASK}`);
-      assert.match(browserCall(session, "mcp__t3_code__preview_open", { profileId: BOT, url }).permissionDecisionReason, /outside/);
-      assert.equal(preview(session, "open", { profileId: BOT }), null);
+      assert.match(browserCall(session, "mcp__t3_code__preview_open", { profileId: BOT, reuseExistingTab: false, url }).permissionDecisionReason, /outside/);
+      assert.equal(preview(session, "open", { profileId: BOT, reuseExistingTab: false }), null);
       assert.match(preview(session, "navigate", { tabId: "tab-1", url }).permissionDecisionReason, /outside/);
     }
     browserPrompt("browser-valid", `${APPROVED}\n${BROWSER_TASK}`);
-    assert.equal(preview("browser-valid", "open", { profileId: BOT, url: BOT_URL }), null);
+    assert.equal(preview("browser-valid", "open", { profileId: BOT, reuseExistingTab: false, url: BOT_URL }), null);
     assert.equal(preview("browser-valid", "navigate", { url: `${BOT_URL}/access?tab=members#users` }), null);
     assert.equal(preview("browser-valid", "navigate").permissionDecision, "deny");
   });
@@ -180,7 +178,7 @@ describe("policy hook", () => {
   test("subagent grants come only from a permitted Manager Agent or Task in the same turn", () => {
     configureBrowser();
     const agent = { agent_id: "subagent-1" };
-    const open = { profileId: BOT };
+    const open = { profileId: BOT, reuseExistingTab: false };
     const prompt = { subagent_type: "haiku", prompt: BROWSER_TASK };
     for (const tool of ["Agent", "Task"]) {
       const session = `browser-${tool}`;
@@ -202,12 +200,45 @@ describe("policy hook", () => {
     assert.equal(preview("dispatch-unapproved", "open", open, agent).permissionDecision, "deny");
   });
 
+  const botOpenResult = (session_id, tool_use_id, tool_response, extras = {}) => invoke(JSON.stringify({
+    hook_event_name: "PostToolUse", session_id, tool_use_id, tool_response,
+    tool_name: "mcp__t3_code__preview_open", ...extras,
+  }));
+
+  test("Worker preview actions require a tab recorded from an authorized bot open", () => {
+    configureBrowser();
+    const session = "browser-worker-tabs";
+    const agent = { agent_id: "browser-worker-1" };
+    const prompt = { subagent_type: "haiku", prompt: BROWSER_TASK };
+    browserPrompt(session, APPROVED);
+    assert.equal(preview(session, "open", { profileId: "default" }), null);
+    assert.match(preview(session, "act", {}, agent).permissionDecisionReason, /recorded bot tabId/);
+    assert.match(preview(session, "act", { tabId: "owner-tab" }, agent).permissionDecisionReason, /recorded bot tabId/);
+    assert.equal(browserCall(session, "Agent", prompt), null);
+    assert.match(preview(session, "open", { profileId: BOT }, agent).permissionDecisionReason, /reuseExistingTab/);
+    assert.equal(preview(session, "open", { profileId: BOT, reuseExistingTab: false, tabId: "owner-tab" }, agent).permissionDecision, "deny");
+    assert.equal(preview(session, "open", { profileId: "incognito", tabId: "owner-tab" }, agent).permissionDecision, "deny");
+    assert.equal(preview(session, "open", { profileId: BOT, reuseExistingTab: false }, { ...agent, tool_use_id: "bot-open" }), null);
+    assert.equal(botOpenResult(session, "unrelated-open", { tabId: "owner-tab" }, agent), null);
+    assert.equal(preview(session, "act", { tabId: "owner-tab" }, agent).permissionDecision, "deny");
+    assert.equal(botOpenResult(session, "bot-open", { content: [{ type: "text", text: '{"tabId":"bot-tab"}' }] }, agent), null);
+    assert.equal(preview(session, "act", { tabId: "bot-tab" }, agent), null);
+    assert.equal(preview(session, "evaluate", { tabId: "bot-tab" }, agent).permissionDecision, "deny");
+
+    assert.equal(preview(session, "open", { profileId: BOT, reuseExistingTab: false }, { ...agent, tool_use_id: "old-open" }), null);
+    browserPrompt(session, APPROVED);
+    assert.equal(browserCall(session, "Agent", prompt), null);
+    assert.equal(botOpenResult(session, "old-open", { tabId: "late-tab" }, agent), null);
+    assert.equal(preview(session, "act", { tabId: "late-tab" }, agent).permissionDecision, "deny");
+    assert.equal(preview(session, "act", { tabId: "bot-tab" }, agent), null);
+  });
+
   test("status stays allowed at the count limit; default is Manager-only and incognito is allowed", () => {
     const session = "browser-manager";
     browserPrompt(session, "Browser chore.");
     assert.equal(preview(session, "open"), null);
     assert.equal(preview(session, "open", { profileId: "default" }), null);
-    assert.equal(preview(session, "open", { profileId: "incognito" }), null);
+    assert.equal(preview(session, "open", { profileId: "incognito", reuseExistingTab: false }), null);
     assert.equal(preview(session, "open", { profileId: "unlisted" }).permissionDecision, "deny");
     assert.equal(preview(session, "act"), null);
     assert.equal(browserCall(session, "Read").permissionDecision, "deny");
@@ -217,7 +248,7 @@ describe("policy hook", () => {
       for (const input of [{}, { profileId: "default" }]) {
         assert.equal(preview(id, "open", input, extras).permissionDecision, "deny");
       }
-      assert.equal(preview(id, "open", { profileId: "incognito" }, extras), null);
+      assert.equal(preview(id, "open", { profileId: "incognito", reuseExistingTab: false }, extras), null);
     }
   });
 
@@ -228,7 +259,7 @@ describe("policy hook", () => {
       browserPrompt(session, `${APPROVED}\n${BROWSER_TASK}`);
       const file = path.join(directory, "state", "agent-workbench", "manager-turns", `${session}.json`);
       fs.writeFileSync(file, JSON.stringify({ worker: false, count: 0, approved: true, browser: [BOT], ...fields }));
-      assert.equal(preview(session, "open", { profileId: BOT }).permissionDecision, "deny");
+      assert.equal(preview(session, "open", { profileId: BOT, reuseExistingTab: false }).permissionDecision, "deny");
       assert.equal(preview(session, "snapshot").permissionDecision, "deny");
     }
   });

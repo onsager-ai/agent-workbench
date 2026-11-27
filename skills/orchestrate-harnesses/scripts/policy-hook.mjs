@@ -770,10 +770,15 @@ function previewDecision(tool, input, event, state, stateFile, workers, host) {
   const { profileId = "default", url } = input;
   const worker = state.worker || Boolean(event.agent_id);
   const open = tool === "open";
-  if (open && profileId === "incognito") return null;
+  const newTab = input.reuseExistingTab === false && !Object.hasOwn(input, "tabId");
+  if (open && profileId === "incognito") return worker && !newTab
+    ? "Workers must open incognito in a new tab with reuseExistingTab: false and no tabId." : null;
   if (open && profileId === "default") return worker || host !== "claude"
     ? "Only a Claude Manager can open the owner’s default browser profile." : null;
   if (!open && state.invalidBrowser) return "The browser turn state is invalid.";
+  if (!open && worker && (!state.botProfile || !state.botTabs?.includes(input.tabId))) {
+    return "Workers must specify a recorded bot tabId.";
+  }
   if (!open && !state.botProfile) return null;
 
   const profile = open ? profileId : state.botProfile;
@@ -784,6 +789,8 @@ function previewDecision(tool, input, event, state, stateFile, workers, host) {
   if (host !== "claude" || state.invalidBrowser || state.worker || !state.approved || !grants?.includes(profile)) {
     return "This bot browser profile needs a Browser task grant in the current approved Manager turn.";
   }
+  if (open && !newTab) return "Bot profiles must open in a new tab with reuseExistingTab: false and no tabId.";
+  if (open && Object.hasOwn(input, "target")) return "Bot profile opens use a configured HTTPS URL, not a dev-server target.";
   if (tool === "evaluate") return "Script evaluation is blocked in a bot browser session.";
   if ((tool === "navigate" || (open && url !== undefined)) && !matchesBrowserUrl(url, urls)) {
     return "The URL is outside this bot browser profile’s allowed HTTPS prefixes.";
@@ -795,13 +802,48 @@ function previewDecision(tool, input, event, state, stateFile, workers, host) {
         if (current.turn !== state.turn || current.invalidBrowser || (current.botProfile && current.botProfile !== profile)) {
           throw new Error("browser session changed");
         }
-        return current.botProfile === profile ? current : { ...current, botProfile: profile };
+        const id = event.tool_use_id;
+        const botOpens = typeof id === "string" && id ? {
+          ...current.botOpens, [id]: { profile, agentId: event.agent_id ?? null },
+        } : current.botOpens;
+        return { ...current, botProfile: profile, botOpens };
       });
     } catch {
       return "Could not record the bot browser profile for this session.";
     }
   }
   return null;
+}
+
+function openedBotTab(response) {
+  const structured = response?.structuredContent ?? response;
+  if (typeof structured?.tabId === "string" && structured.tabId) return structured.tabId;
+  if (response?.isError || !Array.isArray(response?.content ?? response)) return null;
+  for (const item of response.content ?? response) {
+    if (item?.type !== "text" || typeof item.text !== "string") continue;
+    try {
+      const { tabId } = JSON.parse(item.text);
+      if (typeof tabId === "string" && tabId) return tabId;
+    } catch {}
+  }
+  return null;
+}
+
+function recordBotTab(file, event) {
+  const id = event.tool_use_id;
+  if (!file || typeof id !== "string" || !id) return;
+  const state = readManagerState(file);
+  if (!Object.hasOwn(state.botOpens ?? {}, id)) return;
+  const tabId = event.tool_response?.isError ? null : openedBotTab(event.tool_response);
+  updateManagerState(file, (current) => {
+    if (current.turn !== state.turn || current.invalidBrowser || !Object.hasOwn(current.botOpens ?? {}, id)) return current;
+    const pending = current.botOpens[id];
+    if (pending.profile !== current.botProfile || pending.agentId !== (event.agent_id ?? null)) return current;
+    const botOpens = { ...current.botOpens };
+    delete botOpens[id];
+    const botTabs = tabId ? [...new Set([...(current.botTabs ?? []), tabId])] : current.botTabs;
+    return { ...current, botOpens, botTabs };
+  });
 }
 
 function readsProfileFiles(tool, args, cwd) {
@@ -829,10 +871,14 @@ function readManagerState(file) {
     if (!isDict(value) || typeof value.worker !== "boolean" || !Number.isSafeInteger(value.count) ||
         value.count < 0 || typeof value.approved !== "boolean") throw new Error("invalid state");
     const validGrants = (grants) => grants === undefined || (Array.isArray(grants) && grants.every(isProfileId));
-    if (!validGrants(value.browser) || !validGrants(value.browserGrants) ||
+    const validTabs = value.botTabs === undefined || (Array.isArray(value.botTabs) &&
+      value.botTabs.every((id) => typeof id === "string" && id));
+    const validOpens = value.botOpens === undefined || (isDict(value.botOpens) && Object.values(value.botOpens).every((open) =>
+      isDict(open) && isProfileId(open.profile) && (open.agentId === null || typeof open.agentId === "string")));
+    if (!validTabs || !validOpens || !validGrants(value.browser) || !validGrants(value.browserGrants) ||
         (value.botProfile !== undefined && !isProfileId(value.botProfile)) ||
         (value.turn !== undefined && typeof value.turn !== "string")) {
-      const { browser, browserGrants, ...state } = value;
+      const { browser, browserGrants, botTabs, botOpens, ...state } = value;
       return { ...state, invalidBrowser: true };
     }
     return value;
@@ -969,7 +1015,7 @@ async function main() {
             return {
               worker, count: 0, approved, turn: crypto.randomUUID(),
               ...(browser.length ? { browser } : {}),
-              ...(isProfileId(previous.botProfile) ? { botProfile: previous.botProfile } : {}),
+              ...(isProfileId(previous.botProfile) ? { botProfile: previous.botProfile, botTabs: previous.botTabs } : {}),
               ...(previous.invalidBrowser && !isProfileId(previous.botProfile) ? { invalidBrowser: true } : {}),
             };
           });
@@ -981,6 +1027,11 @@ async function main() {
       return;
     }
     if (event.hook_event_name === "PostToolUse") {
+      if (host === "claude" && typeof event.tool_name === "string" &&
+          event.tool_name.replaceAll("-", "_") === `${PREVIEW_PREFIX}open`) {
+        recordBotTab(stateFile, event);
+        return;
+      }
       if (event.tool_name !== "Agent" && event.tool_name !== "Task") return;
       const context = postToolModelContext(workers, event);
       if (context) emit({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: context } });

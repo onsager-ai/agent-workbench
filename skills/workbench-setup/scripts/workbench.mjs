@@ -36,7 +36,7 @@ const LEGACY_PRETOOLUSE_MATCHERS = new Set(["Agent|Task", "Bash", "mcp__t3-code_
 const CLAUDE_HOOK_MATCHERS = {
   PreToolUse: [".*"],
   UserPromptSubmit: [undefined],
-  PostToolUse: ["Agent|Task"],
+  PostToolUse: ["Agent|Task", "mcp__t3[-_]code__preview_open"],
   Stop: [undefined],
 };
 const claudeHookKey = (event, matcher) => matcher === undefined ? event : `${event}:${matcher}`;
