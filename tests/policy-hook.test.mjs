@@ -632,12 +632,13 @@ describe("policy hook", () => {
     }).permissionDecision, "deny");
   });
 
-  test("T3 schedule creates must match a registered schedule in the Claude Manager main loop", () => {
+  test("T3 schedule creation and re-enabling require a registered schedule in the Claude Manager main loop", () => {
     const thread = "registered-thread";
     const title = "Hourly health check";
     const interval = { type: "interval", everyMs: 3600000 };
     const fixed = { type: "fixed_time", timeOfDay: "09:15", weekdays: [1, 3] };
     const input = { title, prompt: "Check service health.", bindToCurrentThread: true, schedule: interval };
+    const reenable = { scheduledTaskId: "task-1", enabled: true, freshSession: true };
     const env = t3Env(thread);
     const tool_name = "mcp__t3-code__schedule_task";
     const direct = { tool_name: "mcp__t3_code_direct__schedule_task" };
@@ -663,13 +664,14 @@ describe("policy hook", () => {
 
     const overlay = path.join(directory, "schedule-workers.yml");
     fs.writeFileSync(overlay, JSON.stringify({ policy: { schedules: [
-      { name: title, thread, schedule: interval },
-      { name: "Scheduled review", thread, schedule: fixed },
+      { name: title, thread, schedule: interval, task_id: reenable.scheduledTaskId, fresh_session: true },
+      { name: "Scheduled review", thread, schedule: fixed, task_id: "task-2" },
     ] } }));
     fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
 
     prompt("schedule-interval");
     assert.equal(call("schedule-interval", input), null);
+    assert.equal(call("schedule-interval", { ...input, freshSession: true }), null);
     assert.equal(JSON.parse(fs.readFileSync(path.join(managerTurns, "schedule-interval.json"), "utf8")).count, 0);
 
     prompt("schedule-no-environment-id");
@@ -681,6 +683,13 @@ describe("policy hook", () => {
     const fixedInput = { ...input, title: "Scheduled review", enabled: true, clientRequestId: "request-1",
       schedule: { weekdays: [1, 3], timeOfDay: "09:15", type: "fixed_time" } };
     assert.equal(call("schedule-fixed", fixedInput), null);
+    assert.equal(call("schedule-fixed", { ...fixedInput, freshSession: false }), null);
+
+    prompt("schedule-reenable");
+    assert.equal(call("schedule-reenable", reenable), null);
+    assert.equal(call("schedule-reenable", { scheduledTaskId: reenable.scheduledTaskId, enabled: true }), null);
+    const reenableWithEnv = { ...reenable, scheduledTaskId: "task-2", freshSession: false, environmentId: "env-1" };
+    assert.equal(call("schedule-reenable", reenableWithEnv, direct), null);
 
     for (const [label, payload, event, hookEnv] of [
       ["wrong-thread", input, {}, t3Env("wrong-thread")],
@@ -695,6 +704,16 @@ describe("policy hook", () => {
       ["disabled", { ...input, enabled: false }],
       ["blank-prompt", { ...input, prompt: " " }],
       ["child", input, { agent_id: "worker-1" }],
+      ["create-fresh-session-mismatch", { ...input, freshSession: false }],
+      ["create-fresh-session-default-mismatch", { ...fixedInput, freshSession: true }],
+      ["reenable-wrong-thread", reenable, {}, t3Env("wrong-thread")],
+      ["reenable-unknown-task", { ...reenable, scheduledTaskId: "unknown-task" }],
+      ["reenable-fresh-session-mismatch", { ...reenable, freshSession: false }],
+      ["reenable-fresh-session-type", { ...reenable, freshSession: "true" }],
+      ["reenable-extra-key", { ...reenable, prompt: "Replace task." }],
+      ["reenable-no-enable", { ...reenable, enabled: undefined }],
+      ["reenable-invalid-environment", { ...reenable, environmentId: " " }],
+      ["reenable-child", reenable, { agent_id: "worker-1" }],
     ]) {
       const session = `schedule-${label}`;
       prompt(session);
@@ -702,9 +721,12 @@ describe("policy hook", () => {
     }
     prompt("schedule-worker", "Role: Worker\nDo the assigned work.");
     deny(call("schedule-worker", input), "Worker main loop");
+    deny(call("schedule-worker", reenable), "re-enable from Worker main loop");
     deny(call("schedule-no-state", input), "missing state");
+    deny(call("schedule-no-state", reenable), "re-enable with missing state");
     fs.writeFileSync(path.join(managerTurns, "schedule-invalid-state.json"), "not JSON");
     deny(call("schedule-invalid-state", input), "invalid state");
+    deny(call("schedule-invalid-state", reenable), "re-enable with invalid state");
 
     const session_id = "schedule-codex";
     prompt(session_id);
@@ -731,6 +753,7 @@ describe("policy hook", () => {
       deny(JSON.parse(create.stdout).hookSpecificOutput, `enrolled Codex host with matching schedule (${name})`);
     }
     assert.equal(call("schedule-pause", { scheduledTaskId: "existing", enabled: false }), null);
+    deny(call("schedule-pause", { ...reenable, enabled: false }), "pause with freshSession");
   });
 
   test("Claude Managers can quote approval to launch configured Manager models", () => {

@@ -51,6 +51,8 @@ Unknown keys and invalid configuration fail installation without changing manage
 
 `policy.manager_models` lists exact T3 model IDs that a Manager can use when launching or creating a thread with a quoted `L3 approval: <link to the approval>` in its launch text or prompt. Set it to a list of nonblank strings such as `[example/manager-model]`. The default `[]` grants no exception. Profiles inherit the base list and can replace it. Thread model configuration remains limited to eligible L1/L2 models.
 
+`policy.schedules` lists registered recurring T3 schedules by `name`, `thread`, and exact `schedule`. A Claude Manager in the registered thread can create a matching thread-bound schedule. Set the optional `task_id` to the existing T3 scheduled task ID to also allow that Manager to re-enable it with `scheduledTaskId` and `enabled: true`. Re-enable calls can also supply `environmentId`. When a create or re-enable call supplies `freshSession`, it must match the entry’s optional `fresh_session` boolean, which defaults to `false`.
+
 ### Context windows
 
 Installation uses the base `policy.context` because native harness settings are shared across directories. `max_tokens` sets Claude Code's `autoCompactWindow` and Codex's `model_auto_compact_token_limit`. `gateway_window` still sets the assumed window for unknown Claude gateway IDs without `[1m]`. `codex_window` optionally sets Codex's `model_context_window`.

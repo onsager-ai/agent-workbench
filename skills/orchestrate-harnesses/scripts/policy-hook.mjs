@@ -23,8 +23,8 @@ const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the u
   "Model configuration calls have no approval text field and remain limited to non-opt-in L1/L2. " +
   "Workers must not launch top-level threads or change thread models. Use a Worker or current-thread wakeup for follow-up work.";
 const SCHEDULE_TASK = "New schedule_task calls are unavailable because the current T3 schema has no model selection field. " +
-  "Only disable an identified existing schedule here; use the personal automation registry before other automation activation. " +
-  "A Claude Manager can create a thread-bound schedule that exactly matches an entry in policy.schedules.";
+  "Use the personal automation registry before activating automation. " +
+  "A Claude Manager can create or re-enable a schedule that matches an entry in policy.schedules. Identified schedules can be paused.";
 const BROWSER_TOOL = /^mcp__t3_code(?:_direct)?__(preview_.+|t3_preview_.+)$/;
 const BROWSER_MANAGER = "Browser tools other than status require a Claude Manager main loop with valid turn state.";
 const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
@@ -701,19 +701,30 @@ function launchModelAllowed(file, event, model, approved = false) {
   }
 }
 
-const SCHEDULE_CREATE_KEYS = new Set(["title", "prompt", "schedule", "bindToCurrentThread", "clientRequestId", "enabled"]);
+const SCHEDULE_CREATE_KEYS = new Set(["title", "prompt", "schedule", "bindToCurrentThread", "clientRequestId", "enabled", "freshSession"]);
+const SCHEDULE_UPDATE_KEYS = new Set(["scheduledTaskId", "enabled", "freshSession", "environmentId"]);
 
-function scheduleCreateAllowed(file, event, input) {
-  if (!file || input.bindToCurrentThread !== true || typeof input.prompt !== "string" || !input.prompt.trim() ||
+function registeredScheduleAllowed(file, event, input) {
+  const thread = process.env.T3CODE_THREAD_ID?.trim();
+  if (!file || !thread) return false;
+  const update = Object.hasOwn(input, "scheduledTaskId");
+  if (update) {
+    if (typeof input.scheduledTaskId !== "string" || !input.scheduledTaskId.trim() || input.enabled !== true ||
+        !Object.keys(input).every((key) => SCHEDULE_UPDATE_KEYS.has(key)) ||
+        (input.environmentId !== undefined && (typeof input.environmentId !== "string" || !input.environmentId.trim()))) return false;
+  } else if (input.bindToCurrentThread !== true || typeof input.prompt !== "string" || !input.prompt.trim() ||
       (Object.hasOwn(input, "enabled") && input.enabled !== true) ||
       !Object.keys(input).every((key) => SCHEDULE_CREATE_KEYS.has(key)) ||
       !["interval", "fixed_time"].includes(input.schedule?.type)) return false;
-  const thread = process.env.T3CODE_THREAD_ID?.trim();
-  if (!thread) return false;
+
+  const hasFreshSession = Object.hasOwn(input, "freshSession");
+  if (hasFreshSession && typeof input.freshSession !== "boolean") return false;
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
-    return config.policy.schedules?.some((entry) => entry.thread === thread && entry.name === input.title &&
-      isDeepStrictEqual(entry.schedule, input.schedule)) ?? false;
+    return config.policy.schedules?.some((entry) => entry.thread === thread &&
+      (!hasFreshSession || input.freshSession === (entry.fresh_session ?? false)) &&
+      (update ? entry.task_id === input.scheduledTaskId :
+        entry.name === input.title && isDeepStrictEqual(entry.schedule, input.schedule))) ?? false;
   } catch {
     return false;
   }
@@ -1155,7 +1166,7 @@ async function main() {
         input.enabled === false && Object.keys(input).every((key) => safePauseKeys.has(key)) &&
         (input.environmentId === undefined || (typeof input.environmentId === "string" && input.environmentId.trim()));
       if (!pauseOnly && !(host === "claude" && event.agent_id == null && managerState.worker === false &&
-          managerState.turn && !managerState.invalidBrowser && scheduleCreateAllowed(workers, event, input))) {
+          managerState.turn && !managerState.invalidBrowser && registeredScheduleAllowed(workers, event, input))) {
         [decision, reason] = ["deny", SCHEDULE_TASK];
       }
     } else if (isPrWatch && !hasPrWatchTarget(args)) {

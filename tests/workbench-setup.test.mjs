@@ -1094,8 +1094,9 @@ describe("workbench setup", () => {
     const interval = { name: "Hourly check", thread: "thread-1", schedule: { type: "interval", everyMs: 60000 } };
     const fixed = { name: "Daily check", thread: "thread-2",
       schedule: { type: "fixed_time", timeOfDay: "08:30", weekdays: [0, 6] } };
-    const daily = { ...fixed, schedule: { type: "fixed_time", timeOfDay: "09:00" } };
-    const schedules = [interval, fixed, daily];
+    const daily = { ...fixed, task_id: "task-1", fresh_session: true,
+      schedule: { type: "fixed_time", timeOfDay: "09:00" } };
+    const schedules = [interval, { ...fixed, fresh_session: false }, daily];
     const configure = (value) => f.write(f.overridePath, JSON.stringify({ policy: { schedules: value } }));
     configure(schedules);
     f.run("install");
@@ -1115,6 +1116,14 @@ describe("workbench setup", () => {
     ]) {
       configure([{ ...interval, schedule }]);
       assert.throws(() => setup.workersBundle(), /policy\.schedules|everyMs/, JSON.stringify(schedule));
+    }
+    for (const task_id of [null, 42, "", " "]) {
+      configure([{ ...interval, task_id }]);
+      assert.throws(() => setup.workersBundle(), /task_id must be a nonblank string/);
+    }
+    for (const fresh_session of [null, 1, "true"]) {
+      configure([{ ...interval, fresh_session }]);
+      assert.throws(() => setup.workersBundle(), /fresh_session must be a boolean/);
     }
     // Keep the YAML literal intact; a JavaScript numeric literal rounds before serialization.
     f.write(f.overridePath, JSON.stringify({ policy: { schedules: [interval] } }).replace("60000", "9007199254740993"));
