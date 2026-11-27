@@ -632,6 +632,89 @@ describe("policy hook", () => {
     }).permissionDecision, "deny");
   });
 
+  test("T3 schedule creates must match a registered schedule in the Claude Manager main loop", () => {
+    const thread = "registered-thread";
+    const title = "Hourly health check";
+    const interval = { type: "interval", everyMs: 3600000 };
+    const fixed = { type: "fixed_time", timeOfDay: "09:15", weekdays: [1, 3] };
+    const input = { title, prompt: "Check service health.", bindToCurrentThread: true, schedule: interval };
+    const env = t3Env(thread);
+    const tool_name = "mcp__t3-code__schedule_task";
+    const direct = { tool_name: "mcp__t3_code_direct__schedule_task" };
+    const call = (session_id, tool_input, extras = {}, hookEnv = env) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id, tool_name, tool_input, ...extras,
+    }), hookEnv);
+    const prompt = (session_id, text = "Create the registered schedule.") => invoke(JSON.stringify({
+      hook_event_name: "UserPromptSubmit", session_id, prompt: text,
+    }), env);
+    const deny = (decision, label) => {
+      assert.equal(decision?.permissionDecision, "deny", label);
+      assert.match(decision.permissionDecisionReason, /policy\.schedules/);
+    };
+
+    prompt("schedule-unconfigured");
+    deny(call("schedule-unconfigured", input), "no schedule config");
+    prompt("schedule-direct-worker", "Role: Worker\nDo the assigned work.");
+    deny(call("schedule-direct-worker", input, direct), "unregistered direct Worker call");
+    prompt("schedule-direct-pause");
+    assert.equal(call("schedule-direct-pause", { scheduledTaskId: "existing", enabled: false }, direct), null);
+    const managerTurns = path.join(directory, "state/agent-workbench/manager-turns");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(managerTurns, "schedule-direct-pause.json"), "utf8")).count, 0);
+
+    const overlay = path.join(directory, "schedule-workers.yml");
+    fs.writeFileSync(overlay, JSON.stringify({ policy: { schedules: [
+      { name: title, thread, schedule: interval },
+      { name: "Scheduled review", thread, schedule: fixed },
+    ] } }));
+    fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
+
+    prompt("schedule-interval");
+    assert.equal(call("schedule-interval", input), null);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(managerTurns, "schedule-interval.json"), "utf8")).count, 0);
+
+    prompt("schedule-no-environment-id");
+    assert.equal(call("schedule-no-environment-id", input, direct, {
+      ...env, T3CODE_HOME: path.join(directory, "t3-without-environment-id"), T3CODE_THREAD_ID: ` ${thread} `,
+    }), null);
+
+    prompt("schedule-fixed");
+    const fixedInput = { ...input, title: "Scheduled review", enabled: true, clientRequestId: "request-1",
+      schedule: { weekdays: [1, 3], timeOfDay: "09:15", type: "fixed_time" } };
+    assert.equal(call("schedule-fixed", fixedInput), null);
+
+    for (const [label, payload, event, hookEnv] of [
+      ["wrong-thread", input, {}, t3Env("wrong-thread")],
+      ["wrong-title", { ...input, title: "Other check" }],
+      ["different-interval", { ...input, schedule: { ...interval, everyMs: 60000 } }],
+      ["different-weekdays", { ...fixedInput, schedule: { ...fixed, weekdays: [3, 1] } }],
+      ["webhook", { ...input, schedule: { type: "webhook" } }],
+      ["once", { ...input, schedule: { type: "once", runAt: "2026-12-01T09:00:00Z" } }],
+      ["missing-bind", { ...input, bindToCurrentThread: undefined }],
+      ["extra-key", { ...input, environmentId: "env-1" }],
+      ["update", { ...input, scheduledTaskId: "existing" }],
+      ["disabled", { ...input, enabled: false }],
+      ["blank-prompt", { ...input, prompt: " " }],
+      ["child", input, { agent_id: "worker-1" }],
+    ]) {
+      const session = `schedule-${label}`;
+      prompt(session);
+      deny(call(session, payload, event, hookEnv), label);
+    }
+    prompt("schedule-worker", "Role: Worker\nDo the assigned work.");
+    deny(call("schedule-worker", input), "Worker main loop");
+    deny(call("schedule-no-state", input), "missing state");
+    fs.writeFileSync(path.join(managerTurns, "schedule-invalid-state.json"), "not JSON");
+    deny(call("schedule-invalid-state", input), "invalid state");
+
+    const session_id = "schedule-codex";
+    prompt(session_id);
+    const result = run(JSON.stringify({ session_id, tool_name, tool_input: input }), {
+      args: ["--host", "codex", "--workers", workers], env: { ...env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") },
+    });
+    deny(JSON.parse(result.stdout).hookSpecificOutput, "Codex host");
+    assert.equal(call("schedule-pause", { scheduledTaskId: "existing", enabled: false }), null);
+  });
+
   test("Claude Managers can quote approval to launch the approved Astra and Neon models", () => {
     const astra = "onsager/codex/gpt-6.2-astra";
     const codexAstra = "codex/gpt-6.2-astra";
