@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 const APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).";
 const MANAGER_MODELS = ["onsager/codex/gpt-6.2-astra", "codex/gpt-6.2-astra", "gemini-4-neon"];
@@ -22,7 +23,8 @@ const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the u
   "Model configuration calls have no approval text field and remain limited to non-opt-in L1/L2. " +
   "Workers must not launch top-level threads or change thread models. Use a Worker or current-thread wakeup for follow-up work.";
 const SCHEDULE_TASK = "New schedule_task calls are unavailable because the current T3 schema has no model selection field. " +
-  "Only disable an identified existing schedule here; use the personal automation registry before other automation activation.";
+  "Only disable an identified existing schedule here; use the personal automation registry before other automation activation. " +
+  "A Claude Manager can create a thread-bound schedule that exactly matches an entry in policy.schedules.";
 const BROWSER_TOOL = /^mcp__t3_code(?:_direct)?__(preview_.+|t3_preview_.+)$/;
 const BROWSER_MANAGER = "Browser tools other than status require a Claude Manager main loop with valid turn state.";
 const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
@@ -686,6 +688,24 @@ function launchModelAllowed(file, event, model, approved = false) {
   }
 }
 
+const SCHEDULE_CREATE_KEYS = new Set(["title", "prompt", "schedule", "bindToCurrentThread", "clientRequestId", "enabled"]);
+
+function scheduleCreateAllowed(file, event, input) {
+  if (!file || input.bindToCurrentThread !== true || typeof input.prompt !== "string" || !input.prompt.trim() ||
+      (Object.hasOwn(input, "enabled") && input.enabled !== true) ||
+      !Object.keys(input).every((key) => SCHEDULE_CREATE_KEYS.has(key)) ||
+      !["interval", "fixed_time"].includes(input.schedule?.type)) return false;
+  const thread = t3Identity()?.[1];
+  if (!thread) return false;
+  try {
+    const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
+    return config.policy.schedules?.some((entry) => entry.thread === thread && entry.name === input.title &&
+      isDeepStrictEqual(entry.schedule, input.schedule)) ?? false;
+  } catch {
+    return false;
+  }
+}
+
 function isAutomationShellCommand(command) {
   return /(?:^|[;&|]+\s*)(?:sudo\s+)?(?:crontab\b(?!\s+-[lr]\b)|systemctl\s+(?:enable|start|restart|daemon-reload)\b|systemd-run\b|at\b(?!q\b|rm\b)|nohup\b|daemonize\b|setsid\b)/i.test(command);
 }
@@ -1053,7 +1073,10 @@ async function main() {
       const pauseOnly = typeof input.scheduledTaskId === "string" && input.scheduledTaskId.trim() &&
         input.enabled === false && Object.keys(input).every((key) => safePauseKeys.has(key)) &&
         (input.environmentId === undefined || (typeof input.environmentId === "string" && input.environmentId.trim()));
-      if (!pauseOnly) [decision, reason] = ["deny", SCHEDULE_TASK];
+      if (!pauseOnly && !(host === "claude" && event.agent_id == null && managerState.worker === false &&
+          managerState.turn && !managerState.invalidBrowser && scheduleCreateAllowed(workers, event, input))) {
+        [decision, reason] = ["deny", SCHEDULE_TASK];
+      }
     } else if (isPrWatch && !hasPrWatchTarget(args)) {
       [decision, reason] = ["deny", "Bind a PR watch to a repository and pull request, URL, or explicit threadId."];
     } else if ((isThreadLaunch || isCreateThreads || configureModelSelection) && workerContext) [decision, reason] = ["deny", THREAD_LAUNCH];

@@ -1053,6 +1053,39 @@ describe("workbench setup", () => {
     assert.match(warnings, /magpie catalog unavailable; tier validation skipped/);
   });
 
+  test("only valid recurring T3 schedule entries are accepted by the installer", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const setup = new Setup(f.home);
+    assert.equal(setup.workersBundle().base.policy.schedules, undefined);
+
+    const interval = { name: "Hourly check", thread: "thread-1", schedule: { type: "interval", everyMs: 60000 } };
+    const fixed = { name: "Daily check", thread: "thread-2",
+      schedule: { type: "fixed_time", timeOfDay: "08:30", weekdays: [0, 6] } };
+    const daily = { ...fixed, schedule: { type: "fixed_time", timeOfDay: "09:00" } };
+    const schedules = [interval, fixed, daily];
+    const configure = (value) => f.write(f.overridePath, JSON.stringify({ policy: { schedules: value } }));
+    configure(schedules);
+    f.run("install");
+    assert.deepEqual(f.json(path.join(f.state, "workers.json")).profiles.codex.policy.schedules, schedules);
+
+    for (const value of [null, {}, [null], [{ ...interval, name: " " }], [{ ...interval, thread: 42 }],
+      [{ ...interval, extra: true }], [{ name: "check", thread: "thread-1" }]]) {
+      configure(value);
+      assert.throws(() => setup.workersBundle(), /policy\.schedules/, JSON.stringify(value));
+    }
+    for (const schedule of [
+      { type: "interval" }, { type: "interval", everyMs: 59999 }, { type: "interval", everyMs: 60000.5 },
+      { type: "interval", everyMs: "60000" }, { ...interval.schedule, timeOfDay: "09:00" },
+      { type: "fixed_time" }, { ...fixed.schedule, timeOfDay: "24:00" },
+      { ...fixed.schedule, weekdays: [7] }, { ...fixed.schedule, weekdays: "weekdays" },
+      { type: "webhook" }, { type: "once", runAt: "2026-12-01T09:00:00Z" },
+    ]) {
+      configure([{ ...interval, schedule }]);
+      assert.throws(() => setup.workersBundle(), /policy\.schedules|everyMs/, JSON.stringify(schedule));
+    }
+  });
+
   test("no agents without orchestration skill", () => {
     const f = new Fixture();
     const result = f.run("install");

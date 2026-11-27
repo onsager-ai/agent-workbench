@@ -46,7 +46,7 @@ const CODEX_HOOK_TIMEOUT = 30;
 export class Conflict extends Error {}
 
 const CONTEXT_INTEGER_KEYS = ["max_tokens", "gateway_window", "codex_window", "manager_window", "worker_window"];
-const INTEGER_KEYS = new Set(["version", "timeout_s", "max_auto_rework", ...CONTEXT_INTEGER_KEYS]);
+const INTEGER_KEYS = new Set(["version", "timeout_s", "max_auto_rework", "everyMs", ...CONTEXT_INTEGER_KEYS]);
 
 // Parse like PyYAML's safe_load: YAML 1.1, repeated keys keep the last value, keys must be strings
 // (YAML 1.1 reads `no`, `on` and `null` as non-strings), and floats are not accepted in integer fields.
@@ -186,7 +186,7 @@ function validateWorkerShape(config, { profile = false } = {}) {
     }
   }
   if (has(config, "policy")) {
-    keys(config.policy, ["max_auto_rework", "context", "stop_classifier", "browser"], "policy");
+    keys(config.policy, ["max_auto_rework", "context", "stop_classifier", "browser", "schedules"], "policy");
     if (has(config.policy, "browser")) {
       const { browser } = config.policy;
       keys(browser, ["profiles"], "policy.browser");
@@ -207,6 +207,37 @@ function validateWorkerShape(config, { profile = false } = {}) {
               return true;
             }
           })) throw new Conflict(`${where}.urls must be a list of absolute HTTPS URLs without credentials`);
+        }
+      }
+    }
+    if (has(config.policy, "schedules")) {
+      const { schedules } = config.policy;
+      if (!Array.isArray(schedules)) throw new Conflict("policy.schedules must be a list; correct it in workers.yml");
+      for (const [index, entry] of schedules.entries()) {
+        const where = `policy.schedules[${index}]`;
+        keys(entry, ["name", "thread", "schedule"], where);
+        for (const key of ["name", "thread"]) {
+          if (typeof entry[key] !== "string" || !entry[key].trim()) {
+            throw new Conflict(`${where}.${key} must be a nonblank string; correct it in workers.yml`);
+          }
+        }
+        const { schedule } = entry;
+        if (schedule?.type === "interval") {
+          keys(schedule, ["type", "everyMs"], `${where}.schedule`);
+          if (!isInt(schedule.everyMs) || schedule.everyMs < 60000) {
+            throw new Conflict(`${where}.schedule.everyMs must be an integer of at least 60000; correct it in workers.yml`);
+          }
+        } else if (schedule?.type === "fixed_time") {
+          keys(schedule, ["type", "timeOfDay", "weekdays"], `${where}.schedule`);
+          if (typeof schedule.timeOfDay !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(schedule.timeOfDay)) {
+            throw new Conflict(`${where}.schedule.timeOfDay must be a 24-hour HH:MM string; correct it in workers.yml`);
+          }
+          if (has(schedule, "weekdays") && (!Array.isArray(schedule.weekdays) ||
+              schedule.weekdays.some((day) => !isInt(day) || day < 0 || day > 6))) {
+            throw new Conflict(`${where}.schedule.weekdays must be a list of integers from 0 to 6; correct it in workers.yml`);
+          }
+        } else {
+          throw new Conflict(`${where}.schedule.type must be interval or fixed_time; correct it in workers.yml`);
         }
       }
     }
