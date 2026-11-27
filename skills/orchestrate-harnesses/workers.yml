@@ -32,6 +32,11 @@ policy:
     # Optional minimum-only compaction window for generated Claude Workers.
     worker_window: null
     manager_models: [claude-opus-5-5]
+  # Optional named T3 browser profiles and their allowed URL prefixes.
+  # browser:
+  #   profiles:
+  #     bot-github:
+  #       urls: [https://github.com/onsager-ai/peirce/settings]
   # Optional local Magpie classifier for the Stop hook; null keeps the question-mark check.
   stop_classifier: null
 # Profiles overlay the merged base config; null deletes a tier.

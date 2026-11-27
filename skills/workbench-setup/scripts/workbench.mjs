@@ -40,7 +40,7 @@ const CLAUDE_HOOK_MATCHERS = {
   Stop: [undefined],
 };
 const claudeHookKey = (event, matcher) => matcher === undefined ? event : `${event}:${matcher}`;
-const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__t3_thread_configure", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request"];
+const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__t3_thread_configure", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request", "Read|Grep|Glob", "mcp__t3_code__preview_.*"];
 const CODEX_HOOK_TIMEOUT = 30;
 
 export class Conflict extends Error {}
@@ -186,7 +186,30 @@ function validateWorkerShape(config, { profile = false } = {}) {
     }
   }
   if (has(config, "policy")) {
-    keys(config.policy, ["max_auto_rework", "context", "stop_classifier"], "policy");
+    keys(config.policy, ["max_auto_rework", "context", "stop_classifier", "browser"], "policy");
+    if (has(config.policy, "browser")) {
+      const { browser } = config.policy;
+      keys(browser, ["profiles"], "policy.browser");
+      if (has(browser, "profiles")) {
+        keys(browser.profiles, browser.profiles, "policy.browser.profiles");
+        for (const [id, profile] of Object.entries(browser.profiles)) {
+          if (!/^\S+$/.test(id) || ["default", "incognito", "__proto__"].includes(id)) {
+            throw new Conflict(`invalid bot profile ID ${id}; correct it in policy.browser.profiles`);
+          }
+          const where = `policy.browser.profiles.${id}`;
+          keys(profile, ["urls"], where);
+          if (!Array.isArray(profile.urls) || profile.urls.some((url) => {
+            if (typeof url !== "string" || !/^https:\/\/[^/?#@\\\s]+(?=[/?#]|$)/i.test(url)) return true;
+            try {
+              const parsed = new URL(url);
+              return parsed.protocol !== "https:" || parsed.username || parsed.password;
+            } catch {
+              return true;
+            }
+          })) throw new Conflict(`${where}.urls must be a list of absolute HTTPS URLs without credentials`);
+        }
+      }
+    }
     if (has(config.policy, "stop_classifier") && config.policy.stop_classifier !== null) {
       keys(config.policy.stop_classifier, ["url", "model"], "policy.stop_classifier");
       const { url, model } = config.policy.stop_classifier;

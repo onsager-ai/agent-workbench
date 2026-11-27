@@ -23,6 +23,8 @@ const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the u
   "Workers must not launch top-level threads or change thread models. Use a Worker or current-thread wakeup for follow-up work.";
 const SCHEDULE_TASK = "New schedule_task calls are unavailable because the current T3 schema has no model selection field. " +
   "Only disable an identified existing schedule here; use the personal automation registry before other automation activation.";
+const PROFILE_FILES = "Direct access to T3 browser profile files is blocked.";
+const PREVIEW_PREFIX = "mcp__t3_code__preview_";
 const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
 const OBSERVATION_COUNT_EXEMPT = /^mcp__t3[-_]code__(?:t3_thread_list|t3_thread_read|t3_thread_search|t3_environment_links)$/;
 const COUNT_EXEMPT = /^(?:mcp__t3[-_]code__)?(?:t3_thread_send|t3_thread_configure|schedule_task|list_scheduled_tasks|delete_scheduled_task|watch_pull_request|t3_queue|send_to_user|t3_pending_request|t3_background_wait|Agent|Task|spawn_agent|delegate_task|AskUserQuestion|ToolSearch|pull_request_merge|pull_request_review|pull_request_respond|link_pull_requests?|unwatch_pull_request|pull_request_create)$/;
@@ -727,6 +729,91 @@ function hostArgument(argv) {
   return "claude";
 }
 
+function isProfileId(value) {
+  return typeof value === "string" && /^\S+$/.test(value) && !["default", "incognito", "__proto__"].includes(value);
+}
+
+function browserGrants(prompt) {
+  if (typeof prompt !== "string") return [];
+  return [...new Set(Array.from(prompt.matchAll(/^Browser task: (\S+) \S+/gm), ([, id]) => id).filter(isProfileId))];
+}
+
+function browserUrl(value) {
+  if (typeof value !== "string" || !/^https:\/\/[^/?#@\\\s]+(?=[/?#]|$)/i.test(value)) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol === "https:" && !url.username && !url.password) return url;
+  } catch {}
+  return null;
+}
+
+function matchesBrowserUrl(value, prefixes) {
+  const url = browserUrl(value);
+  return url !== null && prefixes.some((prefix) => {
+    const allowed = browserUrl(prefix);
+    if (!allowed || url.origin !== allowed.origin) return false;
+    const base = allowed.pathname;
+    return url.pathname === base || url.pathname.startsWith(base.endsWith("/") ? base : `${base}/`);
+  });
+}
+
+function browserProfiles(workers, event) {
+  try {
+    const bundle = JSON.parse(fs.readFileSync(workers, "utf8"));
+    return selectWorkerProfile(bundle, event).config.policy.browser?.profiles ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function previewDecision(tool, input, event, state, stateFile, workers, host) {
+  const { profileId = "default", url } = input;
+  const worker = state.worker || Boolean(event.agent_id);
+  const open = tool === "open";
+  if (open && profileId === "incognito") return null;
+  if (open && profileId === "default") return worker || host !== "claude"
+    ? "Only a Claude Manager can open the owner’s default browser profile." : null;
+  if (!open && state.invalidBrowser) return "The browser turn state is invalid.";
+  if (!open && !state.botProfile) return null;
+
+  const profile = open ? profileId : state.botProfile;
+  const profiles = browserProfiles(workers, event);
+  const urls = isProfileId(profile) && Object.hasOwn(profiles, profile) ? profiles[profile]?.urls : null;
+  if (!Array.isArray(urls)) return "This bot browser profile is not configured.";
+  const grants = event.agent_id ? state.browserGrants : state.browser;
+  if (host !== "claude" || state.invalidBrowser || state.worker || !state.approved || !grants?.includes(profile)) {
+    return "This bot browser profile needs a Browser task grant in the current approved Manager turn.";
+  }
+  if (tool === "evaluate") return "Script evaluation is blocked in a bot browser session.";
+  if ((tool === "navigate" || (open && url !== undefined)) && !matchesBrowserUrl(url, urls)) {
+    return "The URL is outside this bot browser profile’s allowed HTTPS prefixes.";
+  }
+  if (open) {
+    if (state.botProfile && state.botProfile !== profile) return "Use a fresh session to open a different bot browser profile.";
+    try {
+      updateManagerState(stateFile, (current) => {
+        if (current.turn !== state.turn || current.invalidBrowser || (current.botProfile && current.botProfile !== profile)) {
+          throw new Error("browser session changed");
+        }
+        return current.botProfile === profile ? current : { ...current, botProfile: profile };
+      });
+    } catch {
+      return "Could not record the bot browser profile for this session.";
+    }
+  }
+  return null;
+}
+
+function readsProfileFiles(tool, args, cwd) {
+  if (!["Read", "Grep", "Glob"].includes(tool) || !isDict(args)) return false;
+  const target = tool === "Read" ? args.file_path : args.path ?? ".";
+  if (typeof target !== "string") return false;
+  const home = os.homedir();
+  const root = path.join(home, ".t3", "userdata", "server-browser", "profiles");
+  const absolute = target.startsWith("~/") ? path.join(home, target.slice(2)) : path.resolve(cwd || process.cwd(), target);
+  return isRelativeTo(absolute, root) || isRelativeTo(resolvePath(absolute), resolvePath(root));
+}
+
 function managerStatePath(event) {
   const session = event.session_id;
   if (typeof session !== "string" || !/^[A-Za-z0-9_-]+$/.test(session)) return null;
@@ -735,21 +822,45 @@ function managerStatePath(event) {
 }
 
 function readManagerState(file) {
-  if (!file) return { worker: false, count: 0, approved: false };
+  const fresh = { worker: false, count: 0, approved: false };
+  if (!file) return fresh;
   try {
     const value = JSON.parse(fs.readFileSync(file, "utf8"));
     if (!isDict(value) || typeof value.worker !== "boolean" || !Number.isSafeInteger(value.count) ||
         value.count < 0 || typeof value.approved !== "boolean") throw new Error("invalid state");
+    const validGrants = (grants) => grants === undefined || (Array.isArray(grants) && grants.every(isProfileId));
+    if (!validGrants(value.browser) || !validGrants(value.browserGrants) ||
+        (value.botProfile !== undefined && !isProfileId(value.botProfile)) ||
+        (value.turn !== undefined && typeof value.turn !== "string")) {
+      const { browser, browserGrants, ...state } = value;
+      return { ...state, invalidBrowser: true };
+    }
     return value;
-  } catch {
-    return { worker: false, count: 0, approved: false };
+  } catch (error) {
+    return error.code === "ENOENT" ? fresh : { ...fresh, invalidBrowser: true };
   }
 }
 
 function writeManagerState(file, state) {
   if (!file) return;
+  const temporary = uniqueName(file, "turn");
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(state) + "\n", { mode: 0o600, flag: "wx" });
+    fs.renameSync(temporary, file);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+function updateManagerState(file, update) {
+  if (!file) return update(readManagerState(file));
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, JSON.stringify(state) + "\n", { mode: 0o600 });
+  return withLock(`${file}.lock`, () => {
+    const current = readManagerState(file);
+    const state = update(current);
+    if (state !== current) writeManagerState(file, state);
+    return state;
+  });
 }
 
 function managerGateReason(what, file) {
@@ -778,6 +889,7 @@ function mutatingBash(command) {
 
 function classifyBash(command, event, manager) {
   if (typeof command !== "string") return null;
+  if (command.includes("server-browser/profiles")) return PROFILE_FILES;
   let reason = textShellPolicy(command, manager);
   try {
     reason = protectedBranchGit(command, event) ?? pollsGithub(command) ?? reason;
@@ -826,30 +938,45 @@ async function shouldBlockQuestion(text, classifier) {
 
 async function main() {
   const workers = workersArgument(process.argv.slice(2));
-  const codex = hostArgument(process.argv.slice(2)) === "codex";
+  const host = hostArgument(process.argv.slice(2));
+  const codex = host === "codex";
   let decision = null;
   let reason = null;
   try {
     const event = JSON.parse(fs.readFileSync(0, "utf8"));
     if (!isDict(event)) return;
-    if (hostArgument(process.argv.slice(2)) === "antigravity") {
+    if (host === "antigravity") {
       const toolCall = isDict(event.toolCall) ? event.toolCall : {};
       const args = isDict(toolCall.args) ? toolCall.args : {};
-      const reason = toolCall.name === "run_command" && typeof args.CommandLine === "string"
-        ? classifyBash(args.CommandLine, { cwd: args.Cwd }, false)
-        : null;
+      const tool = typeof toolCall.name === "string" ? toolCall.name.replaceAll("-", "_") : "";
+      let reason = null;
+      if (tool === "run_command") reason = classifyBash(args.CommandLine, { cwd: args.Cwd }, false);
+      else if (tool === `${PREVIEW_PREFIX}open` && args.profileId !== "incognito") {
+        reason = "Antigravity cannot open the owner’s default browser profile or a bot browser profile.";
+      } else if (readsProfileFiles(tool, args, args.Cwd)) reason = PROFILE_FILES;
       emit(reason ? { decision: "deny", reason } : { decision: "allow" });
       return;
     }
     const stateFile = managerStatePath(event);
     if (event.hook_event_name === "UserPromptSubmit") {
-      if (!codex) {
-        const previous = readManagerState(stateFile);
-        const prompt = typeof event.prompt === "string" ? event.prompt : "";
-        writeManagerState(stateFile, {
-          worker: previous.worker || /^Role: Worker$/m.test(prompt), count: 0,
-          approved: /^Manager work approval: \S/m.test(prompt),
-        });
+      if (host === "claude" && !event.agent_id) {
+        try {
+          updateManagerState(stateFile, (previous) => {
+            const prompt = typeof event.prompt === "string" ? event.prompt : "";
+            const worker = previous.worker || /^Role: Worker\r?$/m.test(prompt);
+            const approved = /^Manager work approval: \S/m.test(prompt);
+            const browser = approved && !worker ? browserGrants(prompt) : [];
+            return {
+              worker, count: 0, approved, turn: crypto.randomUUID(),
+              ...(browser.length ? { browser } : {}),
+              ...(isProfileId(previous.botProfile) ? { botProfile: previous.botProfile } : {}),
+              ...(previous.invalidBrowser && !isProfileId(previous.botProfile) ? { invalidBrowser: true } : {}),
+            };
+          });
+        } catch {
+          // Block the new prompt if old turn grants may still be on disk.
+          emit({ decision: "block", reason: "Could not reset the Manager turn state." });
+        }
       }
       return;
     }
@@ -883,6 +1010,9 @@ async function main() {
     let managerState = readManagerState(stateFile);
     const workerContext = managerState.worker || Boolean(event.agent_id);
     const canonicalTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
+    const previewTool = typeof canonicalTool === "string" && canonicalTool.startsWith(PREVIEW_PREFIX)
+      ? canonicalTool.slice(PREVIEW_PREFIX.length) : null;
+    if (previewTool === "status") return;
     const isScheduleTask = canonicalTool === "mcp__t3_code__schedule_task";
     const isThreadLaunch = canonicalTool === "mcp__t3_code__t3_thread_launch";
     const isThreadConfigure = canonicalTool === "mcp__t3_code__t3_thread_configure";
@@ -892,7 +1022,9 @@ async function main() {
     const isLocalAutomation = isLocalWakeup ||
       (tool === "Bash" && isDict(args) && isAutomationShellCommand(args.command ?? ""));
     const configureModelSelection = isThreadConfigure && isDict(args) && Object.hasOwn(args, "modelSelection");
-    if (isScheduleTask) {
+    if (readsProfileFiles(tool, args, event.cwd)) {
+      [decision, reason] = ["deny", PROFILE_FILES];
+    } else if (isScheduleTask) {
       const input = isDict(args) ? args : {};
       const safePauseKeys = new Set(["scheduledTaskId", "enabled", "environmentId"]);
       const pauseOnly = typeof input.scheduledTaskId === "string" && input.scheduledTaskId.trim() &&
@@ -928,12 +1060,21 @@ async function main() {
     }
     if (!decision && mainLoop && !managerState.worker && !managerState.approved && typeof tool === "string" &&
         !COUNT_EXEMPT.test(tool) && !OBSERVATION_COUNT_EXEMPT.test(tool) && !isLocalWakeup) {
-      managerState.count++;
-      writeManagerState(stateFile, managerState);
-      if (managerState.count > 5) {
+      try {
+        managerState = updateManagerState(stateFile, (current) => current.turn !== managerState.turn
+          ? current : { ...current, count: current.count + 1 });
+      } catch (error) {
+        if (!previewTool) throw error;
+        [decision, reason] = ["deny", "Could not update the Manager turn state."];
+      }
+      if (!decision && managerState.count > 5) {
         decision = "deny";
         reason = managerGateReason(`The sixth counted work call (${tool})`, stateFile);
       }
+    }
+    if (!decision && previewTool) {
+      reason = previewDecision(previewTool, isDict(args) ? args : {}, event, managerState, stateFile, workers, host);
+      if (reason) decision = "deny";
     }
     const enforceManager = mainLoop && !managerState.worker && !managerState.approved;
     if (enforceManager && !decision && ["Edit", "Write", "NotebookEdit", "MultiEdit"].includes(tool)) {
@@ -985,6 +1126,16 @@ async function main() {
         [decision, reason] = ["deny", MODEL_OVERRIDE];
       } else if (approval || args.model === "opus") [decision, reason] = gate(approval ?? APPROVAL, args.prompt);
       else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason] = ["deny", INHERITED_MODEL];
+      // PreToolUse has no child agent_id, so this grant is shared by subagents in this turn.
+      if (!decision && host === "claude" && mainLoop && !managerState.worker && managerState.approved && !managerState.invalidBrowser) {
+        const grants = browserGrants(args.prompt);
+        if (grants.length) {
+          updateManagerState(stateFile, (current) => {
+            if (current.turn !== managerState.turn || current.invalidBrowser) return current;
+            return { ...current, browserGrants: [...new Set([...(current.browserGrants ?? []), ...grants])] };
+          });
+        }
+      }
     } else if (!decision && tool === "Bash") {
       const command = dict(args).command ?? "";
       if (typeof command !== "string") return;
