@@ -1339,29 +1339,42 @@ describe("policy hook", () => {
       for (const session of ["counted", "not-counted"]) {
         prompt(session);
         const enrolled = session === "counted";
-        assert.equal(patch(session)?.permissionDecision ?? null, enrolled ? "deny" : null);
-        if (enrolled) assert.equal(JSON.parse(fs.readFileSync(stateFile(session), "utf8")).count, 1);
-        for (let i = 0; i < 4; i++) assert.equal(bash(session, "git status"), null);
-        const sixth = bash(session, "git status");
+        for (let i = 1; i <= 5; i++) {
+          const decision = patch(session);
+          if (enrolled) {
+            assert.match(decision.permissionDecisionReason, /apply_patch to a file/);
+            assert.equal(JSON.parse(fs.readFileSync(stateFile(session), "utf8")).count, i);
+          } else assert.equal(decision, null);
+        }
+        const sixth = patch(session);
         if (enrolled) assert.match(sixth.permissionDecisionReason, /sixth counted work call/);
         else assert.equal(sixth, null);
       }
       prompt("counted", "New turn.", { turn_id: "turn-2" });
-      assert.equal(bash("counted", "git status", { turn_id: "turn-2" }), null);
+      assert.match(patch("counted", { turn_id: "turn-2" }).permissionDecisionReason, /apply_patch to a file/);
+      assert.equal(JSON.parse(fs.readFileSync(stateFile("counted"), "utf8")).count, 1);
     });
 
-    test("native Codex shell patches count as mutations for unapproved Managers", () => {
+    test("enrolled Codex Managers need current approval for every shell call", () => {
       enrol("manager");
-      const patchText = "*** Begin Patch\n*** Add File: task.txt\n+don't edit\n*** End Patch";
-      for (const name of ["apply_patch", "applypatch"]) {
-        for (const command of [`${name} <<'PATCH'\n${patchText}\nPATCH`, `${name} ${shellQuote(patchText)}`]) {
-          const input = { command, workdir: directory, yield_time_ms: 1000 };
-          prompt("manager");
-          assert.match(tool("manager", "Bash", input).permissionDecisionReason, /changes files or state/, command);
-          assert.equal(tool("outside", "Bash", input), null, command);
-          prompt("manager", APPROVED);
-          assert.equal(tool("manager", "Bash", input), null, command);
+      const nestedPatch = `bash -c ${shellQuote("apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: task.txt\n+work\n*** End Patch\nPATCH")}`;
+      const reason = "Enrolled Codex Managers can't run shell commands without " +
+        "`Manager work approval: <link>` at the start of the turn; send shell work to a Worker.";
+      for (const toolName of ["Bash", "exec_command"]) {
+        const call = (session, command, details) => tool(session, toolName, { command, workdir: directory }, details);
+        prompt("manager");
+        for (const command of ["git status", nestedPatch]) {
+          const decision = call("manager", command);
+          assert.equal(decision.permissionDecision, "deny");
+          assert.equal(decision.permissionDecisionReason, reason);
+          assert.equal(call("outside", command), null);
+          assert.equal(call("manager", command, { agent_id: "child" }), null);
+          assert.equal(call("manager", command, { agent_type: "worker" }), null);
         }
+        prompt("manager", APPROVED);
+        assert.equal(call("manager", "git status"), null);
+        assert.match(call("manager", "gh run watch 123").permissionDecisionReason, /GitHub polling is disabled/);
+        assert.equal(call("manager", "git status", { turn_id: "turn-2" }).permissionDecisionReason, reason);
       }
     });
 
@@ -1384,10 +1397,10 @@ describe("policy hook", () => {
       }
     });
 
-    test("Codex Manager approval gates edits and shell mutation, but does not allow reading CI logs", () => {
+    test("Codex Manager approval gates edits and shell access, but does not allow reading CI logs", () => {
       enrol("approved", "unapproved", "worker");
       prompt("unapproved");
-      assert.match(bash("unapproved", "touch task.txt").permissionDecisionReason, /changes files or state/);
+      assert.match(bash("unapproved", "touch task.txt").permissionDecisionReason, /without `Manager work approval:/);
       assert.equal(bash("outside", "touch task.txt"), null);
       prompt("approved", APPROVED);
       assert.equal(bash("approved", "touch task.txt"), null);

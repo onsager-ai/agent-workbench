@@ -42,7 +42,7 @@ const CLAUDE_HOOK_MATCHERS = {
 const claudeHookKey = (event, matcher) => matcher === undefined ? event : `${event}:${matcher}`;
 const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__t3_thread_configure", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request", "mcp__t3_code__preview_.*", "mcp__t3_code__t3_preview_.*", "mcp__t3_code_direct__(preview_|t3_preview_).*", "^apply_patch$",
   "^mcp__t3_code_direct__(delegate_task|t3_thread_launch|t3_thread_configure|create_threads|schedule_task)$",
-  "^mcp__t3_code_direct__watch_pull_request$"];
+  "^mcp__t3_code_direct__watch_pull_request$", "^exec_command$"];
 const CODEX_POLICY_EVENTS = ["PreToolUse", "Stop", "UserPromptSubmit"];
 // Existing ownership records have no event field: a matcher identifies PreToolUse, otherwise Stop.
 const codexPolicyEvent = (entry) => entry.event ?? (has(entry, "matcher") ? "PreToolUse" : "Stop");

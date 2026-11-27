@@ -1322,7 +1322,7 @@ describe("workbench setup", () => {
   const codexHandler = (f) => ({ type: "command", command: f.codexHookCommand, timeout: 30 });
   const CODEX_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__t3_thread_configure", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request", "mcp__t3_code__preview_.*", "mcp__t3_code__t3_preview_.*", "mcp__t3_code_direct__(preview_|t3_preview_).*", "^apply_patch$",
     "^mcp__t3_code_direct__(delegate_task|t3_thread_launch|t3_thread_configure|create_threads|schedule_task)$",
-    "^mcp__t3_code_direct__watch_pull_request$"];
+    "^mcp__t3_code_direct__watch_pull_request$", "^exec_command$"];
   const CODEX_LABELS = [...CODEX_MATCHERS, "Stop", "UserPromptSubmit"];
   const codexStatuses = (status) => Object.fromEntries(CODEX_LABELS.map((label) => [label, status]));
 
@@ -1360,23 +1360,24 @@ describe("workbench setup", () => {
     f.installOrchestration();
     f.run("install");
     const { PreToolUse } = f.json(f.codexHooksPath).hooks;
-    for (const name of ["Bash", "apply_patch", "mcp__t3_code_direct__preview_open",
+    for (const name of ["Bash", "exec_command", "apply_patch", "mcp__t3_code_direct__preview_open",
       "mcp__t3_code_direct__t3_preview_list", ...["delegate_task", "t3_thread_launch", "t3_thread_configure",
         "create_threads", "schedule_task", "watch_pull_request"].flatMap((tool) => [`mcp__t3_code__${tool}`, `mcp__t3_code_direct__${tool}`])]) {
       assert.equal(PreToolUse.filter(({ matcher }) => new RegExp(matcher).test(name)).length, 1, name);
     }
   });
 
-  test("install appends the direct Codex PR watch hook without shifting or changing existing entries", () => {
+  test("install appends the Codex PR watch and exec_command hooks without shifting existing entries", () => {
     const f = new Fixture();
     f.installOrchestration();
     f.run("install");
     const file = f.json(f.codexHooksPath);
     const state = f.stateJson();
-    const watch = file.hooks.PreToolUse.pop();
     const existing = file.hooks.PreToolUse;
-    assert.equal(watch.matcher, "^mcp__t3_code_direct__watch_pull_request$");
-    state.codex_hooks = state.codex_hooks.filter((entry) => entry.matcher !== watch.matcher);
+    const appended = existing.splice(-2);
+    const matchers = appended.map((entry) => entry.matcher);
+    assert.deepEqual(matchers, ["^mcp__t3_code_direct__watch_pull_request$", "^exec_command$"]);
+    state.codex_hooks = state.codex_hooks.filter((entry) => !matchers.includes(entry.matcher));
     f.write(f.codexHooksPath, JSON.stringify(file));
     f.write(path.join(f.state, "state.json"), JSON.stringify(state));
 
@@ -1385,10 +1386,10 @@ describe("workbench setup", () => {
     quiet(() => setup.trust());
     f.run("install");
 
-    assert.deepEqual(f.json(f.codexHooksPath).hooks.PreToolUse, [...existing, watch]);
+    assert.deepEqual(f.json(f.codexHooksPath).hooks.PreToolUse, [...existing, ...appended]);
     const { codex_trust: trust } = JSON.parse(f.run("status").stdout);
     assert.equal(trust[existing.at(-1).matcher], "trusted");
-    assert.equal(trust[watch.matcher], "untrusted");
+    for (const matcher of matchers) assert.equal(trust[matcher], "untrusted");
   });
 
   test("codex hooks are skipped without a codex directory or orchestration", () => {

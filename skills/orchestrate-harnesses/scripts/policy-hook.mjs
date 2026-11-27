@@ -963,9 +963,7 @@ function isMemoryPatch(command, cwd) {
   return operation !== undefined;
 }
 
-function mutatingBash(command, codexManager) {
-  // Check the native shell patch form before tokenizing its heredoc as shell syntax.
-  if (codexManager && /(?:^|[;&|()\n])\s*(?:[\w./-]+\/)?apply_?patch[ \t]*<</.test(command)) return true;
+function mutatingBash(command) {
   // Exclude the common harmless redirections before checking remaining output redirects.
   const redirects = command.replace(/(?:2>\s*\/dev\/null|>\s*\/dev\/null|>&2)/g, "");
   if (/(?:^|[^<])>>?(?!=|&)(?:\s*[^\s;|&]+)/.test(redirects)) return true;
@@ -975,10 +973,7 @@ function mutatingBash(command, codexManager) {
     const [argv] = gitCommand(words);
     if (argv && MUTATING_GIT.has(argv[0])) return true;
     const [program, operation] = words;
-    const commandStart = program === "cd" && ["&&", "||"].includes(words[2]) ? 3 : 0;
-    const [executable] = commandWords(words.slice(commandStart));
-    if ((codexManager && executable && /^apply_?patch$/.test(path.basename(executable))) ||
-        ["tee", "rm", "mv", "cp", "mkdir", "touch", "chmod"].includes(program) ||
+    if (["tee", "rm", "mv", "cp", "mkdir", "touch", "chmod"].includes(program) ||
         (program === "sed" && words.some((word) => word === "-i" || word.startsWith("-i"))) ||
         (["npm", "pnpm", "yarn"].includes(program) && ["install", "publish"].includes(operation)) ||
         (program === "pip" && operation === "install") ||
@@ -1110,6 +1105,16 @@ async function main() {
     // Never carry an approval or browser grant over to a different native Codex turn.
     const codexTurnMatches = () => !codexManager || Boolean(managerState.turn && managerState.turn === event.turn_id);
     const workApproved = () => managerState.approved && codexTurnMatches();
+    const isShell = tool === "Bash" || (codexManager && tool === "exec_command");
+    if (codexManager && isShell && !managerState.worker && !workApproved()) {
+      emit({ hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: "Enrolled Codex Managers can't run shell commands without " +
+          "`Manager work approval: <link>` at the start of the turn; send shell work to a Worker.",
+      } });
+      return;
+    }
     const normalizedTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
     const canonicalTool = codex && typeof normalizedTool === "string"
       ? normalizedTool.replace(/^mcp__t3_code_direct__/, "mcp__t3_code__") : normalizedTool;
@@ -1129,7 +1134,7 @@ async function main() {
     const isPrWatch = canonicalTool === "watch_pull_request" || canonicalTool === "mcp__t3_code__watch_pull_request";
     const isLocalWakeup = tool === "CronCreate" || (tool === "Skill" && isDict(args) && args.skill === "loop");
     const isLocalAutomation = isLocalWakeup ||
-      (tool === "Bash" && isDict(args) && isAutomationShellCommand(args.command ?? ""));
+      (isShell && isDict(args) && isAutomationShellCommand(args.command ?? ""));
     const configureModelSelection = isThreadConfigure && isDict(args) && Object.hasOwn(args, "modelSelection");
     if (isScheduleTask) {
       const input = isDict(args) ? args : {};
@@ -1207,7 +1212,7 @@ async function main() {
         reason = managerGateReason(`${tool} to ${filePath || "a file"}`, stateFile);
       }
     }
-    if (enforceManager && !decision && tool === "Bash" && mutatingBash(dict(args).command ?? "", codexManager)) {
+    if (enforceManager && !decision && isShell && mutatingBash(dict(args).command ?? "")) {
       decision = "deny";
       reason = managerGateReason("A Bash command that changes files or state", stateFile);
     }
@@ -1243,7 +1248,7 @@ async function main() {
         [decision, reason] = ["deny", MODEL_OVERRIDE];
       } else if (approval || args.model === "opus") [decision, reason] = gate(approval ?? APPROVAL, args.prompt);
       else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason] = ["deny", INHERITED_MODEL];
-    } else if (!decision && tool === "Bash") {
+    } else if (!decision && isShell) {
       const command = dict(args).command ?? "";
       if (typeof command !== "string") return;
       reason = classifyBash(command, event, mainLoop);
