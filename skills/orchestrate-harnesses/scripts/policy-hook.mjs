@@ -929,7 +929,43 @@ function managerGateReason(what, file) {
     `A turn whose first message has \`${MANAGER_APPROVAL}\` passes the gate. State file: ${file ?? "invalid session_id"}.`;
 }
 
-function mutatingBash(command) {
+function isMemoryEdit(file, cwd) {
+  if (typeof file !== "string" || !file.trim() || file.includes("\0")) return false;
+  const resolved = path.resolve(cwd, file);
+  const relative = path.relative(path.join(os.homedir(), ".claude", "projects"), resolved);
+  const parts = relative.split(path.sep);
+  return !path.isAbsolute(relative) && parts.length >= 3 && parts[0] !== ".." && parts[1] === "memory";
+}
+
+function isMemoryPatch(command, cwd) {
+  if (typeof command !== "string") return false;
+  const lines = command.trim().split(/\r?\n/);
+  if (lines.shift() !== "*** Begin Patch" || lines.pop() !== "*** End Patch") return false;
+  let operation;
+  let canMove = false;
+  for (const line of lines) {
+    const header = /^\*\*\* (Add|Delete|Update) File: (.+)$/.exec(line);
+    if (header) {
+      const [, kind, file] = header;
+      if (!isMemoryEdit(file, cwd)) return false;
+      operation = kind;
+      canMove = kind === "Update";
+      continue;
+    }
+    if (canMove && line.startsWith("*** Move to: ")) {
+      if (!isMemoryEdit(line.slice("*** Move to: ".length), cwd)) return false;
+    } else if (operation === "Add" ? !line.startsWith("+") : operation !== "Update" ||
+        !/^(?:[ +\-]|@@(?: |$)|\*\*\* End of File$)/.test(line)) {
+      return false;
+    }
+    canMove = false;
+  }
+  return operation !== undefined;
+}
+
+function mutatingBash(command, codexManager) {
+  // Check the native shell patch form before tokenizing its heredoc as shell syntax.
+  if (codexManager && /(?:^|[;&|()\n])\s*(?:[\w./-]+\/)?apply_patch[ \t]*<</.test(command)) return true;
   // Exclude the common harmless redirections before checking remaining output redirects.
   const redirects = command.replace(/(?:2>\s*\/dev\/null|>\s*\/dev\/null|>&2)/g, "");
   if (/(?:^|[^<])>>?(?!=|&)(?:\s*[^\s;|&]+)/.test(redirects)) return true;
@@ -939,7 +975,10 @@ function mutatingBash(command) {
     const [argv] = gitCommand(words);
     if (argv && MUTATING_GIT.has(argv[0])) return true;
     const [program, operation] = words;
-    if (["tee", "rm", "mv", "cp", "mkdir", "touch", "chmod"].includes(program) ||
+    const commandStart = program === "cd" && ["&&", "||"].includes(words[2]) ? 3 : 0;
+    const [executable] = commandWords(words.slice(commandStart));
+    if ((codexManager && executable && path.basename(executable) === "apply_patch") ||
+        ["tee", "rm", "mv", "cp", "mkdir", "touch", "chmod"].includes(program) ||
         (program === "sed" && words.some((word) => word === "-i" || word.startsWith("-i"))) ||
         (["npm", "pnpm", "yarn"].includes(program) && ["install", "publish"].includes(operation)) ||
         (program === "pip" && operation === "install") ||
@@ -1071,8 +1110,11 @@ async function main() {
     // Never carry an approval or browser grant over to a different native Codex turn.
     const codexTurnMatches = () => !codexManager || Boolean(managerState.turn && managerState.turn === event.turn_id);
     const workApproved = () => managerState.approved && codexTurnMatches();
-    let canonicalTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
-    if (codex && typeof canonicalTool === "string") canonicalTool = canonicalTool.replace(/^mcp__t3_code_direct__/, "mcp__t3_code__");
+    const normalizedTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
+    const canonicalTool = codex && typeof normalizedTool === "string"
+      ? normalizedTool.replace(/^mcp__t3_code_direct__/, "mcp__t3_code__") : normalizedTool;
+    const isDelegateTask = normalizedTool === "mcp__t3_code__delegate_task" ||
+      (codexManager && canonicalTool === "mcp__t3_code__delegate_task");
     const previewTool = browserToolName(tool);
     const browserWorker = () => (!codexManager && (host !== "claude" || event.agent_id != null)) ||
       managerState.worker || !managerState.turn || managerState.invalidBrowser || !codexTurnMatches();
@@ -1154,23 +1196,18 @@ async function main() {
       auditBrowserCall(stateFile, event, input, profile, previewTool.replace(/^preview_/, ""), decision, browserWorker());
     }
     const enforceManager = mainLoop && !managerState.worker && !workApproved();
-    if (enforceManager && !decision && codexManager && tool === "apply_patch") {
+    if (enforceManager && !decision && codexManager && tool === "apply_patch" &&
+        !isMemoryPatch(isDict(args) ? args.command : undefined, typeof event.cwd === "string" ? event.cwd : process.cwd())) {
       [decision, reason] = ["deny", managerGateReason("apply_patch to a file", stateFile)];
     }
     if (enforceManager && !decision && ["Edit", "Write", "NotebookEdit", "MultiEdit"].includes(tool)) {
       const filePath = dict(args).file_path ?? dict(args).notebook_path ?? "";
-      const memory = path.join(os.homedir(), ".claude", "projects");
-      const resolved = path.resolve(String(filePath));
-      const memoryRoot = path.resolve(memory);
-      const relative = path.relative(memoryRoot, resolved).split(path.sep);
-      const isMemory = !path.isAbsolute(path.relative(memoryRoot, resolved)) && relative.length >= 3 &&
-        relative[0] !== ".." && relative[1] === "memory";
-      if (!isMemory) {
+      if (!isMemoryEdit(filePath, process.cwd())) {
         decision = "deny";
         reason = managerGateReason(`${tool} to ${filePath || "a file"}`, stateFile);
       }
     }
-    if (enforceManager && !decision && tool === "Bash" && mutatingBash(dict(args).command ?? "")) {
+    if (enforceManager && !decision && tool === "Bash" && mutatingBash(dict(args).command ?? "", codexManager)) {
       decision = "deny";
       reason = managerGateReason("A Bash command that changes files or state", stateFile);
     }
@@ -1182,7 +1219,7 @@ async function main() {
       }
       return;
     }
-    if (!decision && canonicalTool === "mcp__t3_code__delegate_task") {
+    if (!decision && isDelegateTask) {
       const target = "target" in dict(args) ? args.target : {};
       const model = dict(target).model;
       if (!model) [decision, reason] = ["deny", T3_MODEL];

@@ -40,8 +40,9 @@ const CLAUDE_HOOK_MATCHERS = {
   Stop: [undefined],
 };
 const claudeHookKey = (event, matcher) => matcher === undefined ? event : `${event}:${matcher}`;
+const OLD_CODEX_DIRECT_MATCHER = "^mcp__t3_code_direct__(delegate_task|t3_thread_launch|t3_thread_configure|create_threads|schedule_task)$";
 const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__t3_thread_configure", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request", "mcp__t3_code__preview_.*", "mcp__t3_code__t3_preview_.*", "mcp__t3_code_direct__(preview_|t3_preview_).*", "^apply_patch$",
-  "^mcp__t3_code_direct__(delegate_task|t3_thread_launch|t3_thread_configure|create_threads|schedule_task)$"];
+  "^mcp__t3_code_direct__(delegate_task|t3_thread_launch|t3_thread_configure|create_threads|schedule_task|watch_pull_request)$"];
 const CODEX_POLICY_EVENTS = ["PreToolUse", "Stop", "UserPromptSubmit"];
 // Existing ownership records have no event field: a matcher identifies PreToolUse, otherwise Stop.
 const codexPolicyEvent = (entry) => entry.event ?? (has(entry, "matcher") ? "PreToolUse" : "Stop");
@@ -1213,7 +1214,7 @@ export class Setup {
       const index = lists[event].findIndex((item) => isDeepStrictEqual(item, entry));
       if (index === -1) continue;
       items.push({
-        label: entry.matcher ?? "Stop", key: codexHookKey(this.codexHooks, event, index),
+        label: entry.matcher ?? event, key: codexHookKey(this.codexHooks, event, index),
         hash: codexHookHash(event, entry.matcher, entry.hooks[0]),
       });
     }
@@ -1403,7 +1404,8 @@ export class Setup {
         const names = isDict(entry) ? Object.keys(entry).sort().join(",") : "";
         const inner = isDict(entry) ? entry.hooks : null;
         if (!(names === "hooks,matcher" || names === "hooks" || (names === "event,hooks" && entry.event === "UserPromptSubmit"))
-            || (has(entry, "matcher") && !CODEX_HOOK_MATCHERS.includes(entry.matcher) && entry.matcher !== "Read|Grep|Glob")
+            || (has(entry, "matcher") && !CODEX_HOOK_MATCHERS.includes(entry.matcher) &&
+              !["Read|Grep|Glob", OLD_CODEX_DIRECT_MATCHER].includes(entry.matcher))
             || !Array.isArray(inner) || inner.length !== 1 || !isDict(inner[0])
             || Object.keys(inner[0]).sort().join(",") !== "command,timeout,type"
             || inner[0].type !== "command" || typeof inner[0].command !== "string"

@@ -74,6 +74,8 @@ For an automation already listed in the private registry, put its `name`, T3 `th
 
 ### Enrol a native Codex Manager
 
+After upgrading, run `agent-workbench install` and trust the new hook entries with `/hooks` or, for the default Codex home, `agent-workbench trust`. If the previous install still had the managed `Read|Grep|Glob` entry, removing it shifts later entries. Use `/hooks` to re-trust all entries, including hooks installed by other tools.
+
 This opt-in was designed for T3's native Codex provider on Codex 0.172. A listed top-level Codex session gets the same per-turn Manager workflow as Claude: each new prompt resets the count and approval, and a `Role: Worker` brief marks the session as a Worker. For Managers, unapproved edits (`apply_patch`) and mutating shell calls are blocked, CI logs go to a Worker, and the sixth counted work call is blocked. Only tools matched by the installed hooks count. T3 thread launch, creation and model changes follow the shared allowlist and quoted `L3 approval:` rules. [Browser rules](#t3-bot-browser-profiles) also apply. Other Codex sessions keep the ordinary Codex policy.
 
 1. Install the current Workbench hooks on the host running T3's Codex provider. Review and trust them with `/hooks` in Codex using that provider's Codex home (including the new `UserPromptSubmit` and `PreToolUse` entries). For the default home, `agent-workbench trust` is the alternative; `agent-workbench status` reports what is trusted.

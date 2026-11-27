@@ -1350,6 +1350,36 @@ describe("policy hook", () => {
       assert.equal(bash("counted", "git status", { turn_id: "turn-2" }), null);
     });
 
+    test("native Codex shell patches count as mutations for unapproved Managers", () => {
+      enrol("manager");
+      prompt("manager");
+      const command = "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: task.txt\n+don't edit\n*** End Patch\nPATCH";
+      const input = { command, workdir: directory, yield_time_ms: 1000 };
+      assert.match(tool("manager", "Bash", input).permissionDecisionReason, /changes files or state/);
+      assert.equal(tool("outside", "Bash", input), null);
+      prompt("manager", APPROVED);
+      assert.equal(tool("manager", "Bash", input), null);
+    });
+
+    test("unapproved Codex Managers can patch project memory only", () => {
+      enrol("manager");
+      const memory = path.join(os.homedir(), ".claude/projects/p/memory");
+      const note = path.join(memory, "note.md");
+      const add = `*** Add File: ${note}\n+note`;
+      const apply = (body) => {
+        prompt("manager");
+        return tool("manager", "apply_patch", { command: `*** Begin Patch\n${body}\n*** End Patch` }, { cwd: memory });
+      };
+      const move = (from, to) => `*** Update File: ${from}\n*** Move to: ${to}\n@@\n-old\n+new`;
+      assert.equal(apply(add), null);
+      assert.equal(apply(move("note.md", "renamed.md")), null);
+      const outside = path.join(directory, "task.txt");
+      for (const body of [`${add}\n*** Add File: ${outside}\n+work`, move(note, outside), move(outside, note),
+        `${add}\n*** Unknown File: ${outside}`]) {
+        assert.equal(apply(body).permissionDecision, "deny", body);
+      }
+    });
+
     test("Codex Manager approval gates edits and shell mutation, but does not allow reading CI logs", () => {
       enrol("approved", "unapproved", "worker");
       prompt("unapproved");
@@ -1412,16 +1442,25 @@ describe("policy hook", () => {
       const input = { target: { model: "gpt-6-luna" }, task: "Inspect this." };
       assert.equal(tool("direct-manager", delegate, input).updatedInput.task, "Role: Worker\nInspect this.");
       assert.equal(tool("outside", delegate, input), null);
+      assert.match(tool("direct-manager", delegate, { target: {} }).permissionDecisionReason, /Set target.model/);
+      assert.equal(tool("outside", delegate, { target: {} }), null);
       for (const session of ["direct-manager", "outside"]) {
-        assert.match(tool(session, delegate, { target: {} }).permissionDecisionReason, /Set target.model/);
         assert.match(tool(session, schedule, {}).permissionDecisionReason, /New schedule_task calls/);
         assert.equal(tool(session, schedule, { scheduledTaskId: "s-1", enabled: false }), null);
       }
       assert.equal(JSON.parse(fs.readFileSync(stateFile("direct-manager"), "utf8")).count, 0);
-      const watch = "mcp__t3_code__watch_pull_request";
+    });
+
+    test("Codex PR watches require an enrolled Manager under both T3 namespaces", () => {
+      enrol("manager");
+      prompt("manager");
       const target = { repository: "org/project", number: 1 };
-      assert.equal(tool("direct-manager", watch, target), null);
-      assert.equal(tool("outside", watch, target).permissionDecision, "deny");
+      for (const watch of ["mcp__t3_code__watch_pull_request", "mcp__t3_code_direct__watch_pull_request"]) {
+        assert.equal(tool("manager", watch, target), null);
+        assert.equal(tool("outside", watch, target).permissionDecision, "deny");
+        assert.equal(tool("manager", watch, target, { agent_id: "child" }).permissionDecision, "deny");
+        assert.equal(tool("manager", watch, target, { agent_type: "worker" }).permissionDecision, "deny");
+      }
     });
 
     test("Codex browsers require a current enrolled non-Worker Manager turn", () => {
