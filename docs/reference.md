@@ -72,6 +72,38 @@ Antigravity CLI can use the shared shell checks through a `PreToolUse` hook matc
 
 For an automation already listed in the private registry, put its `name`, T3 `thread` ID, and exact `schedule` in `policy.schedules` in your `workers.yml` override, then rerun `agent-workbench install`. No schedules are allowlisted by default, and the hook does not read the registry. Only the Claude Manager main loop in that thread can create the schedule: use the name as `title`, supply a nonblank `prompt`, and set `bindToCurrentThread: true` to run on the thread's current model. The schedule must match the configured object exactly: `interval` uses integer `everyMs` of at least 60000, or `fixed_time` uses a quoted 24-hour `timeOfDay` (`"09:00"`) and optional `weekdays` (0 for Sunday through 6 for Saturday). Codex still denies creates. Pause-only updates to identified schedules are unchanged. The installed Antigravity hook only sees `run_command`, so it cannot enforce this policy on T3 calls.
 
+### Enrol a native Codex Manager
+
+This opt-in was designed for T3's native Codex provider on Codex 0.172. A listed top-level Codex session gets the same per-turn Manager workflow as Claude: each new prompt resets the count and approval, and a `Role: Worker` brief marks the session as a Worker. For Managers, unapproved edits (`apply_patch`) and mutating shell calls are blocked, CI logs go to a Worker, and the sixth counted work call is blocked. Only tools matched by the installed hooks count. T3 thread launch, creation and model changes follow the shared allowlist and quoted `L3 approval:` rules. [Browser rules](#t3-bot-browser-profiles) also apply. Other Codex sessions keep the ordinary Codex policy.
+
+1. Install the current Workbench hooks on the host running T3's Codex provider. Review and trust them with `/hooks` in Codex using that provider's Codex home (including the new `UserPromptSubmit` and `PreToolUse` entries). For the default home, `agent-workbench trust` is the alternative; `agent-workbench status` reports what is trusted.
+2. Once the T3 thread has opened a native Codex session, look up its **native Codex thread ID** (the rollout ID and hook `session_id`), not the T3 thread ID. In T3 0.1.13 the provider thread record in `userdata/statev2.sqlite` stores this as `nativeThreadRef.nativeId`. On the provider host, use the T3 thread ID from its link with this read-only lookup (Node 22.13+):
+
+   ```sh
+   t3_thread_id='<T3 thread ID>'
+   node --input-type=module - "${T3CODE_HOME:-$HOME/.t3}/userdata/statev2.sqlite" "$t3_thread_id" <<'JS'
+   import { DatabaseSync } from 'node:sqlite';
+   const db = new DatabaseSync(process.argv[2], { readOnly: true });
+   const row = db.prepare(`
+     SELECT json_extract(payload_json, '$.nativeThreadRef.nativeId') AS session_id
+     FROM orchestration_v2_projection_provider_threads
+     WHERE thread_id = ? AND driver = 'codex' AND owner_node_id IS NULL
+     ORDER BY updated_at DESC LIMIT 1
+   `).get(process.argv[3]);
+   console.log(row?.session_id ?? 'No native Codex session yet');
+   JS
+   ```
+
+3. Add that result to `agent-workbench/codex-managers.json` under the hook's state root (`AGENT_WORKBENCH_STATE_HOME`, then `XDG_STATE_HOME`, then `~/.local/state`). The operator maintains this file; install does not create it. Start a new turn to record that turn's state.
+
+   ```json
+   {"sessions": ["<native Codex session ID>"]}
+   ```
+
+Remove the ID from the file to roll back. The next hook call uses the ordinary Codex policy, without needing a restart or reinstall. A missing or invalid file enrols no sessions. Spawned Codex agents are excluded by their hook markers or separate session IDs.
+
+This is a cooperative guardrail, not a permission boundary. It trusts an operator-maintained file and approval text in prompts, and only sees the tools its hooks match. Indirect calls that Codex does not surface as those tools are outside the gate. The Codex adapter does not register a `PostToolUse` Worker-model check. For a question that blocks progress, the Stop hook points Codex at `request_user_input` or the Chief PM rather than Claude's question tool.
+
 ### T3 bot browser profiles
 
 A bot profile keeps a dedicated account's browser sign-in separate from your personal profile. In T3, the owner opens **Settings → Browser profiles → Add profile → Blank profile**, then signs in once in a T3 preview tab using that profile. As a one-time host step, the owner runs `chmod 700 ~/.t3/userdata/server-browser/profiles`.
@@ -86,9 +118,9 @@ policy:
         urls: [https://github.com/onsager-ai/peirce/settings]
 ```
 
-Run bot chores in the Claude Manager main loop. Put `Manager work approval: <link>` and `Browser task: bot-github <https-link>` on separate lines in the first user prompt of the turn. The next user prompt clears the grant but keeps the session tied to the bot profile. Use a separate session for a different bot profile.
+Run bot chores in the Claude Manager or enrolled Codex Manager main loop. Put `Manager work approval: <link>` and `Browser task: bot-github <https-link>` on separate lines in the first user prompt of the turn. The next user prompt clears the grant but keeps the session tied to the bot profile. Use a separate session for a different bot profile.
 
-A Manager may use the owner's default profile only for browser work the owner asks for directly in that thread. Workers, delegated children and Codex or Antigravity hosts are always denied. The hook can't tell an owner message from a peer message, so the Manager-side limit is a rule Managers follow, not something the gate enforces. Workers, subagents, and non-Claude hosts have no browser access, including incognito; only `preview_status` is available. Antigravity's installed hook only receives shell calls; do not expose browser tools through an unguarded path.
+A Manager may use the owner's default profile only for browser work the owner asks for directly in that thread. The hook can't tell an owner message from a peer message, so this is a rule Managers follow, not something the gate enforces. Workers, subagents, unenrolled Codex sessions, and Antigravity have no browser access, including incognito; only `preview_status` is allowed where the hook sees browser calls. Antigravity's installed hook only receives shell calls; do not expose browser tools through an unguarded path.
 
 Bot opens require `reuseExistingTab: false`, no `tabId`, and no `target`. Open and navigate URLs must match the configured HTTPS origin and path on a segment boundary. Once a session opens a bot profile, every browser call except status needs a current grant, even opens naming `default` or omitting the profile. Script evaluation is blocked. The hook checks tool calls, not redirects or page clicks; keep the bot account's service permissions narrow. The `chmod 700` step restricts filesystem access by other OS users, and denying Worker browser calls protects the browser path. The hook does not block file reads, and mode `0700` does not isolate processes running as the same OS user.
 

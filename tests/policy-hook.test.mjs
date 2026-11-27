@@ -712,6 +712,24 @@ describe("policy hook", () => {
       args: ["--host", "codex", "--workers", workers], env: { ...env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") },
     });
     deny(JSON.parse(result.stdout).hookSpecificOutput, "Codex host");
+
+    const enrolledSession = "schedule-enrolled-codex";
+    fs.writeFileSync(path.join(directory, "state/agent-workbench/codex-managers.json"),
+      JSON.stringify({ sessions: [enrolledSession] }));
+    const codexOptions = {
+      args: ["--host", "codex", "--workers", workers],
+      env: { ...env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") },
+    };
+    const codexTurn = { session_id: enrolledSession, turn_id: "turn-1" };
+    run(JSON.stringify({ ...codexTurn, hook_event_name: "UserPromptSubmit", prompt: "Create the registered schedule." }),
+      codexOptions);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(managerTurns, `${enrolledSession}.json`), "utf8")).turn,
+      codexTurn.turn_id);
+    for (const name of [tool_name, direct.tool_name]) {
+      const create = run(JSON.stringify({ ...codexTurn, hook_event_name: "PreToolUse", tool_name: name, tool_input: input }),
+        codexOptions);
+      deny(JSON.parse(create.stdout).hookSpecificOutput, `enrolled Codex host with matching schedule (${name})`);
+    }
     assert.equal(call("schedule-pause", { scheduledTaskId: "existing", enabled: false }), null);
   });
 
@@ -1274,6 +1292,164 @@ describe("policy hook", () => {
       return result.stdout ? JSON.parse(result.stdout).hookSpecificOutput : null;
     };
 
+    const policyDir = () => path.join(directory, "state", "agent-workbench");
+    const enrolmentFile = () => path.join(policyDir(), "codex-managers.json");
+    const stateFile = (session) => path.join(policyDir(), "manager-turns", `${session}.json`);
+    function enrol(...sessions) {
+      fs.mkdirSync(policyDir(), { recursive: true });
+      fs.writeFileSync(enrolmentFile(), JSON.stringify({ sessions }));
+    }
+
+    const event = (hook_event_name, session_id, details) => codex({
+      hook_event_name, session_id, turn_id: "turn-1", ...details,
+    }, { ...process.env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") });
+    const prompt = (session, text = "Plan and delegate.", details) => event("UserPromptSubmit", session, { prompt: text, ...details });
+    const tool = (session, tool_name, tool_input = {}, details) => event("PreToolUse", session, { tool_name, tool_input, ...details });
+    const bash = (session, command, details) => tool(session, "Bash", { command }, details);
+    const patch = (session, details) => tool(session, "apply_patch", {
+      command: "*** Begin Patch\n*** Add File: task.txt\n+work\n*** End Patch",
+    }, details);
+
+    test("only listed top-level Codex sessions write Manager turn state", () => {
+      for (const invalid of [undefined, "{broken", "null", '{"sessions":"manager"}', '{"sessions":["manager",42]}']) {
+        if (invalid !== undefined) {
+          fs.mkdirSync(policyDir(), { recursive: true });
+          fs.writeFileSync(enrolmentFile(), invalid);
+        }
+        prompt("manager", APPROVED);
+        assert.ok(!fs.existsSync(stateFile("manager")), invalid);
+        assert.equal(patch("manager"), null, invalid);
+      }
+      enrol("manager");
+      for (const marker of [{ agent_id: "child" }, { agent_type: "worker" }]) {
+        prompt("manager", APPROVED, marker);
+        assert.ok(!fs.existsSync(stateFile("manager")));
+        assert.equal(patch("manager", marker), null);
+      }
+      prompt("other-session", APPROVED);
+      assert.ok(!fs.existsSync(stateFile("other-session")));
+      prompt("manager", APPROVED);
+      assert.deepEqual(JSON.parse(fs.readFileSync(stateFile("manager"), "utf8")), {
+        worker: false, approved: true, count: 0, turn: "turn-1",
+      });
+    });
+
+    test("enrolled Codex Managers count apply_patch even when the patch is denied", () => {
+      enrol("counted");
+      for (const session of ["counted", "not-counted"]) {
+        prompt(session);
+        const enrolled = session === "counted";
+        assert.equal(patch(session)?.permissionDecision ?? null, enrolled ? "deny" : null);
+        if (enrolled) assert.equal(JSON.parse(fs.readFileSync(stateFile(session), "utf8")).count, 1);
+        for (let i = 0; i < 4; i++) assert.equal(bash(session, "git status"), null);
+        const sixth = bash(session, "git status");
+        if (enrolled) assert.match(sixth.permissionDecisionReason, /sixth counted work call/);
+        else assert.equal(sixth, null);
+      }
+      prompt("counted", "New turn.", { turn_id: "turn-2" });
+      assert.equal(bash("counted", "git status", { turn_id: "turn-2" }), null);
+    });
+
+    test("Codex Manager approval gates edits and shell mutation, but does not allow reading CI logs", () => {
+      enrol("approved", "unapproved", "worker");
+      prompt("unapproved");
+      assert.match(bash("unapproved", "touch task.txt").permissionDecisionReason, /changes files or state/);
+      assert.equal(bash("outside", "touch task.txt"), null);
+      prompt("approved", APPROVED);
+      assert.equal(bash("approved", "touch task.txt"), null);
+      assert.equal(patch("approved"), null);
+      assert.match(bash("approved", "gh run view 123 --log").permissionDecisionReason, /Delegate CI logs/);
+      assert.equal(bash("outside", "gh run view 123 --log"), null);
+      assert.equal(bash("approved", "gh run view 123 --log", { agent_id: "child" }), null);
+      assert.equal(patch("approved", { turn_id: "turn-2" }).permissionDecision, "deny");
+      prompt("approved", "Plan the next turn.", { turn_id: "turn-2" });
+      assert.equal(JSON.parse(fs.readFileSync(stateFile("approved"), "utf8")).approved, false);
+      assert.equal(patch("approved", { turn_id: "turn-2" }).permissionDecision, "deny");
+      prompt("worker", "Role: Worker\nMake the change.");
+      assert.equal(patch("worker"), null);
+      assert.equal(bash("worker", "touch task.txt"), null);
+      enrol();
+      assert.equal(patch("approved", { turn_id: "turn-2" }), null);
+      assert.equal(bash("approved", "gh run view 123 --log"), null);
+    });
+
+    test("enrolled Codex Managers use the launch and configure rules under both T3 namespaces", () => {
+      const ids = { environmentId: "env", projectId: "project" };
+      const approved = "Run the task.\nL3 approval: https://example.test/approval";
+      const launch = { ...ids, modelSelection: { model: "gpt-6-astra" } };
+      const configure = { threadId: "thread-1", modelSelection: { model: "gpt-6-luna" } };
+      const create = { threads: [{ target: { ...ids, model: "gpt-6-luna" }, prompt: "Inspect the project." }] };
+      for (const namespace of ["mcp__t3_code__", "mcp__t3_code_direct__"]) {
+        const session = namespace.includes("direct") ? "manager-direct" : "manager-legacy";
+        const worker = `${session}-worker`;
+        const launchTool = namespace + "t3_thread_launch";
+        const createTool = namespace + "create_threads";
+        const configureTool = namespace + "t3_thread_configure";
+        enrol(session, worker);
+        prompt(session);
+        assert.match(tool(session, launchTool, launch).permissionDecisionReason, /L3 approval:/);
+        assert.equal(tool(session, launchTool, { ...launch, message: approved }), null);
+        assert.equal(tool(session, launchTool, { ...launch, projectId: "", message: approved }).permissionDecision, "deny");
+        assert.equal(tool(session, createTool, create), null);
+        assert.equal(tool(session, createTool, { threads: [{ target: { ...ids, model: "gpt-6-astra" } }] }).permissionDecision, "deny");
+        assert.equal(tool(session, configureTool, configure), null);
+        assert.equal(tool(session, configureTool, { ...configure, modelSelection: launch.modelSelection }).permissionDecision, "deny");
+        prompt(worker, `Role: Worker\n${APPROVED}`);
+        for (const notManager of ["outside", worker]) {
+          assert.equal(tool(notManager, launchTool, { ...launch, message: approved }).permissionDecision, "deny");
+          assert.equal(tool(notManager, createTool, create).permissionDecision, "deny");
+          assert.equal(tool(notManager, configureTool, configure).permissionDecision, "deny");
+        }
+        assert.equal(tool(session, launchTool, { ...launch, message: approved }, { agent_type: "worker" }).permissionDecision, "deny");
+      }
+    });
+
+    test("Codex direct delegation and schedules keep the shared tool rules", () => {
+      enrol("direct-manager");
+      prompt("direct-manager");
+      const delegate = "mcp__t3_code_direct__delegate_task";
+      const schedule = "mcp__t3_code_direct__schedule_task";
+      const input = { target: { model: "gpt-6-luna" }, task: "Inspect this." };
+      assert.equal(tool("direct-manager", delegate, input).updatedInput.task, "Role: Worker\nInspect this.");
+      assert.equal(tool("outside", delegate, input), null);
+      for (const session of ["direct-manager", "outside"]) {
+        assert.match(tool(session, delegate, { target: {} }).permissionDecisionReason, /Set target.model/);
+        assert.match(tool(session, schedule, {}).permissionDecisionReason, /New schedule_task calls/);
+        assert.equal(tool(session, schedule, { scheduledTaskId: "s-1", enabled: false }), null);
+      }
+      assert.equal(JSON.parse(fs.readFileSync(stateFile("direct-manager"), "utf8")).count, 0);
+      const watch = "mcp__t3_code__watch_pull_request";
+      const target = { repository: "org/project", number: 1 };
+      assert.equal(tool("direct-manager", watch, target), null);
+      assert.equal(tool("outside", watch, target).permissionDecision, "deny");
+    });
+
+    test("Codex browsers require a current enrolled non-Worker Manager turn", () => {
+      configureBrowser();
+      enrol("personal", "bot", "browser-worker");
+      const open = "mcp__t3_code_direct__preview_open";
+      const status = "mcp__t3_code_direct__preview_status";
+      const bot = { profileId: BOT, reuseExistingTab: false, url: BOT_URL };
+      assert.equal(tool("personal", open).permissionDecision, "deny");
+      prompt("personal");
+      assert.equal(tool("personal", open), null);
+      assert.match(tool("personal", open, bot).permissionDecisionReason, /current approved Manager turn/);
+      prompt("bot", `${APPROVED}\n${BROWSER_TASK}`);
+      assert.equal(tool("bot", open, bot), null);
+      assert.match(tool("bot", "mcp__t3_code__preview_evaluate", {}).permissionDecisionReason, /Script evaluation/);
+      assert.match(tool("bot", "mcp__t3_code__preview_navigate", { url: "https://outside.test/" }).permissionDecisionReason, /outside/);
+      assert.equal(tool("bot", open, bot, { turn_id: "turn-2" }).permissionDecision, "deny");
+      prompt("bot", "Continue without approval.", { turn_id: "turn-2" });
+      assert.match(tool("bot", open, bot, { turn_id: "turn-2" }).permissionDecisionReason, /current approved Manager turn/);
+      prompt("browser-worker", `Role: Worker\n${APPROVED}\n${BROWSER_TASK}`);
+      prompt("outside", `${APPROVED}\n${BROWSER_TASK}`);
+      for (const session of ["outside", "browser-worker"]) {
+        assert.equal(tool(session, open, bot).permissionDecision, "deny");
+        assert.equal(tool(session, status), null);
+      }
+      assert.equal(tool("personal", open, {}, { agent_id: "spawned" }).permissionDecision, "deny");
+    });
+
     test("thread send is stamped with allow under either T3 tool name", () => {
       const env = t3Env();
       for (const tool of ["mcp__t3_code__t3_thread_send", "mcp__t3-code__t3_thread_send"]) {
@@ -1349,6 +1525,15 @@ describe("policy hook", () => {
       assert.equal(codex({ tool_name: "Bash", tool_input: { command: "gh run view 123 --log" } }), null);
       const result = run(JSON.stringify({ hook_event_name: "Stop", last_assistant_message: "Proceed?" }), { args: codexArgs() });
       assert.equal(JSON.parse(result.stdout).decision, "block");
+    });
+
+    test("Codex Stop retries with the native question tool or Chief PM", () => {
+      const result = run(JSON.stringify({ hook_event_name: "Stop", last_assistant_message: "Proceed?" }), { args: codexArgs() });
+      const stop = JSON.parse(result.stdout);
+      assert.equal(stop.decision, "block");
+      assert.match(stop.reason, /request_user_input/);
+      assert.match(stop.reason, /Chief PM/);
+      assert.doesNotMatch(stop.reason, /AskUserQuestion/);
     });
   });
 });

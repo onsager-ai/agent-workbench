@@ -7,7 +7,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 const APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).";
-const MANAGER_MODELS = ["onsager/codex/gpt-6.2-astra", "codex/gpt-6.2-astra", "gemini-4-neon"];
+const MANAGER_MODELS = ["onsager/codex/gpt-6.2-astra", "codex/gpt-6.2-astra", "gpt-6-astra", "gemini-4-neon"];
 const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task branch, origin/main, " +
   "or git switch -c <task> origin/main.";
 const PROTECTED_BRANCHES = new Set(["main", "master"]);
@@ -39,9 +39,10 @@ const INHERITED_MODEL ="Built-in agents inherit the Manager's model. Use a tier 
 const INHERITING_AGENT_TYPES = new Set([undefined, null, "general-purpose", "Plan", "Explore", "claude"]);
 const MODEL_OVERRIDE = "model overrides the model in this agent's definition, so a tier agent would run on " +
   "the wrong model. Drop model and let subagent_type select the tier.";
-const STOP_REASON = "If this asks the user something, re-ask it with AskUserQuestion, putting the recommended " +
+const stopReason = (codex) => `If this asks the user something, re-ask it with ${codex ? "request_user_input" : "AskUserQuestion"}, putting the recommended ` +
   "option first and offering your best guesses as options for open-ended answers. " +
-  "If it is an owner decision and a Chief PM is registered, send it to the Chief PM instead. " +
+  (codex ? "If a Chief PM is registered, route owner decisions there, and route other questions there if request_user_input is unavailable. "
+    : "If it is an owner decision and a Chief PM is registered, send it to the Chief PM instead. ") +
   "If it was not a question to the user, end the turn without it.";
 const TRANSCRIPT_TAIL_BYTES = 256 * 1024;
 const FOOTER = /(?<![^\n])-- WB_MSG\b[^\n]*/g;
@@ -794,8 +795,7 @@ function browserProfiles(workers, event) {
   }
 }
 
-function previewDecision(tool, input, state, stateFile, workers, event, host) {
-  if (host !== "claude" || event.agent_id != null || state.worker || !state.turn || state.invalidBrowser) return BROWSER_MANAGER;
+function previewDecision(tool, input, state, stateFile, workers, event) {
   const open = tool === "preview_open";
   const { profileId = "default", url } = input;
   const personal = profileId === "default" || profileId === "incognito";
@@ -862,11 +862,26 @@ function auditBrowserCall(stateFile, event, input, profile, tool, decision, work
   }
 }
 
-function managerStatePath(event) {
-  const session = event.session_id;
-  if (typeof session !== "string" || !/^[A-Za-z0-9_-]+$/.test(session)) return null;
+function policyStateDirectory() {
   const root = process.env.AGENT_WORKBENCH_STATE_HOME || process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
-  return path.join(root, "agent-workbench", "manager-turns", `${session}.json`);
+  return path.join(root, "agent-workbench");
+}
+
+const isSessionId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value);
+
+function managerStatePath(event) {
+  return isSessionId(event.session_id) ? path.join(policyStateDirectory(), "manager-turns", `${event.session_id}.json`) : null;
+}
+
+function enrolledCodexManager(event) {
+  // Codex 0.172 includes these markers on UserPromptSubmit and PreToolUse for spawned agents.
+  if (!isSessionId(event.session_id) || event.agent_id != null || event.agent_type != null) return false;
+  try {
+    const { sessions } = JSON.parse(fs.readFileSync(path.join(policyStateDirectory(), "codex-managers.json"), "utf8"));
+    return Array.isArray(sessions) && sessions.every(isSessionId) && sessions.includes(event.session_id);
+  } catch {
+    return false;
+  }
 }
 
 function readManagerState(file) {
@@ -1000,8 +1015,9 @@ async function main() {
       return;
     }
     const stateFile = managerStatePath(event);
+    const codexManager = codex && enrolledCodexManager(event);
     if (event.hook_event_name === "UserPromptSubmit") {
-      if (host === "claude" && event.agent_id == null) {
+      if (codexManager || (host === "claude" && event.agent_id == null)) {
         try {
           updateManagerState(stateFile, (previous) => {
             const prompt = typeof event.prompt === "string" ? event.prompt : "";
@@ -1009,7 +1025,7 @@ async function main() {
             const approved = /^Manager work approval: \S/m.test(prompt);
             const browser = approved && !worker ? browserGrants(prompt) : [];
             return {
-              worker, count: 0, approved, turn: crypto.randomUUID(),
+              worker, count: 0, approved, turn: codexManager ? event.turn_id : crypto.randomUUID(),
               ...(browser.length ? { browser } : {}),
               ...(isProfileId(previous.botProfile) ? { botProfile: previous.botProfile } : {}),
               ...(previous.invalidBrowser && !isProfileId(previous.botProfile) ? { invalidBrowser: true } : {}),
@@ -1039,7 +1055,7 @@ async function main() {
             classifier = selectWorkerProfile(bundle, event).config.policy.stop_classifier;
           } catch {}
         }
-        if (await shouldBlockQuestion(text, classifier)) emit({ decision: "block", reason: STOP_REASON });
+        if (await shouldBlockQuestion(text, classifier)) emit({ decision: "block", reason: stopReason(codex) });
       } catch {
         return;
       }
@@ -1048,14 +1064,20 @@ async function main() {
     if (event.hook_event_name != null && event.hook_event_name !== "PreToolUse") return;
     const tool = event.tool_name;
     const args = "tool_input" in event ? event.tool_input : {};
-    const mainLoop = !codex && !event.agent_id;
-    let managerState = readManagerState(stateFile);
-    const workerContext = managerState.worker || Boolean(event.agent_id);
-    const canonicalTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
+    const mainLoop = codex ? codexManager : !event.agent_id;
+    // An unenrolled session must not keep using state from its time as a Manager.
+    let managerState = readManagerState(codex && !codexManager ? null : stateFile);
+    const workerContext = managerState.worker || Boolean(event.agent_id) || (codex && event.agent_type != null);
+    // Never carry an approval or browser grant over to a different native Codex turn.
+    const codexTurnMatches = () => !codexManager || Boolean(managerState.turn && managerState.turn === event.turn_id);
+    const workApproved = () => managerState.approved && codexTurnMatches();
+    let canonicalTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
+    if (codex && typeof canonicalTool === "string") canonicalTool = canonicalTool.replace(/^mcp__t3_code_direct__/, "mcp__t3_code__");
     const previewTool = browserToolName(tool);
-    const browserWorker = host !== "claude" || event.agent_id != null || managerState.worker || !managerState.turn || managerState.invalidBrowser;
+    const browserWorker = () => (!codexManager && (host !== "claude" || event.agent_id != null)) ||
+      managerState.worker || !managerState.turn || managerState.invalidBrowser || !codexTurnMatches();
     if (previewTool === "preview_status") {
-      auditBrowserCall(stateFile, event, isDict(args) ? args : {}, managerState.botProfile, "status", null, browserWorker);
+      auditBrowserCall(stateFile, event, isDict(args) ? args : {}, managerState.botProfile, "status", null, browserWorker());
       return;
     }
     const isScheduleTask = /^mcp__t3_code(?:_direct)?__schedule_task$/.test(canonicalTool);
@@ -1080,7 +1102,7 @@ async function main() {
     } else if (isPrWatch && !hasPrWatchTarget(args)) {
       [decision, reason] = ["deny", "Bind a PR watch to a repository and pull request, URL, or explicit threadId."];
     } else if ((isThreadLaunch || isCreateThreads || configureModelSelection) && workerContext) [decision, reason] = ["deny", THREAD_LAUNCH];
-    else if ((isThreadLaunch || isCreateThreads || configureModelSelection) && codex) {
+    else if ((isThreadLaunch || isCreateThreads || configureModelSelection) && codex && !codexManager) {
       [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; top-level thread creation and model changes are denied here."];
     } else if (isThreadLaunch) {
       const input = isDict(args) ? args : {};
@@ -1101,11 +1123,12 @@ async function main() {
       })) [decision, reason] = ["deny", THREAD_LAUNCH];
     } else if (workerContext && (isPrWatch || isLocalAutomation)) {
       [decision, reason] = ["deny", "Workers cannot create automation or initiate new watches. Use the current Manager thread for follow-up work."];
-    } else if (codex && !event.agent_id && (isPrWatch || isLocalAutomation)) {
+    } else if (codex && !codexManager && !event.agent_id && (isPrWatch || isLocalAutomation)) {
       [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; ambiguous automation creation is denied here."];
     }
-    if (!decision && mainLoop && !managerState.worker && !managerState.approved && typeof tool === "string" &&
-        !isScheduleTask && !COUNT_EXEMPT.test(tool) && !OBSERVATION_COUNT_EXEMPT.test(tool) && !isLocalWakeup) {
+    if (!decision && mainLoop && !managerState.worker && !workApproved() && typeof tool === "string" &&
+        !isScheduleTask && !COUNT_EXEMPT.test(codex ? canonicalTool : tool) &&
+        !OBSERVATION_COUNT_EXEMPT.test(tool) && !isLocalWakeup) {
       try {
         managerState = updateManagerState(stateFile, (current) => current.turn !== managerState.turn
           ? current : { ...current, count: current.count + 1 });
@@ -1121,14 +1144,19 @@ async function main() {
     if (previewTool) {
       const input = isDict(args) ? args : {};
       if (!decision) {
-        reason = previewDecision(previewTool, input, managerState, stateFile, workers, event, host);
+        reason = browserWorker()
+          ? (codexManager ? BROWSER_MANAGER.replace("Claude Manager", "enrolled Codex Manager") : BROWSER_MANAGER)
+          : previewDecision(previewTool, input, managerState, stateFile, workers, event);
         if (reason) decision = "deny";
       }
       const profile = previewTool === "preview_open" && !decision && isProfileId(input.profileId)
         ? input.profileId : managerState.botProfile;
-      auditBrowserCall(stateFile, event, input, profile, previewTool.replace(/^preview_/, ""), decision, browserWorker);
+      auditBrowserCall(stateFile, event, input, profile, previewTool.replace(/^preview_/, ""), decision, browserWorker());
     }
-    const enforceManager = mainLoop && !managerState.worker && !managerState.approved;
+    const enforceManager = mainLoop && !managerState.worker && !workApproved();
+    if (enforceManager && !decision && codexManager && tool === "apply_patch") {
+      [decision, reason] = ["deny", managerGateReason("apply_patch to a file", stateFile)];
+    }
     if (enforceManager && !decision && ["Edit", "Write", "NotebookEdit", "MultiEdit"].includes(tool)) {
       const filePath = dict(args).file_path ?? dict(args).notebook_path ?? "";
       const memory = path.join(os.homedir(), ".claude", "projects");
@@ -1154,7 +1182,7 @@ async function main() {
       }
       return;
     }
-    if (!decision && (tool === "mcp__t3-code__delegate_task" || tool === "mcp__t3_code__delegate_task")) {
+    if (!decision && canonicalTool === "mcp__t3_code__delegate_task") {
       const target = "target" in dict(args) ? args.target : {};
       const model = dict(target).model;
       if (!model) [decision, reason] = ["deny", T3_MODEL];
@@ -1181,8 +1209,7 @@ async function main() {
     } else if (!decision && tool === "Bash") {
       const command = dict(args).command ?? "";
       if (typeof command !== "string") return;
-      const manager = !codex && !event.agent_id;
-      reason = classifyBash(command, event, manager);
+      reason = classifyBash(command, event, mainLoop);
       if (reason) decision = "deny";
     }
   } catch {
