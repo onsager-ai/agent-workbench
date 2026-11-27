@@ -228,11 +228,15 @@ function validateWorkerShape(config, { profile = false } = {}) {
       if (!Array.isArray(schedules)) throw new Conflict("policy.schedules must be a list; correct it in workers.yml");
       for (const [index, entry] of schedules.entries()) {
         const where = `policy.schedules[${index}]`;
-        keys(entry, ["name", "thread", "schedule"], where);
-        for (const key of ["name", "thread"]) {
+        keys(entry, ["name", "thread", "schedule", "task_id", "fresh_session"], where);
+        const stringKeys = has(entry, "task_id") ? ["name", "thread", "task_id"] : ["name", "thread"];
+        for (const key of stringKeys) {
           if (typeof entry[key] !== "string" || !entry[key].trim()) {
             throw new Conflict(`${where}.${key} must be a nonblank string; correct it in workers.yml`);
           }
+        }
+        if (has(entry, "fresh_session") && typeof entry.fresh_session !== "boolean") {
+          throw new Conflict(`${where}.fresh_session must be a boolean; correct it in workers.yml`);
         }
         const { schedule } = entry;
         if (schedule?.type === "interval") {
