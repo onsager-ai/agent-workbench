@@ -422,6 +422,7 @@ describe("policy hook", () => {
 
   test("Claude Managers can quote approval to launch the approved Astra and Neon models", () => {
     const astra = "onsager/codex/gpt-6.2-astra";
+    const codexAstra = "codex/gpt-6.2-astra";
     const neon = "gemini-4-neon";
     const env = { AGENT_WORKBENCH_STATE_HOME: path.join(directory, "launch-approval-state") };
     const ids = { environmentId: "env", projectId: "project" };
@@ -431,7 +432,14 @@ describe("policy hook", () => {
     }), env);
     const launch = (model, message, extras = {}) => ({ ...ids, modelSelection: { model }, message, ...extras });
     const launchTool = "mcp__t3-code__t3_thread_launch";
-    for (const model of [astra, neon]) {
+    for (const model of ["gpt-6-luna", "codex/gpt-6-luna", "gpt-6.2-sol", "codex/gpt-6.2-sol"]) {
+      assert.equal(call(launchTool, launch(model, "Run the task.")), null);
+    }
+    assert.equal(call(launchTool, launch("codex/gpt-6.1-terra", "Run the task.")).permissionDecision, "deny");
+    for (const model of ["prefix-codex/gpt-6-luna", "codex/gpt-6-luna-extra", "other/codex/gpt-6-luna", "codex/codex/gpt-6-luna"]) {
+      assert.equal(call(launchTool, launch(model, approval)).permissionDecision, "deny");
+    }
+    for (const model of [astra, codexAstra, neon]) {
       const denied = call(launchTool, launch(model, "Run the task."));
       assert.equal(denied.permissionDecision, "deny");
       assert.match(denied.permissionDecisionReason, /L3 approval:/);
