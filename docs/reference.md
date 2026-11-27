@@ -68,6 +68,30 @@ Codex CLI 0.141 or newer (hooks are on by default) gets the same policy hook thr
 Antigravity CLI can use the shared shell checks through a `PreToolUse` hook matching `run_command` and invoking the installed `policy-hook --host antigravity` adapter. Antigravity selects the event through the configured `PreToolUse` registration; its documented stdin payload provides `toolCall.name` and `toolCall.args` rather than a hook event name. This adapter handles only `toolCall.name` and string `toolCall.args.CommandLine`; it shares role-independent shell checks such as protected branches and GitHub polling. Missing or unsupported tool-call fields continue with `{decision: "allow"}`. It does not infer a Manager or Worker role and does not provide policy-hook parity. To register the hook in one workspace, run `agent-workbench install --antigravity --workspace PATH`; this affects all Antigravity sessions in that workspace, and does not provide an authenticated Manager-only filter. Remove that workspace's registration with `agent-workbench uninstall --antigravity --workspace PATH`. Plain install and update do not create or recreate it. Review and explicitly select this hook in Antigravity before activation.
 
 
+### T3 bot browser profiles
+
+A bot profile keeps a dedicated account's browser sign-in separate from your personal profile. In T3, the owner opens **Settings → Browser profiles → Add profile → Blank profile**, then signs in once in a T3 preview tab using that profile. As a one-time host step, the owner runs `chmod 700 ~/.t3/userdata/server-browser/profiles`.
+
+No bot profiles are enabled by default. List the profile ID and its allowed HTTPS URL prefixes in your `workers.yml` override, then rerun `agent-workbench install` to apply it:
+
+```yaml
+policy:
+  browser:
+    profiles:
+      bot-github:
+        urls: [https://github.com/onsager-ai/peirce/settings]
+```
+
+Run bot chores in the Claude Manager main loop. Put `Manager work approval: <link>` and `Browser task: bot-github <https-link>` on separate lines in the first user prompt of the turn. The next user prompt clears the grant but keeps the session tied to the bot profile. Use a separate session for a different bot profile.
+
+A Manager may use the owner's default profile only for browser work the owner asks for directly in that thread. Workers, delegated children and Codex or Antigravity hosts are always denied. The hook can't tell an owner message from a peer message, so the Manager-side limit is a rule Managers follow, not something the gate enforces. Workers, subagents, and non-Claude hosts have no browser access, including incognito; only `preview_status` is available. Antigravity's installed hook only receives shell calls; do not expose browser tools through an unguarded path.
+
+Bot opens require `reuseExistingTab: false`, no `tabId`, and no `target`. Open and navigate URLs must match the configured HTTPS origin and path on a segment boundary. Once a session opens a bot profile, every browser call except status needs a current grant, even opens naming `default` or omitting the profile. Script evaluation is blocked. The hook checks tool calls, not redirects or page clicks; keep the bot account's service permissions narrow. The `chmod 700` step restricts filesystem access by other OS users, and denying Worker browser calls protects the browser path. The hook does not block file reads, and mode `0700` does not isolate processes running as the same OS user.
+
+The hook records allowed bot opens and subsequent preview decisions in `agent-workbench/browser-audit.jsonl` under `AGENT_WORKBENCH_STATE_HOME`, `XDG_STATE_HOME`, or `~/.local/state` (in that order). It logs decision metadata, not typed text, selected values, uploaded paths, or scripts. To revoke access, revoke the bot's access or sign-in at the service first, then remove the config entry, apply the config again, and delete that profile's directory.
+
+Limits: This gate is a cooperative guardrail for agents that follow these rules, not a sandbox. `Browser task:` grants trust to prompt text in the same way as `Manager work approval:`, so a peer message containing those lines can grant access. A process running as the same user can rewrite the hook's state file. The Antigravity hook only sees shell commands, and T3 tools registered under another MCP server name are not matched. The real limit is the bot account's own rights; keep them minimal and revoke access at the service.
+
 ### Neutral profile for provider switching
 
 For a gateway or CC Switch setup, copy this profile into `~/.agents/skills/workbench-personal/workers.yml` or `~/.config/agent-workbench/workers.yml`. If the file already has a `profiles` mapping, add `neutral` under it.
