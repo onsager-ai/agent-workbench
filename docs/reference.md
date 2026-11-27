@@ -90,6 +90,8 @@ Bot opens require `reuseExistingTab: false`, no `tabId`, and no `target`. Open a
 
 The hook records allowed bot opens and subsequent preview decisions in `agent-workbench/browser-audit.jsonl` under `AGENT_WORKBENCH_STATE_HOME`, `XDG_STATE_HOME`, or `~/.local/state` (in that order). It logs decision metadata, not typed text, selected values, uploaded paths, or scripts. To revoke access, revoke the bot's access or sign-in at the service first, then remove the config entry, apply the config again, and delete that profile's directory.
 
+Limits: This gate is a cooperative guardrail for agents that follow these rules, not a sandbox. `Browser task:` grants trust to prompt text in the same way as `Manager work approval:`, so a peer message containing those lines can grant access. A process running as the same user can rewrite the hook's state file. The Antigravity hook only sees shell commands, and T3 tools registered under another MCP server name are not matched. The real limit is the bot account's own rights; keep them minimal and revoke access at the service.
+
 ### Neutral profile for provider switching
 
 For a gateway or CC Switch setup, copy this profile into `~/.agents/skills/workbench-personal/workers.yml` or `~/.config/agent-workbench/workers.yml`. If the file already has a `profiles` mapping, add `neutral` under it.
