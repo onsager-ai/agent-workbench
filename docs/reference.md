@@ -68,6 +68,28 @@ Codex CLI 0.141 or newer (hooks are on by default) gets the same policy hook thr
 Antigravity CLI can use the shared shell checks through a `PreToolUse` hook matching `run_command` and invoking the installed `policy-hook --host antigravity` adapter. Antigravity selects the event through the configured `PreToolUse` registration; its documented stdin payload provides `toolCall.name` and `toolCall.args` rather than a hook event name. This adapter handles only `toolCall.name` and string `toolCall.args.CommandLine`; it shares role-independent shell checks such as protected branches and GitHub polling. Missing or unsupported tool-call fields continue with `{decision: "allow"}`. It does not infer a Manager or Worker role and does not provide policy-hook parity. To register the hook in one workspace, run `agent-workbench install --antigravity --workspace PATH`; this affects all Antigravity sessions in that workspace, and does not provide an authenticated Manager-only filter. Remove that workspace's registration with `agent-workbench uninstall --antigravity --workspace PATH`. Plain install and update do not create or recreate it. Review and explicitly select this hook in Antigravity before activation.
 
 
+### T3 bot browser profiles
+
+A bot profile keeps a dedicated account's browser sign-in separate from your personal profile. In T3, the owner opens **Settings → Browser profiles → Add profile → Blank profile**, then signs in once in a T3 preview tab using that profile. As a one-time host step, the owner runs `chmod 700 ~/.t3/userdata/server-browser/profiles`.
+
+No bot profiles are enabled by default. List the profile ID and its allowed HTTPS URL prefixes in your `workers.yml` override, then rerun `agent-workbench install` to apply it:
+
+```yaml
+policy:
+  browser:
+    profiles:
+      bot-github:
+        urls: [https://github.com/onsager-ai/peirce/settings]
+```
+
+A Claude Manager turn needs `Manager work approval: <link>` and `Browser task: bot-github <link>` in the first user prompt for direct use. To grant a subagent access, add the `Browser task:` line to the `Agent` or `Task` prompt in an approved turn. That grant is shared by subagents in the same session, not by T3 delegate children in other sessions. The next user prompt clears both grants. Use a separate session for a different bot profile.
+
+A Manager may use the owner's default profile only for browser work the owner asks for directly in that thread. Workers, delegated children and Codex or Antigravity hosts are always denied. The hook can't tell an owner message from a peer message, so the Manager-side limit is a rule Managers follow, not something the gate enforces. `incognito` and `preview_status` stay available. Unknown profiles are denied.
+
+Bot opens with a URL and explicit navigations must match the configured origin and a path segment boundary. The hook blocks script evaluation and direct profile-directory reads through the covered tools. It checks tool calls, not where a page click or redirect takes the browser; keep the bot account's service permissions narrow. Antigravity's installed hook only receives shell calls; don't expose T3 bot or owner profiles through an unguarded tool path.
+
+The hook records allowed bot opens and subsequent preview decisions in `agent-workbench/browser-audit.jsonl` under `AGENT_WORKBENCH_STATE_HOME`, `XDG_STATE_HOME`, or `~/.local/state` (in that order). It logs decision metadata, not typed text, selected values, uploaded paths, or scripts. To revoke access, revoke the bot's access or sign-in at the service first, then remove the config entry, apply the config again, and delete that profile's directory.
+
 ### Neutral profile for provider switching
 
 For a gateway or CC Switch setup, copy this profile into `~/.agents/skills/workbench-personal/workers.yml` or `~/.config/agent-workbench/workers.yml`. If the file already has a `profiles` mapping, add `neutral` under it.
