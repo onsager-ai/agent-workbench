@@ -36,11 +36,11 @@ const LEGACY_PRETOOLUSE_MATCHERS = new Set(["Agent|Task", "Bash", "mcp__t3-code_
 const CLAUDE_HOOK_MATCHERS = {
   PreToolUse: [".*"],
   UserPromptSubmit: [undefined],
-  PostToolUse: ["Agent|Task", "mcp__t3[-_]code__preview_open"],
+  PostToolUse: ["Agent|Task"],
   Stop: [undefined],
 };
 const claudeHookKey = (event, matcher) => matcher === undefined ? event : `${event}:${matcher}`;
-const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__t3_thread_configure", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request", "Read|Grep|Glob", "mcp__t3_code__preview_.*"];
+const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__t3_thread_configure", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request", "mcp__t3_code__preview_.*", "mcp__t3_code__t3_preview_.*", "mcp__t3_code_direct__(preview_|t3_preview_).*"];
 const CODEX_HOOK_TIMEOUT = 30;
 
 export class Conflict extends Error {}
@@ -1354,7 +1354,8 @@ export class Setup {
         const bareKey = event === "PreToolUse" && key === matcher;
         if (names !== (["Stop", "UserPromptSubmit"].includes(event) ? "hooks" : "hooks,matcher") ||
             !(CLAUDE_HOOK_MATCHERS[event]?.includes(matcher) ||
-              (event === "PreToolUse" && LEGACY_PRETOOLUSE_MATCHERS.has(matcher))) || hookKeys.has(expectedKey) ||
+              (event === "PreToolUse" && LEGACY_PRETOOLUSE_MATCHERS.has(matcher)) ||
+              (event === "PostToolUse" && matcher === "mcp__t3[-_]code__preview_open")) || hookKeys.has(expectedKey) ||
             (has(saved, "key") && key !== expectedKey && !bareKey) ||
             !Array.isArray(hooks) || hooks.length !== 1 || !isDict(hooks[0]) ||
             Object.keys(hooks[0]).sort().join(",") !== "command,type" ||
@@ -1373,7 +1374,7 @@ export class Setup {
         const names = isDict(entry) ? Object.keys(entry).sort().join(",") : "";
         const inner = isDict(entry) ? entry.hooks : null;
         if (!["hooks,matcher", "hooks"].includes(names)
-            || (has(entry, "matcher") && !CODEX_HOOK_MATCHERS.includes(entry.matcher))
+            || (has(entry, "matcher") && !CODEX_HOOK_MATCHERS.includes(entry.matcher) && entry.matcher !== "Read|Grep|Glob")
             || !Array.isArray(inner) || inner.length !== 1 || !isDict(inner[0])
             || Object.keys(inner[0]).sort().join(",") !== "command,timeout,type"
             || inner[0].type !== "command" || typeof inner[0].command !== "string"

@@ -130,20 +130,32 @@ describe("policy hook", () => {
     configureBrowser();
     for (const [session, prompt] of [
       ["unapproved", BROWSER_TASK], ["no-grant", APPROVED], ["missing-link", `${APPROVED}\nBrowser task: ${BOT}`],
-      ["child", `Role: Worker\n${APPROVED}\n${BROWSER_TASK}`],
+      ["bad-scheme", `${APPROVED}\nBrowser task: ${BOT} http://example.test/task`],
+      ["bad-link", `${APPROVED}\nBrowser task: ${BOT} https:///`],
+      ["extra-text", `${APPROVED}\n${BROWSER_TASK} extra`],
     ]) {
       browserPrompt(session, prompt);
       assert.match(preview(session, "open", { profileId: BOT, reuseExistingTab: false }).permissionDecisionReason, /current approved Manager turn/);
     }
     browserPrompt("approved", `${APPROVED}\n${BROWSER_TASK}`);
+    for (const input of [{}, { reuseExistingTab: false, tabId: "tab-1" }, { reuseExistingTab: false, target: {} }]) {
+      assert.match(preview("approved", "open", { profileId: BOT, ...input }).permissionDecisionReason, /reuseExistingTab/);
+    }
     assert.equal(preview("approved", "open", { profileId: BOT, reuseExistingTab: false }), null);
     assert.equal(preview("approved", "snapshot", { tabId: "tab-1" }), null);
+    assert.equal(browserCall("approved", "mcp__t3-code__t3_preview_list"), null);
     assert.match(preview("approved", "evaluate", { expression: "1 + 1" }).permissionDecisionReason, /evaluation/);
     browserPrompt("approved", APPROVED);
     assert.equal(preview("approved", "open", { profileId: BOT, reuseExistingTab: false }).permissionDecision, "deny");
-    assert.equal(preview("approved", "snapshot", { tabId: "tab-1" }).permissionDecision, "deny");
+    assert.match(preview("approved", "open", { tabId: "tab-1" }).permissionDecisionReason, /current approved Manager turn/);
+    assert.equal(preview("approved", "open", { profileId: "default", tabId: "tab-1" }).permissionDecision, "deny");
+    assert.equal(preview("approved", "navigate", { tabId: "tab-1", url: BOT_URL }).permissionDecision, "deny");
+    assert.equal(browserCall("approved", "mcp__t3-code__t3_preview_close", { tabId: "tab-1" }).permissionDecision, "deny");
     assert.equal(preview("approved", "status"), null);
     browserPrompt("approved", `${APPROVED}\n${BROWSER_TASK}`);
+    assert.match(preview("approved", "open", { tabId: "tab-1" }).permissionDecisionReason, /reuseExistingTab/);
+    assert.match(preview("approved", "open", { profileId: "default", reuseExistingTab: false, url: "https://other.test/" }).permissionDecisionReason, /outside/);
+    assert.equal(browserCall("approved", "mcp__t3_code__t3_preview_close", { tabId: "tab-1" }), null);
     assert.equal(preview("approved", "snapshot", { tabId: "tab-1" }), null);
   });
 
@@ -175,132 +187,65 @@ describe("policy hook", () => {
     assert.equal(preview("browser-valid", "navigate").permissionDecision, "deny");
   });
 
-  test("subagent grants come only from a permitted Manager Agent or Task in the same turn", () => {
+  test("Workers and subagents cannot use either browser tool family", () => {
     configureBrowser();
-    const agent = { agent_id: "subagent-1" };
-    const open = { profileId: BOT, reuseExistingTab: false };
-    const prompt = { subagent_type: "haiku", prompt: BROWSER_TASK };
-    for (const tool of ["Agent", "Task"]) {
-      const session = `browser-${tool}`;
-      browserPrompt(session, `${APPROVED}\n${BROWSER_TASK}`);
-      assert.equal(preview(session, "open", open, agent).permissionDecision, "deny");
-      assert.equal(browserCall(session, tool, prompt, agent), null);
-      assert.equal(browserCall(session, tool, { ...prompt, model: "opus" }).permissionDecision, "deny");
-      assert.equal(preview(session, "open", open, agent).permissionDecision, "deny");
-      browserPrompt(session, APPROVED);
-      assert.equal(browserCall(session, tool, prompt), null);
-      assert.equal(preview(session, "open", open, agent), null);
-      assert.equal(preview(session, "open", open).permissionDecision, "deny");
-      assert.equal(preview(`${session}-other`, "open", open, agent).permissionDecision, "deny");
-      browserPrompt(session, APPROVED);
-      assert.equal(preview(session, "open", open, agent).permissionDecision, "deny");
+    const calls = [
+      ["mcp__t3_code__preview_open", {}],
+      ["mcp__t3-code__preview_open", { profileId: "default" }],
+      ["mcp__t3_code__preview_open", { profileId: "incognito" }],
+      ["mcp__t3_code__preview_open", { profileId: BOT, reuseExistingTab: false }],
+      ["MCP__T3-CODE-DIRECT__PREVIEW_ACT", { tabId: "owner-tab" }],
+      ["mcp__t3_code__t3_preview_list", {}],
+      ["mcp__t3-code-direct__t3_preview_close", { tabId: "owner-tab" }],
+    ];
+    for (const [session, role, extras] of [["worker-browser", "Role: Worker\n", {}],
+      ["subagent-browser", "", { agent_id: "worker" }]]) {
+      browserPrompt(session, `${role}${APPROVED}\n${BROWSER_TASK}`);
+      for (const [tool, input] of calls) {
+        assert.match(browserCall(session, tool, input, extras).permissionDecisionReason, /Claude Manager/, tool);
+      }
+      assert.equal(browserCall(session, "MCP__T3-CODE-DIRECT__PREVIEW_STATUS", {}, extras), null);
     }
-    browserPrompt("dispatch-unapproved", "Delegate.");
-    assert.equal(browserCall("dispatch-unapproved", "Agent", prompt), null);
-    assert.equal(preview("dispatch-unapproved", "open", open, agent).permissionDecision, "deny");
   });
 
-  const botOpenResult = (session_id, tool_use_id, tool_response, extras = {}) => invoke(JSON.stringify({
-    hook_event_name: "PostToolUse", session_id, tool_use_id, tool_response,
-    tool_name: "mcp__t3_code__preview_open", ...extras,
-  }));
-
-  test("Worker preview actions require a tab recorded from an authorized bot open", () => {
-    configureBrowser();
-    const session = "browser-worker-tabs";
-    const agent = { agent_id: "browser-worker-1" };
-    const prompt = { subagent_type: "haiku", prompt: BROWSER_TASK };
-    browserPrompt(session, APPROVED);
-    assert.equal(preview(session, "open", { profileId: "default" }), null);
-    assert.match(preview(session, "act", {}, agent).permissionDecisionReason, /recorded bot tabId/);
-    assert.match(preview(session, "act", { tabId: "owner-tab" }, agent).permissionDecisionReason, /recorded bot tabId/);
-    assert.equal(browserCall(session, "Agent", prompt), null);
-    assert.match(preview(session, "open", { profileId: BOT }, agent).permissionDecisionReason, /reuseExistingTab/);
-    assert.equal(preview(session, "open", { profileId: BOT, reuseExistingTab: false, tabId: "owner-tab" }, agent).permissionDecision, "deny");
-    assert.equal(preview(session, "open", { profileId: "incognito", tabId: "owner-tab" }, agent).permissionDecision, "deny");
-    assert.equal(preview(session, "open", { profileId: BOT, reuseExistingTab: false }, { ...agent, tool_use_id: "bot-open" }), null);
-    assert.equal(botOpenResult(session, "unrelated-open", { tabId: "owner-tab" }, agent), null);
-    assert.equal(preview(session, "act", { tabId: "owner-tab" }, agent).permissionDecision, "deny");
-    assert.equal(botOpenResult(session, "bot-open", { content: [{ type: "text", text: '{"tabId":"bot-tab"}' }] }, agent), null);
-    assert.equal(preview(session, "act", { tabId: "bot-tab" }, agent), null);
-    assert.equal(preview(session, "evaluate", { tabId: "bot-tab" }, agent).permissionDecision, "deny");
-
-    assert.equal(preview(session, "open", { profileId: BOT, reuseExistingTab: false }, { ...agent, tool_use_id: "old-open" }), null);
-    browserPrompt(session, APPROVED);
-    assert.equal(browserCall(session, "Agent", prompt), null);
-    assert.equal(botOpenResult(session, "old-open", { tabId: "late-tab" }, agent), null);
-    assert.equal(preview(session, "act", { tabId: "late-tab" }, agent).permissionDecision, "deny");
-    assert.equal(preview(session, "act", { tabId: "bot-tab" }, agent), null);
+  test("missing, damaged and pre-turn browser state denies access but not status", () => {
+    const stateDir = path.join(directory, "state", "agent-workbench", "manager-turns");
+    fs.mkdirSync(stateDir, { recursive: true });
+    for (const [id, raw] of [
+      ["no-state", null], ["broken-state", "bad JSON"],
+      ["legacy-state", JSON.stringify({ worker: false, approved: true, count: 0 })],
+      ["invalid-state", JSON.stringify({ worker: false, approved: true, count: 0, turn: "test-turn", browser: BOT })],
+    ]) {
+      if (raw !== null) fs.writeFileSync(path.join(stateDir, `${id}.json`), raw);
+      assert.match(preview(id, "open").permissionDecisionReason, /valid turn state/);
+      assert.match(preview(id, "navigate", { tabId: "owner-tab" }).permissionDecisionReason, /valid turn state/);
+      assert.equal(preview(id, "status"), null);
+    }
   });
 
-  test("status stays allowed at the count limit; default is Manager-only and incognito is allowed", () => {
+  test("Claude Manager keeps personal and incognito access before a bot open", () => {
     const session = "browser-manager";
-    browserPrompt(session, "Browser chore.");
+    browserPrompt(session, "Owner browser chore.");
     assert.equal(preview(session, "open"), null);
     assert.equal(preview(session, "open", { profileId: "default" }), null);
-    assert.equal(preview(session, "open", { profileId: "incognito", reuseExistingTab: false }), null);
-    assert.equal(preview(session, "open", { profileId: "unlisted" }).permissionDecision, "deny");
-    assert.equal(preview(session, "act"), null);
+    assert.equal(preview(session, "open", { profileId: "incognito" }), null);
+    assert.match(preview(session, "open", { profileId: "unlisted" }).permissionDecisionReason, /not configured/);
+    assert.equal(preview(session, "act", { tabId: "owner-tab" }), null);
     assert.equal(browserCall(session, "Read").permissionDecision, "deny");
     assert.equal(preview(session, "status"), null);
-    browserPrompt("browser-worker", "Role: Worker\nBrowser chore.");
-    for (const [id, extras] of [["browser-worker", {}], ["browser-subagent", { agent_id: "worker" }]]) {
-      for (const input of [{}, { profileId: "default" }]) {
-        assert.equal(preview(id, "open", input, extras).permissionDecision, "deny");
-      }
-      assert.equal(preview(id, "open", { profileId: "incognito", reuseExistingTab: false }, extras), null);
-    }
   });
 
-  test("malformed browser state fails closed", () => {
-    configureBrowser();
-    for (const [index, fields] of [{ browser: BOT }, { browserGrants: [42] }, { botProfile: [] }].entries()) {
-      const session = `bad-browser-state-${index}`;
-      browserPrompt(session, `${APPROVED}\n${BROWSER_TASK}`);
-      const file = path.join(directory, "state", "agent-workbench", "manager-turns", `${session}.json`);
-      fs.writeFileSync(file, JSON.stringify({ worker: false, count: 0, approved: true, browser: [BOT], ...fields }));
-      assert.equal(preview(session, "open", { profileId: BOT, reuseExistingTab: false }).permissionDecision, "deny");
-      assert.equal(preview(session, "snapshot").permissionDecision, "deny");
-    }
-  });
-
-  test("browser profile files are blocked in Bash and resolved Read/Grep/Glob paths", () => {
-    const env = { ...process.env, HOME: path.join(directory, "home") };
-    const root = path.join(env.HOME, ".t3", "userdata", "server-browser", "profiles");
-    fs.mkdirSync(root, { recursive: true });
-    const link = path.join(directory, "profile-alias");
-    fs.symlinkSync(root, link);
-    const call = (session_id, tool_name, tool_input, extras) => invoke(JSON.stringify({
-      hook_event_name: "PreToolUse", session_id, tool_name, tool_input, ...extras,
-    }), env);
-    for (const [tool, input, extras] of [
-      ["Bash", { command: "cat ~/.t3/userdata/server-browser/profiles/bot/Cookies" }],
-      ["Read", { file_path: path.join(root, "bot", "Cookies") }],
-      ["Grep", { path: "~/.t3/userdata/server-browser/profiles/bot", pattern: "test" }],
-      ["Glob", { path: "bot", pattern: "*" }, { cwd: root }],
-      ["Read", { file_path: path.join(link, "bot", "Cookies") }],
-    ]) {
-      const session = `profile-files-${tool}`;
-      browserPrompt(session, APPROVED);
-      assert.match(call(session, tool, input, extras).permissionDecisionReason, /profile files/);
-      assert.match(call(`${session}-worker`, tool, input, { ...extras, agent_id: "worker" }).permissionDecisionReason, /profile files/);
-    }
-    assert.equal(call("profile-sibling", "Read", { file_path: `${root}-other/file` }), null);
-  });
-
-  test("non-Claude hosts cannot use default or bot browser opens", () => {
-    configureBrowser();
-    const session_id = "browser-other-host";
+  test("Codex and Antigravity deny browser calls other than status", () => {
+    const session_id = "browser-other-hosts";
     browserPrompt(session_id, `${APPROVED}\n${BROWSER_TASK}`);
-    for (const profileId of [undefined, "default", BOT, "incognito"]) {
-      const tool_name = "mcp__t3_code__preview_open";
-      const tool_input = { profileId };
-      const env = { ...process.env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") };
-      const codex = run(JSON.stringify({ session_id, tool_name, tool_input }), { args: ["--workers", workers, "--host", "codex"], env });
-      assert.equal(codex.stdout ? JSON.parse(codex.stdout).hookSpecificOutput.permissionDecision : null,
-        profileId === "incognito" ? null : "deny");
-      const antigravity = run(JSON.stringify({ toolCall: { name: tool_name, args: tool_input } }), { args: ["--host", "antigravity"] });
-      assert.equal(JSON.parse(antigravity.stdout).decision, profileId === "incognito" ? "allow" : "deny");
+    const env = { ...process.env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") };
+    for (const [tool_name, allow] of [["mcp__t3_code__preview_navigate", false],
+      ["mcp__t3_code_direct__t3_preview_close", false], ["mcp__t3-code__preview_status", true]]) {
+      const input = { tabId: "owner-tab", url: BOT_URL };
+      const codex = run(JSON.stringify({ session_id, tool_name, tool_input: input }), { args: ["--host", "codex"], env });
+      assert.equal(codex.stdout ? JSON.parse(codex.stdout).hookSpecificOutput.permissionDecision : null, allow ? null : "deny");
+      const antigravity = run(JSON.stringify({ toolCall: { name: tool_name, args: input } }), { args: ["--host", "antigravity"] });
+      assert.equal(JSON.parse(antigravity.stdout).decision, allow ? "allow" : "deny");
     }
   });
 

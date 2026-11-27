@@ -1116,9 +1116,6 @@ describe("workbench setup", () => {
     assert.deepEqual(fs.readdirSync(path.dirname(f.agent("x"))), ["custom.md"]);
   });
 
-  const PREVIEW_POST = "mcp__t3[-_]code__preview_open";
-  const PREVIEW_POST_KEY = `PostToolUse:${PREVIEW_POST}`;
-
   test("policy hooks install, status and uninstall preserve foreign entries", () => {
     const f = new Fixture();
     f.installOrchestration();
@@ -1133,9 +1130,9 @@ describe("workbench setup", () => {
     assert.deepEqual(entries.slice(1).map((entry) => entry.matcher),
       [".*"]);
     assert.deepEqual(settings.hooks.UserPromptSubmit, [{ hooks: [{ type: "command", command: f.hookCommand }] }]);
-    assert.deepEqual(settings.hooks.PostToolUse, ["Agent|Task", PREVIEW_POST].map((matcher) => ({
-      matcher, hooks: [{ type: "command", command: f.hookCommand }],
-    })));
+    assert.deepEqual(settings.hooks.PostToolUse, [{
+      matcher: "Agent|Task", hooks: [{ type: "command", command: f.hookCommand }],
+    }]);
     const stopEntry = settings.hooks.Stop.at(-1);
     assert.deepEqual(stopEntry, { hooks: [{ type: "command", command: f.hookCommand }] });
     for (const entry of entries.slice(1)) {
@@ -1145,19 +1142,19 @@ describe("workbench setup", () => {
     assert.deepEqual(f.stateJson().hooks, [
       ...entries.slice(1).map((entry) => ({ ...entry, key: `PreToolUse:${entry.matcher}` })),
       { ...settings.hooks.UserPromptSubmit[0], key: "UserPromptSubmit" },
-      ...settings.hooks.PostToolUse.map((entry) => ({ ...entry, key: `PostToolUse:${entry.matcher}` })),
+      { ...settings.hooks.PostToolUse[0], key: "PostToolUse:Agent|Task" },
       { ...stopEntry, key: "Stop" },
     ]);
     assert.deepEqual(JSON.parse(f.run("status").stdout).hooks, {
       ".*": "applied", UserPromptSubmit: "applied",
-      "PostToolUse:Agent|Task": "applied", [PREVIEW_POST_KEY]: "applied", Stop: "applied",
+      "PostToolUse:Agent|Task": "applied", Stop: "applied",
     });
-    const postEntries = settings.hooks.PostToolUse;
+    const postEntry = settings.hooks.PostToolUse[0];
     settings.hooks.PostToolUse = [];
     fs.writeFileSync(settingsPath, JSON.stringify(settings));
     assert.equal(JSON.parse(f.run("status").stdout).hooks["PostToolUse:Agent|Task"], "missing");
     f.run("install");
-    assert.deepEqual(f.json(settingsPath).hooks.PostToolUse, postEntries);
+    assert.deepEqual(f.json(settingsPath).hooks.PostToolUse, [postEntry]);
     const before = f.snapshot();
     assert.match(f.run("install").stdout, /no-op/);
     assert.deepEqual(f.snapshot(), before);
@@ -1177,11 +1174,11 @@ describe("workbench setup", () => {
     const fresh = f.stateJson();
     const settings = f.json(settingsPath);
     const post = fresh.hooks.find((entry) => entry.key === "PostToolUse:Agent|Task");
-    const older = fresh.hooks.filter((entry) => entry !== post && entry.key !== PREVIEW_POST_KEY && entry.key !== "UserPromptSubmit");
+    const older = fresh.hooks.filter((entry) => entry !== post && entry.key !== "UserPromptSubmit");
     const olderSettings = { ...settings.hooks };
     delete olderSettings.PostToolUse;
     delete olderSettings.UserPromptSubmit;
-    const splitSettings = { ...settings.hooks, PostToolUse: settings.hooks.PostToolUse.slice(0, 1) };
+    const splitSettings = { ...settings.hooks };
     delete splitSettings.UserPromptSubmit;
     for (const split of [false, true]) {
       f.write(statePath, JSON.stringify({ ...fresh, hooks: older, ...(split ? { post_hooks: [post] } : {}) }));
@@ -1221,7 +1218,7 @@ describe("workbench setup", () => {
     fs.writeFileSync(settingsPath, JSON.stringify(settings));
     assert.deepEqual(JSON.parse(f.run("status").stdout).hooks, {
       ".*": "missing", UserPromptSubmit: "applied",
-      "PostToolUse:Agent|Task": "applied", [PREVIEW_POST_KEY]: "applied", Stop: "applied",
+      "PostToolUse:Agent|Task": "applied", Stop: "applied",
     });
     f.run("install");
     const reapplied = f.json(settingsPath).hooks.PreToolUse;
@@ -1256,7 +1253,7 @@ describe("workbench setup", () => {
     f.run("install");
     const saved = f.stateJson().hooks;
     assert.deepEqual(saved.map((entry) => entry.key), [
-      "PreToolUse:.*", "UserPromptSubmit", "PostToolUse:Agent|Task", PREVIEW_POST_KEY, "Stop",
+      "PreToolUse:.*", "UserPromptSubmit", "PostToolUse:Agent|Task", "Stop",
     ]);
     f.run("uninstall");
     const hooks = f.json(settingsPath).hooks;
@@ -1287,7 +1284,7 @@ describe("workbench setup", () => {
   });
 
   const codexHandler = (f) => ({ type: "command", command: f.codexHookCommand, timeout: 30 });
-  const CODEX_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__t3_thread_configure", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request", "Read|Grep|Glob", "mcp__t3_code__preview_.*"];
+  const CODEX_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__t3_thread_configure", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request", "mcp__t3_code__preview_.*", "mcp__t3_code__t3_preview_.*", "mcp__t3_code_direct__(preview_|t3_preview_).*"];
 
   test("codex hooks install, status and uninstall preserve foreign entries", () => {
     const f = new Fixture();
@@ -1303,14 +1300,15 @@ describe("workbench setup", () => {
     for (const entry of file.hooks.PreToolUse.slice(1)) assert.deepEqual(entry.hooks, [codexHandler(f)]);
     assert.deepEqual(file.hooks.Stop, [{ hooks: [codexHandler(f)] }]);
     assert.deepEqual(f.stateJson().codex_hooks, [...file.hooks.PreToolUse.slice(1), file.hooks.Stop[0]]);
-    assert.deepEqual(f.stateJson().hooks.length, 5);
+    assert.deepEqual(f.stateJson().hooks.length, 4);
     assert.deepEqual(JSON.parse(f.run("status").stdout).codex_hooks, {
       "Agent|spawn_agent": "applied", Bash: "applied",
       mcp__t3_code__delegate_task: "applied", mcp__t3_code__t3_thread_send: "applied",
       mcp__t3_code__t3_thread_launch: "applied", mcp__t3_code__t3_thread_configure: "applied",
       mcp__t3_code__schedule_task: "applied", mcp__t3_code__create_threads: "applied",
-      mcp__t3_code__watch_pull_request: "applied", "Read|Grep|Glob": "applied",
-      "mcp__t3_code__preview_.*": "applied", Stop: "applied",
+      mcp__t3_code__watch_pull_request: "applied",
+      "mcp__t3_code__preview_.*": "applied", "mcp__t3_code__t3_preview_.*": "applied",
+      "mcp__t3_code_direct__(preview_|t3_preview_).*": "applied", Stop: "applied",
     });
     const before = f.snapshot();
     assert.match(f.run("install").stdout, /no-op/);
@@ -1446,8 +1444,9 @@ describe("workbench setup", () => {
       mcp__t3_code__delegate_task: "trusted", mcp__t3_code__t3_thread_send: "trusted",
       mcp__t3_code__t3_thread_launch: "trusted", mcp__t3_code__t3_thread_configure: "trusted",
       mcp__t3_code__schedule_task: "trusted", mcp__t3_code__create_threads: "trusted",
-      mcp__t3_code__watch_pull_request: "trusted", "Read|Grep|Glob": "trusted",
-      "mcp__t3_code__preview_.*": "trusted", Stop: "trusted",
+      mcp__t3_code__watch_pull_request: "trusted",
+      "mcp__t3_code__preview_.*": "trusted", "mcp__t3_code__t3_preview_.*": "trusted",
+      "mcp__t3_code_direct__(preview_|t3_preview_).*": "trusted", Stop: "trusted",
     });
     // A second install neither prompts nor changes anything.
     const before = f.snapshot();
