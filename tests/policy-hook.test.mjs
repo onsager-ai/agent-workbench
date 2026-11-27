@@ -879,10 +879,29 @@ describe("policy hook", () => {
     const denied = delegate(target, { isolation: "worktree" });
     assert.equal(denied.permissionDecision, "deny");
     assert.match(denied.permissionDecisionReason, /does not allow worktree isolation/);
-    for (const providerInstanceId of [undefined, "other-provider"]) {
-      assert.equal(delegate({ ...target, providerInstanceId }, { isolation: "worktree" }).updatedInput.task,
-        "Role: Worker\nReview this change.");
+    assert.equal(delegate({ ...target, providerInstanceId: "other-provider" }, { isolation: "worktree" }).updatedInput.task,
+      "Role: Worker\nReview this change.");
+    for (const bypass of [
+      { driverKind: "example-provider", model: "other-model" },
+      { driverKind: "example-provider", providerInstanceId: "other-provider", model: "other-model" },
+      { model: target.model },
+    ]) {
+      const result = delegate(bypass);
+      assert.equal(result.permissionDecision, "deny", JSON.stringify(bypass));
+      assert.match(result.permissionDecisionReason, /Set target\.providerInstanceId/);
     }
+    assert.equal(delegate({ model: "remote" }, { isolation: "worktree" }).updatedInput.task,
+      "Role: Worker\nReview this change.");
+  });
+
+  test("delegate_task leaves isolation to T3 for a legacy tier", () => {
+    const result = invoke(JSON.stringify({
+      session_id: "legacy-manager", tool_name: "mcp__t3-code__delegate_task", tool_input: {
+        target: { model: "haiku" }, isolation: "future-mode", task: "Review this change.",
+      },
+    }));
+    assert.equal(result.updatedInput.task, "Role: Worker\nReview this change.");
+    assert.equal(result.updatedInput.isolation, "future-mode");
   });
 
   test("delegate_task applies explicit isolation and custom stamps without bypassing approval", () => {

@@ -310,8 +310,8 @@ export function resolveWorkerConfig(config) {
         throw new Conflict(`tier ${name}: read-only tiers cannot list worktree in isolation; correct it in workers.yml`);
       }
     }
-    if (has(tier, "stamp") && typeof tier.stamp !== "string") {
-      throw new Conflict(`tier ${name}: stamp must be a string; correct it in workers.yml`);
+    if (has(tier, "stamp") && (typeof tier.stamp !== "string" || !tier.stamp.trim())) {
+      throw new Conflict(`tier ${name}: stamp must be a nonblank string; correct it in workers.yml`);
     }
     if (!nonEmptyString(tier.effort)) throw new Conflict(`tier ${name}: effort must be a nonempty string; set it in workers.yml`);
     if (!isInt(tier.timeout_s) || tier.timeout_s <= 0) throw new Conflict(`tier ${name}: timeout_s must be a positive integer; correct it in workers.yml`);

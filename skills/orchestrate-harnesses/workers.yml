@@ -11,8 +11,9 @@ defaults: {effort: medium, timeout_s: 7200, budget_usd: null}
 # A provider (T3 providerInstanceId) makes harness optional and uses delegate_task
 # only. options is a map of strings or booleans for target.options. access is write
 # (default) or read-only. isolation lists shared and/or worktree; by default both
-# are allowed for write and only shared for read-only. stamp adds text to the
-# Worker brief; read-only has a default stamp. No provider tiers ship by default.
+# are allowed for write and only shared for read-only. A nonblank stamp adds
+# text to the Worker brief; read-only tiers have a default stamp. No provider
+# tiers ship by default.
 tiers:
   haiku: {harness: claude, model: claude-haiku-5-5}
   sonnet: {harness: claude, model: claude-sonnet-5-5}

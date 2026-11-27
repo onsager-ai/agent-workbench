@@ -654,16 +654,19 @@ function dispatchApproval(file, event, tier) {
   }
 }
 
-function delegateTier(file, event, { model, providerInstanceId }) {
+function delegateTier(file, event, { model, providerInstanceId, driverKind }) {
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
     const entries = Object.entries(config.tiers);
-    if (providerInstanceId) {
-      const candidates = entries.filter(([, tier]) => tier.provider === providerInstanceId);
-      if (candidates.length) {
-        const [name, tier] = candidates.find(([, tier]) => tier.model === model) ?? [];
-        return { name, tier, exactModelRequired: true };
-      }
+    const providerTiers = entries.filter(([, tier]) => tier.provider);
+    const providers = new Set(providerTiers.map(([, tier]) => tier.provider));
+    if (providers.has(providerInstanceId)) {
+      const match = providerTiers.find(([, tier]) => tier.provider === providerInstanceId && tier.model === model);
+      if (match) return { name: match[0], tier: match[1] };
+      return { denial: "For this provider, target.model must exactly match a configured Worker model in the active profile." };
+    }
+    if (providers.has(driverKind) || (!providerInstanceId && providerTiers.some(([, tier]) => tier.model === model))) {
+      return { denial: "Set target.providerInstanceId to the provider of the configured Worker tier in the active profile." };
     }
     // Legacy matching accepts tier names, model IDs and routes, ignoring prefixes and context suffixes.
     const full = String(model).replace(/\[[^\]]*\]$/, "");
@@ -1239,13 +1242,13 @@ async function main() {
       const target = dict(input.target);
       if (!target.model) [decision, reason] = ["deny", T3_MODEL];
       else {
-        const { name, tier, exactModelRequired } = delegateTier(workers, event, target);
+        const { name, tier, denial } = delegateTier(workers, event, target);
         const readOnly = tier?.access === "read-only";
         const isolation = tier?.isolation ?? (readOnly ? ["shared"] : ["shared", "worktree"]);
         const requestedIsolation = input.isolation ?? "shared";
-        if (exactModelRequired && !tier) {
-          [decision, reason] = ["deny", "For this provider, target.model must exactly match a configured Worker model in the active profile."];
-        } else if (tier && !isolation.includes(requestedIsolation)) {
+        if (denial) {
+          [decision, reason] = ["deny", denial];
+        } else if ((tier?.provider || tier?.isolation || tier?.access) && !isolation.includes(requestedIsolation)) {
           [decision, reason] = ["deny", `Worker ${name} does not allow ${requestedIsolation} isolation; use ${isolation.join(" or ")}.`];
         } else {
           [decision, reason] = gate(name && dispatchApproval(workers, event, name), input.task);

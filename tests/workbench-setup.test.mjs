@@ -1869,7 +1869,9 @@ profile: selected
       ["tiers: {haiku: {access: readonly}}", /access must be write or read-only/],
       ["tiers: {haiku: {isolation: [private]}}", /isolation must be a nonempty list of shared or worktree/],
       ["tiers: {haiku: {options: {reasoning: 1}}}", /options must be a mapping of strings or booleans/],
-      ["tiers: {haiku: {stamp: false}}", /stamp must be a string/],
+      ["tiers: {haiku: {stamp: false}}", /stamp must be a nonblank string/],
+      ['tiers: {haiku: {access: read-only, stamp: ""}}', /stamp must be a nonblank string/],
+      ['tiers: {haiku: {stamp: "  "}}', /stamp must be a nonblank string/],
     ]) {
       f.write(f.overridePath, text);
       const before = f.snapshot();
