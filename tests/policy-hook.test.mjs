@@ -432,18 +432,19 @@ describe("policy hook", () => {
     }), env);
     const launch = (model, message, extras = {}) => ({ ...ids, modelSelection: { model }, message, ...extras });
     const launchTool = "mcp__t3-code__t3_thread_launch";
-    for (const model of ["gpt-6-luna", "codex/gpt-6-luna", "gpt-6.2-sol", "codex/gpt-6.2-sol"]) {
-      assert.equal(call(launchTool, launch(model, "Run the task.")), null);
+    for (const [index, model] of ["gpt-6-luna", "codex/gpt-6-luna", "gpt-6.2-sol", "codex/gpt-6.2-sol"].entries()) {
+      assert.equal(call(launchTool, launch(model, "Run the task."), `eligible-launch-${index}`), null);
     }
-    assert.equal(call(launchTool, launch("codex/gpt-6.1-terra", "Run the task.")).permissionDecision, "deny");
-    for (const model of ["prefix-codex/gpt-6-luna", "codex/gpt-6-luna-extra", "other/codex/gpt-6-luna", "codex/codex/gpt-6-luna"]) {
-      assert.equal(call(launchTool, launch(model, approval)).permissionDecision, "deny");
+    assert.equal(call(launchTool, launch("codex/gpt-6.1-terra", "Run the task."), "terra-launch").permissionDecision, "deny");
+    for (const [index, model] of ["prefix-codex/gpt-6-luna", "codex/gpt-6-luna-extra", "other/codex/gpt-6-luna", "codex/codex/gpt-6-luna"].entries()) {
+      assert.equal(call(launchTool, launch(model, approval), `lookalike-launch-${index}`).permissionDecision, "deny");
     }
-    for (const model of [astra, codexAstra, neon]) {
-      const denied = call(launchTool, launch(model, "Run the task."));
+    for (const [index, model] of [astra, codexAstra, neon].entries()) {
+      const session = `approved-model-${index}`;
+      const denied = call(launchTool, launch(model, "Run the task."), session);
       assert.equal(denied.permissionDecision, "deny");
       assert.match(denied.permissionDecisionReason, /L3 approval:/);
-      assert.equal(call(launchTool, launch(model, approval)), null);
+      assert.equal(call(launchTool, launch(model, approval), session), null);
     }
     assert.equal(call(launchTool, launch(neon, "Run the task. L3 approval: https://example.test/approval")).permissionDecision, "deny");
     assert.equal(call(launchTool, launch("some/other-model", approval)).permissionDecision, "deny");
