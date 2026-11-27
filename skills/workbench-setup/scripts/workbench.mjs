@@ -23,6 +23,7 @@ export const VERSION = "1";
 // Agent Workbench release; tests keep it equal to package.json.
 export const RELEASE = "0.2.34";
 const SOURCE = "onsager-ai/agent-workbench";
+const WORKERS_SOURCE_MISSING = "regeneration needs workers.yml restored";
 const BEGIN = Buffer.from("<!-- BEGIN agent-workbench -->");
 const END = Buffer.from("<!-- END agent-workbench -->");
 const PERSONAL_BEGIN = Buffer.from("<!-- BEGIN agent-workbench personal -->");
@@ -603,8 +604,8 @@ function syncDir(directory) {
 
 const temporaryName = (directory) => path.join(directory, `.agent-workbench-${crypto.randomBytes(6).toString("hex")}`);
 
-function atomic(target, data, mode = 0o600) {
-  if (present(target) && !isSymlink(target) && read(target).equals(data)) return false;
+function atomic(target, data, mode = 0o600, publish = null) {
+  if (!publish && present(target) && !isSymlink(target) && read(target).equals(data)) return false;
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const name = temporaryName(path.dirname(target));
   try {
@@ -616,7 +617,8 @@ function atomic(target, data, mode = 0o600) {
     } finally {
       fs.closeSync(descriptor);
     }
-    fs.renameSync(name, target);
+    if (publish) publish(name, target);
+    else fs.renameSync(name, target);
     syncDir(path.dirname(target));
   } finally {
     if (present(name)) fs.unlinkSync(name);
@@ -652,18 +654,22 @@ function unchangedSnapshot(target, expected) {
 }
 
 // Roll back this operation's writes, retaining independently changed entries.
+// An exclusively created file supplies a predicate confirming the write belongs to this transaction.
 function transaction(plans, action) {
-  const before = new Map([...plans.keys()].map((target) => [target, snapshot(target)]));
+  const before = new Map([...plans].map(([target, [, , , ownsNewFile]]) =>
+    [target, ownsNewFile ? ["absent", null, null] : snapshot(target)]));
   try {
     return action();
   } catch (original) {
     const problems = [];
     for (const target of [...plans.keys()].reverse()) {
       try {
+        const planned = plans.get(target);
+        const ownsNewFile = planned[3];
+        if (ownsNewFile && !ownsNewFile()) continue;
         const current = snapshot(target);
         const old = before.get(target);
         if (current[0] === old[0] && sameValue(current[1], old[1]) && current[2] === old[2]) continue;
-        const planned = plans.get(target);
         if (current[0] !== planned[0] || !sameValue(current[1], planned[1])) {
           problems.push(`changed foreign entry retained: ${target}`);
           continue;
@@ -853,6 +859,12 @@ export class Setup {
     }
     if (!present(this.models)) return null;
     return workerBundle(this.models, [this.personalWorkers, this.override], this.home);
+  }
+
+  resolvedWorkersDrift(state, current) {
+    const ownedHash = state?.workers_hash;
+    if (current === null) return ownedHash ? "missing" : null;
+    return digest(current) === ownedHash ? null : "edited";
   }
 
   workers(cwd) {
@@ -1513,13 +1525,10 @@ export class Setup {
     }
     if (!status) this.checkAgents(state);
     inspect(this.workersPath, this.home);
-    const ownedWorkers = state ? state.workers_hash : null;
-    if (present(this.workersPath)) {
-      if (!ownedWorkers || digest(read(this.workersPath)) !== ownedWorkers) {
-        throw new Conflict(`foreign or edited resolved Worker configuration: ${this.workersPath}; move it aside, then rerun agent-workbench install`);
-      }
-    } else if (ownedWorkers) {
-      throw new Conflict(`owned resolved Worker configuration is missing: ${this.workersPath}; restore it with agent-workbench install`);
+    if (uninstall) {
+      const current = present(this.workersPath) ? read(this.workersPath) : null;
+      const drift = this.resolvedWorkersDrift(state, current);
+      if (drift) throw new Conflict(`resolved Worker configuration is ${drift}: ${this.workersPath}; run agent-workbench install to regenerate it, then retry uninstall`);
     }
     if (!uninstall) {
       if (config) {
@@ -1605,6 +1614,7 @@ export class Setup {
     let changed = false;
     let desired;
     let trustMessages = [];
+    let workersAside;
     this.withLock(() => {
       const [state, oldBlock, private_] = this.preflight();
       let privateText = private_;
@@ -1668,10 +1678,16 @@ export class Setup {
         .map((item) => `Run /hooks in Codex once to trust agent-workbench's hooks: ${item.label}`);
       desired = this.desiredAgents();
       this.checkAgents(state, Object.keys(desired));
-      for (const name of ["shared", "codex", "claude", "launcher"]) this.backup(name, this[name]);
-      for (const file of nativePlans.keys()) this.backup(this.backupName(file), file);
       const bundle = this.workersBundle();
       const workersBytes = bundle ? Buffer.from(dumps(bundle, { indent: 2 }) + "\n") : null;
+      const currentWorkers = present(this.workersPath) ? read(this.workersPath) : null;
+      const workersDrift = this.resolvedWorkersDrift(state, currentWorkers);
+      if (workersDrift && workersBytes === null) {
+        throw new Conflict(`resolved Worker configuration is ${workersDrift}: ${this.workersPath}; ${WORKERS_SOURCE_MISSING}`);
+      }
+      if (workersDrift === "edited") workersAside = `${this.workersPath}.edited-${new Date().toISOString()}`;
+      for (const name of ["shared", "codex", "claude", "launcher"]) this.backup(name, this[name]);
+      for (const file of nativePlans.keys()) this.backup(this.backupName(file), file);
       const launcher = this.launcherBytes();
       const record = {
         workers_hash: workersBytes ? digest(workersBytes) : null,
@@ -1711,7 +1727,22 @@ export class Setup {
       else if (state && state.workers_hash) agents.set(this.workersPath, ["absent", null, null]);
       for (const [file, plan] of agents) plans.set(file, plan);
       for (const [file, plan] of nativePlans) plans.set(file, plan);
+      let publishedAside;
+      if (workersAside) plans.set(workersAside, ["file", currentWorkers, 0o600, () => {
+        if (!publishedAside) return false;
+        const current = fs.lstatSync(workersAside, { throwIfNoEntry: false });
+        return current?.dev === publishedAside.dev && current.ino === publishedAside.ino;
+      }]);
       transaction(plans, () => {
+        if (workersAside) atomic(workersAside, currentWorkers, 0o600, (temporary, aside) => {
+          const info = fs.lstatSync(temporary);
+          try { fs.linkSync(temporary, aside); }
+          catch (error) {
+            if (error.code !== "EEXIST") throw error;
+            throw new Conflict(`resolved Worker configuration backup already exists: ${aside}; rerun agent-workbench install`);
+          }
+          publishedAside = info;
+        });
         changed = atomic(this.shared, shared);
         changed = atomicLink(this.codex, this.target) || changed;
         changed = atomic(this.claude, claude) || changed;
@@ -1731,6 +1762,7 @@ export class Setup {
         changed = atomic(this.statePath, stateBytes) || changed;
       });
     });
+    if (workersAside) console.log(`Regenerated resolved Worker configuration and saved the previous file to ${workersAside}`);
     console.log(changed ? "installed" : "no-op: already installed");
     const names = Object.keys(desired).sort();
     console.log(`claude agents: ${names.join(", ") || "none"}`);
@@ -1753,12 +1785,17 @@ export class Setup {
     let codexLists = { PreToolUse: [], Stop: [] };
     try { [codexOwned, codexHookStatus, codexLists] = this.codexHookPlans(state, new Map(), { status: true }); }
     catch (error) { codexHookStatus = { error: error.message }; }
+    const currentWorkers = present(this.workersPath) ? read(this.workersPath) : null;
+    const workersDrift = this.resolvedWorkersDrift(state, currentWorkers);
+    const workersRecovery = present(this.models) ? "install will regenerate" : WORKERS_SOURCE_MISSING;
+    const workersStatus = workersDrift ? `${workersDrift} (${workersRecovery})` : state.workers_hash ? "applied" : "not installed";
     const report = {
       installed_version: state.version, available_version: VERSION,
       installed_template_hash: state.template_hash,
       available_template_hash: digest(template),
       native_settings: nativeStatus, hooks: hookStatus, codex_hooks: codexHookStatus,
       codex_trust: {},
+      resolved_workers: workersStatus,
       personal_package: { present: present(this.personal), applied_files: state.personal_files },
       private_bytes: private_.length, shared: this.shared,
       codex: this.codex, claude: this.claude,
@@ -1782,10 +1819,11 @@ export class Setup {
     if (json) console.log(dumps(report, { sortKeys: true }));
     else {
       const line = (name, status, fix) => {
-        const label = status === "applied" || status === "trusted" || status === "not installed" || status.startsWith("skipped:") ? "ok" : status === "missing" || status === "untrusted" ? "missing" : "conflict";
-        console.log(`${label}  ${name}: ${status}${label === "ok" ? "" : `; ${fix}`}`);
+        const label = status === "applied" || status === "trusted" || status === "not installed" || status.startsWith("skipped:") ? "ok" : status === "missing" || status.startsWith("missing (") || status === "untrusted" ? "missing" : "conflict";
+        console.log(`${label}  ${name}: ${status}${label === "ok" || !fix ? "" : `; ${fix}`}`);
       };
       line("setup", state.version === VERSION ? "applied" : "missing", "run agent-workbench install to apply update");
+      line("resolved Worker configuration", workersStatus);
       for (const [kind, settings] of Object.entries(nativeStatus)) {
         if (kind === "error") line("configuration", "conflict", `resolve: ${settings}; run agent-workbench install`);
         else if (typeof settings === "string") line(`${kind} settings`, settings, "run agent-workbench install if needed");
@@ -2031,9 +2069,9 @@ function antigravityWorkspace(workspace, setup, remove = false) {
 }
 
 const COMMANDS = {
-  install: "Apply shared instructions, hooks and settings (use --antigravity to include instructions in Antigravity)",
-  update: "Update distributed skills, then apply them",
-  status: "Check installed files and settings (supports --json)",
+  install: "Apply shared instructions, hooks and settings and regenerate missing or edited workers.json (use --antigravity to include instructions in Antigravity)",
+  update: "Update distributed skills, then apply them and regenerate missing or edited workers.json",
+  status: "Check installed files and settings, including whether workers.json needs regeneration (supports --json)",
   lanes: "Show open PRs and local worktrees (supports --cwd and --json)",
   trust: "Trust installed Codex policy hooks",
   uninstall: "Remove managed setup while keeping private files",
