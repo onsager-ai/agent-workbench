@@ -1352,13 +1352,17 @@ describe("policy hook", () => {
 
     test("native Codex shell patches count as mutations for unapproved Managers", () => {
       enrol("manager");
-      prompt("manager");
-      const command = "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: task.txt\n+don't edit\n*** End Patch\nPATCH";
-      const input = { command, workdir: directory, yield_time_ms: 1000 };
-      assert.match(tool("manager", "Bash", input).permissionDecisionReason, /changes files or state/);
-      assert.equal(tool("outside", "Bash", input), null);
-      prompt("manager", APPROVED);
-      assert.equal(tool("manager", "Bash", input), null);
+      const patchText = "*** Begin Patch\n*** Add File: task.txt\n+don't edit\n*** End Patch";
+      for (const name of ["apply_patch", "applypatch"]) {
+        for (const command of [`${name} <<'PATCH'\n${patchText}\nPATCH`, `${name} ${shellQuote(patchText)}`]) {
+          const input = { command, workdir: directory, yield_time_ms: 1000 };
+          prompt("manager");
+          assert.match(tool("manager", "Bash", input).permissionDecisionReason, /changes files or state/, command);
+          assert.equal(tool("outside", "Bash", input), null, command);
+          prompt("manager", APPROVED);
+          assert.equal(tool("manager", "Bash", input), null, command);
+        }
+      }
     });
 
     test("unapproved Codex Managers can patch project memory only", () => {

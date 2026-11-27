@@ -965,7 +965,7 @@ function isMemoryPatch(command, cwd) {
 
 function mutatingBash(command, codexManager) {
   // Check the native shell patch form before tokenizing its heredoc as shell syntax.
-  if (codexManager && /(?:^|[;&|()\n])\s*(?:[\w./-]+\/)?apply_patch[ \t]*<</.test(command)) return true;
+  if (codexManager && /(?:^|[;&|()\n])\s*(?:[\w./-]+\/)?apply_?patch[ \t]*<</.test(command)) return true;
   // Exclude the common harmless redirections before checking remaining output redirects.
   const redirects = command.replace(/(?:2>\s*\/dev\/null|>\s*\/dev\/null|>&2)/g, "");
   if (/(?:^|[^<])>>?(?!=|&)(?:\s*[^\s;|&]+)/.test(redirects)) return true;
@@ -977,7 +977,7 @@ function mutatingBash(command, codexManager) {
     const [program, operation] = words;
     const commandStart = program === "cd" && ["&&", "||"].includes(words[2]) ? 3 : 0;
     const [executable] = commandWords(words.slice(commandStart));
-    if ((codexManager && executable && path.basename(executable) === "apply_patch") ||
+    if ((codexManager && executable && /^apply_?patch$/.test(path.basename(executable))) ||
         ["tee", "rm", "mv", "cp", "mkdir", "touch", "chmod"].includes(program) ||
         (program === "sed" && words.some((word) => word === "-i" || word.startsWith("-i"))) ||
         (["npm", "pnpm", "yarn"].includes(program) && ["install", "publish"].includes(operation)) ||
