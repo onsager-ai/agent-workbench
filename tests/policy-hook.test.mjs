@@ -859,6 +859,7 @@ describe("policy hook", () => {
   });
 
   test("delegate_task matches provider tiers only by exact provider and model", () => {
+    bundle.profile = null; // This fixture adds its tier to the base profile.
     bundle.base.tiers.remote = { provider: "example-provider", model: "catalog/example-model", access: "read-only" };
     bundle.base.ladder[0].tiers.push("remote");
     fs.writeFileSync(workers, JSON.stringify(bundle));
@@ -905,6 +906,7 @@ describe("policy hook", () => {
   });
 
   test("delegate_task applies explicit isolation and custom stamps without bypassing approval", () => {
+    bundle.profile = null; // This fixture adds its tier to the base profile.
     bundle.base.tiers.remote = {
       provider: "example-provider", model: "example-model", access: "write", isolation: ["worktree"],
       stamp: "Only edit the assigned files.",
