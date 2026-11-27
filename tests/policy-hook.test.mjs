@@ -249,6 +249,59 @@ describe("policy hook", () => {
     }
   });
 
+  test("bot browser audit logs only allowed metadata, including denied calls", () => {
+    configureBrowser();
+    const session = "browser-audit";
+    const audit = path.join(directory, "state", "agent-workbench", "browser-audit.jsonl");
+    const cwd = directory;
+    assert.equal(preview("not-a-bot-session", "status"), null);
+    assert.equal(preview("not-a-bot-session", "open", { profileId: BOT, reuseExistingTab: false }).permissionDecision, "deny");
+    assert.equal(fs.existsSync(audit), false);
+    browserPrompt(session, `${APPROVED}\n${BROWSER_TASK}`);
+    const worker = { cwd, agent_id: "bot-worker" };
+    assert.equal(preview(session, "open", { profileId: BOT, reuseExistingTab: false, url: BOT_URL }, { cwd }), null);
+    assert.equal(preview(session, "act", {
+      action: "type", locator: "aria-ref=e1", tabId: "tab-1", text: "typed-secret",
+      values: ["selected-secret"], paths: ["path-secret"],
+    }, { cwd }), null);
+    assert.equal(preview(session, "evaluate", { tabId: "tab-1", expression: "script-secret" }, { cwd }).permissionDecision, "deny");
+    assert.equal(browserCall(session, "mcp__t3-code__t3_preview_close", { tabId: "tab-1" }, worker).permissionDecision, "deny");
+    assert.equal(preview(session, "status", {}, { cwd }), null);
+    browserPrompt(session, "Next turn.");
+    assert.equal(preview(session, "navigate", { tabId: "tab-1", url: "https://user:secret@example.test/" }, { cwd }).permissionDecision, "deny");
+
+    const raw = fs.readFileSync(audit, "utf8");
+    assert.doesNotMatch(raw, /secret|"(?:text|values|paths|expression)"/);
+    assert.equal(fs.statSync(path.dirname(audit)).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(audit).mode & 0o777, 0o600);
+    const rows = raw.trimEnd().split("\n").map(JSON.parse);
+    const common = { session_id: session, cwd, profile: BOT };
+    const agent = { ...common, agent_id: "bot-worker", role: "worker" };
+    const manager = { ...common, agent_id: null, role: "manager" };
+    assert.deepEqual(rows.map(({ ts, ...entry }) => {
+      assert.equal(new Date(ts).toISOString(), ts);
+      return entry;
+    }), [
+      { ...manager, tool: "open", decision: "allow", url: BOT_URL },
+      { ...manager, tool: "act", decision: "allow", tabId: "tab-1", locator: "aria-ref=e1", action: "type" },
+      { ...manager, tool: "evaluate", decision: "deny", tabId: "tab-1" },
+      { ...agent, tool: "t3_preview_close", decision: "deny", tabId: "tab-1" },
+      { ...manager, tool: "status", decision: "allow" },
+      { ...manager, tool: "navigate", decision: "deny", tabId: "tab-1", url: "https://[redacted]@example.test/" },
+    ]);
+  });
+
+  test("audit write errors neither block allowed calls nor allow denied calls", () => {
+    configureBrowser();
+    const session = "browser-audit-write-error";
+    browserPrompt(session, `${APPROVED}\n${BROWSER_TASK}`);
+    const audit = path.join(directory, "state", "agent-workbench", "browser-audit.jsonl");
+    fs.mkdirSync(audit);
+    assert.equal(preview(session, "open", { profileId: BOT, reuseExistingTab: false }), null);
+    assert.equal(preview(session, "evaluate").permissionDecision, "deny");
+    assert.equal(preview(session, "status"), null);
+  });
+
   test("thread send footer is stamped from T3 identity", () => {
     const env = t3Env();
     const thread = env.T3CODE_THREAD_ID;

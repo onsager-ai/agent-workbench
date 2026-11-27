@@ -811,6 +811,37 @@ function previewDecision(tool, input, state, stateFile, workers, event, host) {
   return null;
 }
 
+function auditBrowserCall(stateFile, event, input, profile, tool, decision, worker) {
+  if (!stateFile || !isProfileId(profile)) return;
+  try {
+    const directory = path.dirname(path.dirname(stateFile));
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    fs.chmodSync(directory, 0o700);
+    const entry = {
+      ts: new Date().toISOString(), session_id: event.session_id, agent_id: event.agent_id ?? null,
+      role: worker ? "worker" : "manager", cwd: event.cwd ?? process.cwd(), profile,
+      tool, decision: decision ? "deny" : "allow",
+    };
+    for (const field of ["url", "tabId", "locator", "action", "key"]) {
+      if (typeof input[field] === "string") entry[field] = input[field];
+    }
+    // A denied URL can contain credentials; don't write them to disk.
+    if (entry.url) entry.url = entry.url.replace(/^(\s*[a-z][a-z0-9+.-]*:[/\\]*)([^/?#\\]*@)/i, "$1[redacted]@");
+    // A single printable key can insert literal text, unlike a named key such as Enter.
+    if (entry.action === "press" && entry.key && [...entry.key].length === 1) entry.key = "[redacted]";
+    const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW;
+    const fd = fs.openSync(path.join(directory, "browser-audit.jsonl"), flags, 0o600);
+    try {
+      fs.fchmodSync(fd, 0o600);
+      fs.writeFileSync(fd, JSON.stringify(entry) + "\n");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    // Audit is best-effort and cannot change the policy decision.
+  }
+}
+
 function managerStatePath(event) {
   const session = event.session_id;
   if (typeof session !== "string" || !/^[A-Za-z0-9_-]+$/.test(session)) return null;
@@ -1002,7 +1033,11 @@ async function main() {
     const workerContext = managerState.worker || Boolean(event.agent_id);
     const canonicalTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
     const previewTool = browserToolName(tool);
-    if (previewTool === "preview_status") return;
+    const browserWorker = host !== "claude" || event.agent_id != null || managerState.worker || !managerState.turn || managerState.invalidBrowser;
+    if (previewTool === "preview_status") {
+      auditBrowserCall(stateFile, event, isDict(args) ? args : {}, managerState.botProfile, "status", null, browserWorker);
+      return;
+    }
     const isScheduleTask = canonicalTool === "mcp__t3_code__schedule_task";
     const isThreadLaunch = canonicalTool === "mcp__t3_code__t3_thread_launch";
     const isThreadConfigure = canonicalTool === "mcp__t3_code__t3_thread_configure";
@@ -1060,9 +1095,15 @@ async function main() {
         reason = managerGateReason(`The sixth counted work call (${tool})`, stateFile);
       }
     }
-    if (!decision && previewTool) {
-      reason = previewDecision(previewTool, isDict(args) ? args : {}, managerState, stateFile, workers, event, host);
-      if (reason) decision = "deny";
+    if (previewTool) {
+      const input = isDict(args) ? args : {};
+      if (!decision) {
+        reason = previewDecision(previewTool, input, managerState, stateFile, workers, event, host);
+        if (reason) decision = "deny";
+      }
+      const profile = previewTool === "preview_open" && !decision && isProfileId(input.profileId)
+        ? input.profileId : managerState.botProfile;
+      auditBrowserCall(stateFile, event, input, profile, previewTool.replace(/^preview_/, ""), decision, browserWorker);
     }
     const enforceManager = mainLoop && !managerState.worker && !managerState.approved;
     if (enforceManager && !decision && ["Edit", "Write", "NotebookEdit", "MultiEdit"].includes(tool)) {
