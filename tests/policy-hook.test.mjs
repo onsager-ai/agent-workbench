@@ -733,10 +733,14 @@ describe("policy hook", () => {
     assert.equal(call("schedule-pause", { scheduledTaskId: "existing", enabled: false }), null);
   });
 
-  test("Claude Managers can quote approval to launch the approved Astra and Neon models", () => {
-    const astra = "onsager/codex/gpt-6.2-astra";
-    const codexAstra = "codex/gpt-6.2-astra";
-    const neon = "gemini-4-neon";
+  test("Claude Managers can quote approval to launch configured Manager models", () => {
+    const primary = "example/manager-model";
+    const alias = "example/manager-alias";
+    const alternate = "example/alternate-manager";
+    const manager_models = [primary, alias, alternate];
+    const overlay = path.join(directory, "manager-models.yml");
+    fs.writeFileSync(overlay, JSON.stringify({ profile: "codex", policy: { manager_models } }));
+    fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
     const env = { AGENT_WORKBENCH_STATE_HOME: path.join(directory, "launch-approval-state") };
     const ids = { environmentId: "env", projectId: "project" };
     const approval = "Run the task.\nL3 approval: https://example.test/approval";
@@ -752,27 +756,48 @@ describe("policy hook", () => {
     for (const [index, model] of ["prefix-codex/gpt-6-luna", "codex/gpt-6-luna-extra", "other/codex/gpt-6-luna", "codex/codex/gpt-6-luna"].entries()) {
       assert.equal(call(launchTool, launch(model, approval), `lookalike-launch-${index}`).permissionDecision, "deny");
     }
-    for (const [index, model] of [astra, codexAstra, neon].entries()) {
+    for (const [index, model] of manager_models.entries()) {
       const session = `approved-model-${index}`;
       const denied = call(launchTool, launch(model, "Run the task."), session);
       assert.equal(denied.permissionDecision, "deny");
       assert.match(denied.permissionDecisionReason, /L3 approval:/);
       assert.equal(call(launchTool, launch(model, approval), session), null);
     }
-    assert.equal(call(launchTool, launch(neon, "Run the task. L3 approval: https://example.test/approval")).permissionDecision, "deny");
-    assert.equal(call(launchTool, launch("some/other-model", approval)).permissionDecision, "deny");
+    assert.equal(call(launchTool, launch(alternate, "Run the task. L3 approval: https://example.test/approval")).permissionDecision, "deny");
+    assert.equal(call(launchTool, launch("manager-model", approval)).permissionDecision, "deny");
     assert.equal(call(launchTool, launch("claude-opus-5-5", approval)).permissionDecision, "deny");
-    assert.equal(call(launchTool, launch(astra, approval, { projectId: " " })).permissionDecision, "deny");
-    assert.equal(call(launchTool, launch(astra, approval), "approved-launch", { agent_id: "subagent-1" }).permissionDecision, "deny");
+    assert.equal(call(launchTool, launch(primary, approval, { projectId: " " })).permissionDecision, "deny");
+    assert.equal(call(launchTool, launch(primary, approval), "approved-launch", { agent_id: "subagent-1" }).permissionDecision, "deny");
 
     const create = (...threads) => call("mcp__t3-code__create_threads", { threads });
     const thread = (model, prompt) => ({ target: { ...ids, model }, prompt });
-    assert.equal(create(thread(astra, approval), thread(neon)).permissionDecision, "deny");
-    assert.equal(create(thread(astra, approval), thread(neon, approval), thread("gpt-6-luna")), null);
+    assert.equal(create(thread(primary, approval), thread(alternate)).permissionDecision, "deny");
+    assert.equal(create(thread(primary, approval), thread(alternate, approval), thread("gpt-6-luna")), null);
 
     assert.equal(call("mcp__t3-code__t3_thread_configure", {
-      threadId: "thread-1", modelSelection: { model: neon },
+      threadId: "thread-1", modelSelection: { model: alternate },
     }).permissionDecision, "deny");
+  });
+
+  test("an empty Manager model list grants no T3 thread creation exception", () => {
+    assert.deepEqual(bundle.base.policy.manager_models, []);
+    assert.deepEqual(bundle.profiles.codex.policy.manager_models, []);
+    const session_id = "empty-manager-models";
+    const ids = { environmentId: "env", projectId: "project" };
+    const model = "example/manager-model";
+    const approval = "L3 approval: https://example.test/approval";
+    const call = (tool_name, tool_input) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id, tool_name, tool_input,
+    }));
+    assert.equal(call("mcp__t3-code__t3_thread_launch", {
+      ...ids, modelSelection: { model }, message: approval,
+    }).permissionDecision, "deny");
+    assert.equal(call("mcp__t3-code__create_threads", {
+      threads: [{ target: { ...ids, model }, prompt: approval }],
+    }).permissionDecision, "deny");
+    assert.equal(call("mcp__t3-code__t3_thread_launch", {
+      ...ids, modelSelection: { model: "gpt-6-luna" },
+    }), null);
   });
 
   test("thread configure model changes reuse launch eligibility while reads stay exempt", () => {
@@ -1490,7 +1515,11 @@ describe("policy hook", () => {
     test("enrolled Codex Managers use the launch and configure rules under both T3 namespaces", () => {
       const ids = { environmentId: "env", projectId: "project" };
       const approved = "Run the task.\nL3 approval: https://example.test/approval";
-      const launch = { ...ids, modelSelection: { model: "gpt-6-astra" } };
+      const model = "example/manager-model";
+      const overlay = path.join(directory, "manager-models.yml");
+      fs.writeFileSync(overlay, JSON.stringify({ profile: "codex", policy: { manager_models: [model] } }));
+      fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
+      const launch = { ...ids, modelSelection: { model } };
       const configure = { threadId: "thread-1", modelSelection: { model: "gpt-6-luna" } };
       const create = { threads: [{ target: { ...ids, model: "gpt-6-luna" }, prompt: "Inspect the project." }] };
       for (const namespace of ["mcp__t3_code__", "mcp__t3_code_direct__"]) {
@@ -1505,7 +1534,7 @@ describe("policy hook", () => {
         assert.equal(tool(session, launchTool, { ...launch, message: approved }), null);
         assert.equal(tool(session, launchTool, { ...launch, projectId: "", message: approved }).permissionDecision, "deny");
         assert.equal(tool(session, createTool, create), null);
-        assert.equal(tool(session, createTool, { threads: [{ target: { ...ids, model: "gpt-6-astra" } }] }).permissionDecision, "deny");
+        assert.equal(tool(session, createTool, { threads: [{ target: { ...ids, model } }] }).permissionDecision, "deny");
         assert.equal(tool(session, configureTool, configure), null);
         assert.equal(tool(session, configureTool, { ...configure, modelSelection: launch.modelSelection }).permissionDecision, "deny");
         prompt(worker, `Role: Worker\n${APPROVED}`);

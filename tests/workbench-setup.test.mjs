@@ -1061,6 +1061,30 @@ describe("workbench setup", () => {
     assert.match(warnings, /magpie catalog unavailable; tier validation skipped/);
   });
 
+  test("the installer validates Manager model lists and resolves profile inheritance", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const manager_models = ["example/manager-model"];
+    const configure = (value) => f.write(f.overridePath, JSON.stringify({ policy: { manager_models: value } }));
+    configure(manager_models);
+    f.run("install");
+    const installed = () => f.json(path.join(f.state, "workers.json"));
+    assert.deepEqual(installed().base.policy.manager_models, manager_models);
+    assert.deepEqual(installed().profiles.codex.policy.manager_models, manager_models);
+
+    f.write(f.overridePath, JSON.stringify({
+      policy: { manager_models }, profiles: { codex: { policy: { manager_models: [] } } },
+    }));
+    f.run("install");
+    assert.deepEqual(installed().base.policy.manager_models, manager_models);
+    assert.deepEqual(installed().profiles.codex.policy.manager_models, []);
+
+    for (const value of [null, {}, "example/manager-model", [null], [42], [""], [" \t"]]) {
+      configure(value);
+      assert.match(f.run("install", [], false).stderr, /policy\.manager_models must be a list of nonblank model strings/);
+    }
+  });
+
   test("only valid recurring T3 schedule entries are accepted by the installer", () => {
     const f = new Fixture();
     f.installOrchestration();

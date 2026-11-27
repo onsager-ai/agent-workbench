@@ -28,6 +28,8 @@ ladder:
 policy:
   # Maximum automatic rework attempts before returning to the Manager.
   max_auto_rework: 2
+  # Exact model IDs eligible for T3 thread creation with quoted L3 approval.
+  manager_models: []
   # Absolute compaction target and optional native window overrides.
   # Gateway users set gateway_window to their gateway's advertised window.
   # manager_window (null by default) gives manager_models their own Claude Code window.
