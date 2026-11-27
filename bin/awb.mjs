@@ -24,7 +24,8 @@ Commands:
   help       Show this help`;
 
 const argv = process.argv.slice(2);
-let home = os.homedir();
+const realHome = path.resolve(os.homedir());
+let home = realHome;
 let skillsCmd;
 const args = [];
 for (let i = 0; i < argv.length; i += 1) {
@@ -81,22 +82,21 @@ if (command === "setup") {
     process.exit(2);
   }
   const [skills, ...prefix] = skillArgs;
-  const runSkills = (parameters) => run(skills, [...prefix, ...parameters], { env: { ...process.env, HOME: home } });
+  const env = { ...process.env, HOME: home };
+  if (home !== realHome) delete env.XDG_STATE_HOME;
+  const runSkills = (parameters) => run(skills, [...prefix, ...parameters], { env });
   const result = runSkills([
     "add", "onsager-ai/agent-workbench", "-g", "-a", "codex",
     "-a", "claude-code", "--skill", "*", "-y",
   ]);
   if (result !== 0) process.exit(result);
   const personal = "workbench-personal";
-  const lock = process.env.XDG_STATE_HOME
-    ? path.join(process.env.XDG_STATE_HOME, "skills", ".skill-lock.json")
+  const lock = env.XDG_STATE_HOME
+    ? path.join(env.XDG_STATE_HOME, "skills", ".skill-lock.json")
     : path.join(home, ".agents", ".skill-lock.json");
-  if (pathExists(path.join(home, ".agents", "skills", personal)) && pathExists(lock)) {
-    const native = JSON.parse(fs.readFileSync(lock, "utf8"));
-    if (native?.version === 3 && native.skills && Object.hasOwn(native.skills, personal)) {
-      const updateResult = runSkills(["update", personal, "-g", "-y"]);
-      if (updateResult !== 0) process.exit(updateResult);
-    }
+  if (pathExists(path.join(home, ".agents", "skills", personal)) && hasLockedPersonalSkill(lock, personal)) {
+    const updateResult = runSkills(["update", personal, "-g", "-y"]);
+    if (updateResult !== 0) process.exit(updateResult);
   }
   const installResult = runWorkbench(["install"]);
   if (installResult !== 0) process.exit(installResult);
@@ -112,6 +112,23 @@ if (!args.includes("--help") && !args.includes("-h") && !pathExists(script)) {
   process.exit(1);
 }
 process.exit(runWorkbench(args));
+
+function hasLockedPersonalSkill(lock, personal) {
+  try {
+    const native = JSON.parse(fs.readFileSync(lock, "utf8"));
+    const skills = native?.skills;
+    if (native?.version !== 3 || !skills || typeof skills !== "object" || Array.isArray(skills)) {
+      throw new Error("unsupported native skills lock");
+    }
+    if (!Object.hasOwn(skills, personal)) return false;
+    const entry = skills[personal];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("invalid personal skill entry");
+    return true;
+  } catch {
+    console.error("awb: skipping personal skill refresh because the native skills lock is unreadable or invalid");
+    return false;
+  }
+}
 
 function pathExists(file) {
   try {
