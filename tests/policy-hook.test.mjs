@@ -1874,6 +1874,16 @@ describe("policy hook", () => {
     assert.equal(denied.overwrite, undefined);
   });
 
+  test("Antigravity requires explicit native Codex Sol effort and still stamps the brief", () => {
+    const task = "Review this change.";
+    const target = { providerInstanceId: "codex", model: bundle.profiles.codex.tiers.sol.model };
+    const delegate = (options) => antigravity({ name: "mcp_t3-code_delegate_task", args: { task, target: { ...target, options } } });
+    const denied = delegate();
+    assert.equal(denied.decision, "deny");
+    assert.match(denied.reason, /set target.options.reasoningEffort to "medium"/);
+    assert.deepEqual(delegate({ reasoningEffort: "high" }), { decision: "allow", overwrite: { task: `Role: Worker\n${task}` } });
+  });
+
   test("Antigravity stamps exact T3 delegation and ignores toolSummary", () => {
     bundle.profile = null;
     bundle.base.tiers.remote = { provider: "example-provider", model: "catalog/example-model", access: "read-only" };
@@ -2734,6 +2744,36 @@ describe("policy hook", () => {
     test("spawn_agent of an unknown type or an L1 tier passes through", () => {
       assert.equal(codex({ tool_name: "spawn_agent", tool_input: { message: "x" } }), null);
       assert.equal(codex({ tool_name: "spawn_agent", tool_input: { agent_type: "haiku", model: "claude-haiku-5-5" } }), null);
+    });
+
+    test("Codex spawn_agent defaults Sol to the resolved effort and preserves higher effort", () => {
+      const sol = bundle.profiles.codex.tiers.sol;
+      const input = { model: sol.model, message: "Inspect.", fork_turns: "none" };
+      const spawn = (tool_input, model) => codex({ tool_name: "spawn_agent", tool_input, model });
+      assert.equal(spawn(input).permissionDecision, "allow");
+      assert.deepEqual(spawn(input).updatedInput, { ...input, reasoning_effort: "medium" });
+      const inherited = { message: "Inspect.", fork_turns: "all" };
+      assert.deepEqual(spawn(inherited, sol.model).updatedInput, { ...inherited, reasoning_effort: "medium" });
+      assert.equal(spawn({ ...input, reasoning_effort: "xhigh" }), null);
+      assert.equal(spawn({ ...input, model: "gpt-6-luna", reasoning_effort: "low" }, sol.model), null);
+      assert.match(spawn({ ...input, reasoning_effort: "low" }).permissionDecisionReason, /set reasoning_effort to "medium"/);
+      sol.effort = "high";
+      fs.writeFileSync(workers, JSON.stringify(bundle));
+      assert.equal(spawn(input).updatedInput.reasoning_effort, "high");
+    });
+
+    test("T3 native Codex Sol defaults effort in both option shapes and preserves higher effort", () => {
+      const target = { providerInstanceId: "codex", model: bundle.profiles.codex.tiers.sol.model };
+      const delegate = (target) => codex({ tool_name: "mcp__t3_code__delegate_task", tool_input: { target, task: "Inspect." } });
+      assert.deepEqual(delegate(target).updatedInput.target.options, { reasoningEffort: "medium" });
+      const original = [{ id: "serviceTier", value: "priority" }];
+      assert.deepEqual(delegate({ ...target, options: original }).updatedInput.target.options,
+        [...original, { id: "reasoningEffort", value: "medium" }]);
+      assert.equal(delegate({ ...target, options: { reasoningEffort: "high" } }), null);
+      assert.equal(delegate({ ...target, options: [{ id: "reasoningEffort", value: "ultra" }] }), null);
+      assert.match(delegate({ ...target, options: { reasoningEffort: "low" } }).permissionDecisionReason,
+        /set target.options.reasoningEffort to "medium"/);
+      assert.equal(delegate({ providerInstanceId: "claudeAgent", model: `codex/${target.model}` }), null);
     });
 
     test("Claude host denies an unapproved spawn_agent too", () => {

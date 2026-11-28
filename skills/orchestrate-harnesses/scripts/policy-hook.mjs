@@ -22,6 +22,7 @@ const RULE = {
   protectedBranch: "protected-branch", polling: "github-polling", sleepLoop: "sleep-loop",
   ciDownload: "ci-download", delegationModel: "delegation-model", delegationTier: "delegation-tier",
   delegationIsolation: "delegation-isolation", dispatchApproval: "dispatch-approval", workerConfig: "worker-config",
+  workerEffort: "worker-effort",
   threadLaunch: "thread-launch", schedule: "schedule", browserManager: "browser-manager",
   managerWorkLimit: "manager-work-limit", managerEdit: "manager-edit", managerShellWrite: "manager-shell-write",
   codexShellApproval: "codex-shell-approval", modelOverride: "model-override", inheritedModel: "inherited-model",
@@ -684,7 +685,19 @@ function dispatchApproval(file, event, tier) {
   }
 }
 
-function checkDelegation(workers, event, input, { stampRole, requireTier = false }) {
+const CODEX_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
+function solEffort({ name, tier }, requested, field, canRewrite) {
+  if (name !== "sol" || tier.harness !== "codex") return {};
+  const minimum = CODEX_EFFORTS.indexOf(tier.effort);
+  if (minimum < 0) return {};
+  if (requested == null && canRewrite) return { effort: tier.effort };
+  if (CODEX_EFFORTS.indexOf(requested) >= minimum) return {};
+  return { decision: "deny", rule: RULE.workerEffort,
+    reason: `Sol requires ${tier.effort} effort or higher; set ${field} to "${tier.effort}" or higher and retry.` };
+}
+
+function checkDelegation(workers, event, input, { stampRole, requireTier = false, codex, agy }) {
   const target = dict(input.target);
   if (!target.model) return { decision: "deny", reason: T3_MODEL, rule: RULE.delegationModel };
   const { name, tier, denial } = delegateTier(workers, event, target, requireTier);
@@ -697,8 +710,24 @@ function checkDelegation(workers, event, input, { stampRole, requireTier = false
   }
   const [decision, reason, rule] = gate(name && dispatchApproval(workers, event, name), input.task);
   if (decision) return { decision, reason, rule };
+  const provider = target.providerInstanceId ?? target.driverKind;
+  const update = {};
+  if (provider === "codex" || target.driverKind === "codex" ||
+      (codex && provider === undefined && target.model === tier?.model)) {
+    const options = target.options;
+    const optionList = Array.isArray(options);
+    const requested = optionList ? options.find((option) => option?.id === "reasoningEffort")?.value
+      : dict(options).reasoningEffort;
+    const effort = solEffort({ name, tier }, requested, "target.options.reasoningEffort", !agy);
+    if (effort.decision) return effort;
+    if (effort.effort) {
+      update.target = { ...target, options: optionList
+        ? [...options, { id: "reasoningEffort", value: effort.effort }]
+        : { ...dict(options), reasoningEffort: effort.effort } };
+    }
+  }
   const extra = tier?.stamp ?? (readOnly ? READ_ONLY_STAMP : "");
-  if (!stampRole && !extra) return {};
+  if (!stampRole && !extra) return update;
   const task = typeof input.task === "string" ? input.task : "";
   const role = /^Role: Worker$/m;
   let stamped = role.test(task) ? task : `Role: Worker\n${task}`;
@@ -706,7 +735,8 @@ function checkDelegation(workers, event, input, { stampRole, requireTier = false
     const header = `Role: Worker\n${extra}`;
     if (!stamped.includes(`${header}\n`) && !stamped.endsWith(header)) stamped = stamped.replace(role, () => header);
   }
-  return stamped === task ? {} : { task: stamped };
+  if (stamped !== task) update.task = stamped;
+  return update;
 }
 
 function hasL3Approval(text) {
@@ -1688,16 +1718,29 @@ async function main() {
     }
     if (!decision && isDelegateTask) {
       const input = dict(args);
-      const result = checkDelegation(workers, event, input, { stampRole: agy || mainLoop, requireTier: agy });
+      const result = checkDelegation(workers, event, input, { stampRole: agy || mainLoop, requireTier: agy, codex, agy });
       if (result.decision) ({ decision, reason, rule } = result);
-      else if (result.task !== undefined) {
-        emitUpdate({ ...input, task: result.task }, { task: result.task });
+      else if (Object.keys(result).length) {
+        emitUpdate({ ...input, ...result }, result);
         return;
       }
     } else if (!decision && tool === "spawn_agent") {
       const subagentType = dict(args).agent_type;
       const approval = dispatchApproval(workers, event, subagentType) ?? (args.model === "opus" ? APPROVAL : null);
       [decision, reason, rule] = gate(approval, args.message);
+      if (!decision && codex) {
+        const model = args.model ?? (subagentType === "sol" ? subagentType
+          : subagentType == null ? event.model : undefined);
+        if (typeof model === "string") {
+          const match = delegateTier(workers, event, { model }, false);
+          const result = solEffort(match, args.reasoning_effort, "reasoning_effort", true);
+          if (result.decision) ({ decision, reason, rule } = result);
+          else if (result.effort) {
+            emitUpdate({ ...args, reasoning_effort: result.effort });
+            return;
+          }
+        }
+      }
     } else if (!decision && (tool === "Agent" || tool === "Task")) {
       const subagentType = dict(args).subagent_type;
       const approval = dispatchApproval(workers, event, subagentType);
