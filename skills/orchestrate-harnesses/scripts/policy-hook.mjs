@@ -1406,8 +1406,11 @@ async function main() {
     }
     const isEdit = (agy ? AGY_EDITS : NATIVE_EDITS).has(tool);
     const agyManagementTool = agy && (tool === "manage_task" || tool === "manage_subagents");
-    const agyManagementWrite = agyManagementTool && [args.Action, args.action].some((action) =>
-      action === "kill" || (tool === "manage_task" ? action === "send_input" : action === "kill_all"));
+    const agyActions = agyManagementTool ? [args.Action, args.action].filter((action) => action !== undefined) : [];
+    const [agyAction] = agyActions;
+    const agyManagementRead = agyActions.length === 1 &&
+      (agyAction === "list" || (tool === "manage_task" && agyAction === "status"));
+    const agyManagementWrite = agyManagementTool && !agyManagementRead;
     const agyStateWrite = agyManagementWrite || (agy && tool === "schedule");
     const isPatch = codex && tool === "apply_patch";
     const shellWrite = (isShell || (codex && tool === "exec_command")) && mutatingBash(shellCommand);

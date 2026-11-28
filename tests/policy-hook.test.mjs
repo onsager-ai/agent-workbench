@@ -1548,6 +1548,21 @@ describe("policy hook", () => {
       }
     });
 
+    test("Antigravity management tools gate missing, unknown, differently cased, and ambiguous actions", () => {
+      const readOnly = { ...env, T3CODE_THREAD_ID: child };
+      const inspect = { lastUserInput: "Inspect the workspace." };
+      for (const name of ["manage_task", "manage_subagents"]) {
+        for (const args of [{}, { Action: "future_action" }, { Action: "LIST" }, { action: "KILL" },
+          { Action: "list", action: "kill" }]) {
+          const tool = { name, args };
+          const label = `${name} ${JSON.stringify(args)}`;
+          assert.match(antigravity(tool, env, inspect).reason, /Manager work approval/, label);
+          assert.match(antigravity(tool, readOnly, { lastUserInput: approval }).reason, readOnlyDenial, label);
+          assert.deepEqual(antigravity(tool, env, { lastUserInput: approval }), { decision: "allow" }, label);
+        }
+      }
+    });
+
     test("ACP and CLI read tools remain available", () => {
       const readOnly = { ...env, T3CODE_THREAD_ID: child };
       for (const name of ["read_file", "list_directory", "search_directory", "find_file", "view_file", "list_dir",
