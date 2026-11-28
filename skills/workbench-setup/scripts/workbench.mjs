@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import tty from "node:tty";
 import { isDeepStrictEqual } from "node:util";
 import { runOps, opsHelp } from "./ops.mjs";
+import { runAttachmentCommand } from "./attachment.mjs";
 import { runOnceCommand, validOneShotJob } from "./run-once.mjs";
 import { showLanes } from "./lanes.mjs";
 
@@ -2176,6 +2177,7 @@ const COMMANDS = {
   uninstall: "Remove managed setup while keeping private files",
   workers: "Show effective worker configuration",
   ops: "Run host operations",
+  attachment: "Upload one file to the provisioned private attachment bucket",
   version: "Print the installed Agent Workbench version",
 };
 const USAGE = "usage: workbench.mjs [--home HOME] [--skills-cmd SKILLS_CMD] [--cwd CWD] " +
@@ -2207,8 +2209,8 @@ function parseArguments(argv) {
       fail(`unrecognized arguments: ${argv[index]}`);
     } else if (options.command === undefined) {
       options.command = flag;
-      if (flag === "ops") {
-        options.ops = argv.slice(index + 1);
+      if (flag === "ops" || flag === "attachment") {
+        options.commandArgs = argv.slice(index + 1);
         break;
       }
     } else if (options.command === "help") {
@@ -2237,6 +2239,8 @@ function parseArguments(argv) {
 function printHelp(command) {
   if (command === "ops") {
     console.log(`${opsHelp}\n       agent-workbench ops run-once <job-id>`);
+  } else if (command === "attachment") {
+    console.log("Usage: agent-workbench attachment put <path>");
   } else if (!command) {
     console.log(`${USAGE}\n\nCommands:`);
     for (const [name, description] of Object.entries(COMMANDS)) console.log(`  ${name.padEnd(10)} ${description}`);
@@ -2262,9 +2266,10 @@ export function main(argv = process.argv.slice(2)) {
     if (args.command === "version") { console.log(RELEASE); return 0; }
     if (args.command === "ops") {
       const home = path.resolve(args.home);
-      if (args.ops[0] === "run-once") return runOnceCommand(args.ops.slice(1), home);
-      return runOps(args.ops, home);
+      if (args.commandArgs[0] === "run-once") return runOnceCommand(args.commandArgs.slice(1), home);
+      return runOps(args.commandArgs, home);
     }
+    if (args.command === "attachment") return runAttachmentCommand(args.commandArgs);
     if (args.command === "lanes") { showLanes(args); return 0; }
     if (args.workspace !== undefined && args.command === "uninstall") {
       antigravityWorkspace(args.workspace, new Setup(args.home), true);

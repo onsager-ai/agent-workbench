@@ -114,6 +114,14 @@ An optional `fresh_session` boolean defaults to `false`. If a create supplies `f
 
 In a current Manager turn, the bound Manager can update an existing registered `interval` task's prompt with exactly `scheduledTaskId` and a nonblank `prompt`. Use the registered `task_id` and call from the bound thread in the local T3 environment. T3 keeps the stored interval, enabled state, and fresh-session setting.
 
+### Private attachment uploads
+
+After Infra verifies and provisions the host, use `agent-workbench attachment put <path>` for an authorized file. `awb attachment put <path>` delegates to the installed skill. The command accepts one readable regular file up to 25 MiB and prints its protected `https://files.onsager.ai/<hostPrefix>/<randomID>` URL on success. Open the URL in a browser with the required access. Share it only with authorized recipients.
+
+Infra provisions `~/.config/agent-workbench/attachment-r2.json` in the OS account's home as an owner-owned regular file with mode `0600`. Its JSON fields are `host` (the exact OS hostname), `accountId` (32 lowercase hexadecimal characters), `hostPrefix` (one assigned path segment), `accessKeyId`, `secretAccessKey`, `sessionToken`, `expiresAt` (an ISO UTC timestamp), and `directEgressVerified` (true after verification). Use a temporary session scoped to put objects in the assigned prefix of the private bucket. Keep the credential file out of tool output and version control.
+
+Before provisioning, verify and record direct TLS connectivity from that host to its exact `https://<accountId>.r2.cloudflarestorage.com` endpoint using the same direct Node HTTPS path as the uploader. `directEgressVerified` records Infra's provisioning decision. DNS and the network path can change after that check. The uploader uses certificate verification and makes one direct signed PUT. A failed request stops the command. If the source changes during the upload, the command withholds the URL and the service may retain an object.
+
 ### Hook denial log
 
 Each tool denial appends one JSON object to `<state root>/agent-workbench/denials/<YYYY-MM-DD>.jsonl`, using the UTC date. The state root is shared with `manager-turns` and comes from `AGENT_WORKBENCH_STATE_HOME`, then `XDG_STATE_HOME`, then `~/.local/state`. The fields are:

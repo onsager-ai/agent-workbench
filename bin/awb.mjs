@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runOps } from "../skills/workbench-setup/scripts/ops.mjs";
 
-const commands = ["install", "update", "status", "lanes", "trust", "uninstall", "workers", "prune"];
+const commands = ["install", "update", "status", "lanes", "trust", "uninstall", "workers", "prune", "attachment"];
 const usage = `Usage: awb <command> [options]
 
 Commands:
@@ -20,6 +20,7 @@ Commands:
   workers    Show effective Worker configuration
   prune      Remove local worktrees and branches with merged PRs
   ops        Run host operations
+  attachment Upload a file with the installed Workbench attachment command
   version    Show the awb version
   help       Show this help`;
 
@@ -31,6 +32,9 @@ const args = [];
 for (let i = 0; i < argv.length; i += 1) {
   if (!args.length && argv[i] === "ops") {
     process.exit(runOps(argv.slice(i + 1), home));
+  } else if (!args.length && argv[i] === "attachment") {
+    args.push(...argv.slice(i));
+    break;
   } else if (argv[i] === "--home") {
     if (!argv[i + 1]) {
       console.error("awb: --home requires a path");

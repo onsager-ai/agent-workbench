@@ -16,8 +16,9 @@ const POLLING = "Blocking GitHub waits are disabled. Use watch_pull_request for 
 const SLEEP_LOOP = "Sleep loops are disabled. Use t3_background_wait or Monitor.";
 const CI_DOWNLOAD = "Artifact downloads write files. Send this step to the branch Worker.";
 const ONE_SHOT_CALL = /^[ \t]*agent-workbench[ \t]+ops[ \t]+run-once[ \t]+([a-z][a-z0-9-]{0,63})[ \t]*(?![\s\S])/;
-const ONE_SHOT_LAUNCHERS = new Set(["agent-workbench", "awb", "workbench.mjs", "workbench.py", "awb.mjs"]);
+const WORKBENCH_LAUNCHERS = new Set(["agent-workbench", "awb", "workbench.mjs", "workbench.py", "awb.mjs"]);
 const ONE_SHOT_MENTION = /\b(?:agent-workbench|awb|workbench\.(?:mjs|py))\b[\s\S]*\brun-once\b/;
+const ATTACHMENT_MENTION = /\b(?:agent-workbench|awb|workbench\.(?:mjs|py))\b[\s\S]*\battachment\b/;
 const RULE = {
   protectedBranch: "protected-branch", polling: "github-polling", sleepLoop: "sleep-loop",
   ciDownload: "ci-download", delegationModel: "delegation-model", delegationTier: "delegation-tier",
@@ -27,7 +28,8 @@ const RULE = {
   codexShellApproval: "codex-shell-approval", modelOverride: "model-override", inheritedModel: "inherited-model",
   nativeSubagent: "native-subagent", managerTurnReset: "manager-turn-reset", managerTurnUpdate: "manager-turn-update",
   readOnlyWorker: "read-only-worker", prWatchTarget: "pr-watch-target", workerAutomation: "worker-automation",
-  unknownAutomation: "unknown-automation", oneShotJob: "one-shot-job", oneShotState: "one-shot-state", policyError: "policy-error",
+  unknownAutomation: "unknown-automation", oneShotJob: "one-shot-job", oneShotState: "one-shot-state",
+  attachment: "attachment", policyError: "policy-error",
 };
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
@@ -772,14 +774,14 @@ function isAutomationShellCommand(command) {
   }
 }
 
-function mentionsOneShotCall(command) {
-  if (!ONE_SHOT_MENTION.test(command)) return false;
+function mentionsWorkbenchCall(command, pattern, operation) {
+  if (!pattern.test(command)) return false;
   try {
     return shellCommands(command).some((words) => {
-      const launcher = words.findIndex((word) => ONE_SHOT_LAUNCHERS.has(path.basename(word)));
-      if (launcher !== -1 && words.indexOf("run-once", launcher + 1) !== -1) return true;
+      const launcher = words.findIndex((word) => WORKBENCH_LAUNCHERS.has(path.basename(word)));
+      if (launcher !== -1 && words.indexOf(operation, launcher + 1) !== -1) return true;
       const body = literalShellBody(afterCdPrefix(words));
-      return Boolean(body && mentionsOneShotCall(body));
+      return Boolean(body && mentionsWorkbenchCall(body, pattern, operation));
     });
   } catch {
     return true;
@@ -1461,7 +1463,7 @@ async function main() {
       : codex && tool === "exec_command" ? shellInput.command ?? shellInput.cmd : shellInput.command;
     const shellCommand = typeof command === "string" ? command : "";
     const oneShot = shellTool && ONE_SHOT_CALL.exec(shellCommand);
-    if (oneShot || (shellTool && mentionsOneShotCall(shellCommand))) {
+    if (oneShot || (shellTool && mentionsWorkbenchCall(shellCommand, ONE_SHOT_MENTION, "run-once"))) {
       try {
         if (oneShot && event.agent_id == null && event.agent_type == null &&
             shellInput.run_in_background !== true && shellInput.Blocking !== false) {
@@ -1480,7 +1482,22 @@ async function main() {
     }
     const standaloneProgram = isShell ? STANDALONE_SHELL.exec(shellCommand)?.[1] : undefined;
     const managerGoalCommand = mainLoop && !workerContext && standaloneProgram === "ostrom-goal";
-    if (codexManager && isShell && !managerState.worker && !workApproved() && !managerGoalCommand &&
+    let managerAttachmentCommand = false;
+    if (shellTool && mentionsWorkbenchCall(shellCommand, ATTACHMENT_MENTION, "attachment")) {
+      if (mainLoop && !workerContext && event.agent_type == null && managerState.turn && !managerState.invalidBrowser && codexTurnMatches() &&
+          (standaloneProgram === "agent-workbench" || standaloneProgram === "awb") &&
+          shellInput.run_in_background !== true && shellInput.Blocking !== false) {
+        const [, group, action, ...files] = shlex(shellCommand, true);
+        managerAttachmentCommand = group === "attachment" && action === "put" && files.length === 1 && Boolean(files[0].trim());
+      }
+      if (!managerAttachmentCommand) {
+        emitPreToolUse("deny", "Use a standalone `agent-workbench attachment put <path>` command in the foreground " +
+          "from a current Manager turn.", RULE.attachment);
+        return;
+      }
+    }
+    const managerStandaloneCommand = managerGoalCommand || managerAttachmentCommand;
+    if (codexManager && isShell && !managerState.worker && !workApproved() && !managerStandaloneCommand &&
         !isOneShotGithubRead(shellCommand) && !LOCAL_READS.has(standaloneProgram)) {
       const [shellReason, shellRule] = classifyBash(shellCommand, event, false);
       if (shellReason) emitPreToolUse("deny", shellReason, shellRule);
@@ -1537,7 +1554,7 @@ async function main() {
     const isPrWatch = canonicalTool === "watch_pull_request" || canonicalTool === "mcp__t3_code__watch_pull_request";
     const isLocalWakeup = tool === "CronCreate" || (tool === "Skill" && isDict(args) && args.skill === "loop");
     const isLocalAutomation = isLocalWakeup ||
-      (shellTool && !managerGoalCommand && isAutomationShellCommand(shellCommand));
+      (shellTool && !managerStandaloneCommand && isAutomationShellCommand(shellCommand));
     const localAutomationWorker = isLocalAutomation && !workerContext &&
       (agyThread ?? await t3Thread(process.env.T3CODE_THREAD_ID?.trim()))?.relationship === "subagent";
     const configureModelSelection = isThreadConfigure && isDict(args) && Object.hasOwn(args, "modelSelection");
@@ -1638,7 +1655,7 @@ async function main() {
         reason = managerGateReason(agyStateWrite ? tool : `${tool} to ${filePath || "a file"}`, stateFile);
       }
     }
-    if (enforceManager && !decision && isShell && shellWrite && !managerGoalCommand &&
+    if (enforceManager && !decision && isShell && shellWrite && !managerStandaloneCommand &&
         (host !== "claude" || mutatingBash(shellCommand, true))) {
       decision = "deny";
       rule = RULE.managerShellWrite;
@@ -1669,7 +1686,7 @@ async function main() {
         [decision, reason, rule] = ["deny", MODEL_OVERRIDE, RULE.modelOverride];
       } else if (approval || args.model === "opus") [decision, reason, rule] = gate(approval ?? APPROVAL, args.prompt);
       else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason, rule] = ["deny", INHERITED_MODEL, RULE.inheritedModel];
-    } else if (!decision && isShell && !managerGoalCommand) {
+    } else if (!decision && isShell && !managerStandaloneCommand) {
       [reason, rule] = classifyBash(shellCommand, agy ? { cwd: dict(args).Cwd ?? event.cwd } : event, mainLoop);
       if (reason) decision = "deny";
     }
