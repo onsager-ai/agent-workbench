@@ -1519,6 +1519,83 @@ describe("policy hook", () => {
       assert.match(antigravity(edit(), env, { lastUserInput: "Review only." }).reason, /Manager work approval/);
     });
 
+    test("a registered one-shot accepts only the eligible T3 Worker and the exact foreground command", () => {
+      bundle.base.policy.one_shot_jobs = [{
+        id: "example-once", host: os.hostname().split(".")[0], parent_thread: manager, cwd: directory,
+        argv: ["/usr/bin/true"], cpu_quota_percent: 25, timeout_s: 60, expires_at: "2999-12-01T00:00:00Z",
+      }];
+      fs.writeFileSync(workers, JSON.stringify(bundle));
+      const command = "agent-workbench ops run-once example-once";
+      const shell = (CommandLine, thread, options) => antigravity({ name: "run_command", args: { CommandLine, ...options } },
+        { ...env, T3CODE_THREAD_ID: thread });
+      assert.deepEqual(shell(command, writer), { decision: "allow" });
+      for (const thread of [manager, child, "thread-wrong-provider", "thread-no-row", "thread-other-relation"]) {
+        assert.match(shell(command, thread).reason, /eligible T3 Worker/, thread);
+      }
+      for (const rejected of [
+        `${command} arg`, `${command} && pwd`, `${command} >out`, `${command} | cat`, `${command} &`,
+        `${command}\npwd`, `${command} $(pwd)`, `T3CODE_THREAD_ID=other ${command}`, `env -i ${command}`,
+        `bash -c '${command}'`, command.replace("agent-workbench", "awb"),
+      ]) assert.match(shell(rejected, writer).reason, /standalone/, rejected);
+      assert.match(shell(command, writer, { Blocking: false }).reason, /foreground/);
+      assert.deepEqual(shell(`grep '${command}' notes.md`, writer), { decision: "allow" });
+
+      const codexShell = (cmd, toolInput = {}, meta = {}) => {
+        const result = run(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "exec_command",
+          session_id: "one-shot-codex", tool_input: { cmd, ...toolInput }, ...meta }), {
+          env: { ...process.env, ...env, T3CODE_THREAD_ID: writer },
+          args: ["--host", "codex", "--workers", workers],
+        });
+        return result.stdout ? JSON.parse(result.stdout).hookSpecificOutput : null;
+      };
+      assert.equal(codexShell(command), null);
+      assert.match(codexShell(command, { run_in_background: true }).permissionDecisionReason, /foreground/);
+      assert.match(codexShell(command, {}, { agent_id: "native-child" }).permissionDecisionReason, /eligible T3 Worker/);
+      for (const direct of ["systemd-run --user --wait true", "env FLAG=1 /usr/bin/systemd-run --user --wait true",
+        "bash -lc 'systemd-run --user --wait true'", `sh -c 'bash -c "systemd-run --user true"'`]) {
+        assert.match(shell(direct, writer).reason, /Workers cannot create automation/);
+        assert.match(codexShell(direct).permissionDecisionReason, /Workers cannot create automation/);
+      }
+      const jobCwd = path.join(directory, "registered-job");
+      bundle.base.policy.one_shot_jobs[0].cwd = jobCwd;
+      bundle.select = [{ path: jobCwd, profile: "restricted" }];
+      bundle.profiles.restricted = structuredClone(bundle.base);
+      bundle.profiles.restricted.tiers.writer.access = "read-only";
+      fs.writeFileSync(workers, JSON.stringify(bundle));
+      assert.match(shell(command, writer, { Cwd: directory }).reason, /eligible T3 Worker/);
+      assert.match(codexShell(command, { workdir: directory }).permissionDecisionReason, /eligible T3 Worker/);
+    });
+
+    test("Workers can read but cannot edit installed job sources, the bundle, or claims", () => {
+      const home = path.join(directory, "home");
+      const workerEnv = { ...env, HOME: home, T3CODE_THREAD_ID: writer };
+      const personal = path.join(home, ".agents/skills/workbench-personal");
+      const state = path.join(home, ".local/state/agent-workbench");
+      const claims = path.join(state, "one-shot-claims");
+      const shell = (CommandLine) => antigravity({ name: "run_command", args: { CommandLine, Cwd: home } }, workerEnv);
+      const expected = /cannot change the installed one-shot job policy/;
+      for (const command of [
+        `printf '{}\\n' > ${shellQuote(workers)}`, `tee ${shellQuote(workers)}`, `cp tmp ${shellQuote(workers)}`,
+        "rm -rf ~/.local/state/agent-workbench/one-shot-claims/example-once",
+        "rm -rf ~/.local/state/agent-workbench/*",
+        `mv ${shellQuote(state)} old-state`, `cd ${shellQuote(personal)} && sed -i 's/x/y/' workers.yml`,
+        `cd ${shellQuote(personal)} && printf x > workers.yml`, `cp -t ${shellQuote(personal)} workers.yml`,
+        `bash -c ${shellQuote(`rm -rf ${shellQuote(claims)}`)}`,
+      ]) assert.match(shell(command).reason, expected, command);
+      for (const command of [`cat ${shellQuote(workers)}`, `cp ${shellQuote(workers)} /tmp/worker-snapshot`, "touch notes.md"]) {
+        assert.deepEqual(shell(command), { decision: "allow" }, command);
+      }
+      assert.match(antigravity(edit("write_to_file", path.join(personal, "workers.yml")), workerEnv).reason, expected);
+      assert.match(antigravity({ name: "delete_file", args: { Path: claims } }, workerEnv).reason, expected);
+
+      const command = `*** Begin Patch\n*** Add File: ${path.join(personal, "automations.yml")}\n+content\n*** End Patch`;
+      const result = run(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "apply_patch",
+        session_id: "worker-patch", tool_input: { command } }), {
+        env: { ...process.env, ...workerEnv }, args: ["--host", "codex", "--workers", workers],
+      });
+      assert.match(JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason, expected);
+    });
+
     test("Antigravity Managers can record goals with standalone counted commands", () => {
       const run = (command) => ({ name: "run_command", args: { CommandLine: command } });
       for (const [index, command] of compoundGoalCommands.entries()) {
