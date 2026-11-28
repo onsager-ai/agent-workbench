@@ -136,9 +136,10 @@ describe("policy hook", () => {
   const readOnlyDenial = /Read-only Workers cannot edit files/;
   const shellReads = ["git status --short", "git show HEAD", "git log -1", "cat notes.md", "grep text notes.md", "gh pr view 1"];
   const shellWrites = ["touch notes.md", "git commit -m change", "echo change > notes.md"];
-  const goalCommand = `ostrom-goal set lane --statement 'Use ; && | $(literal) as text' --plan '{"goal":"read"}'`;
+  const goalCommand = `ostrom-goal set lane --statement 'Use ; && | $(literal) as text' --plan '{\n  "goal":"read"\n}'`;
   const compoundGoalCommands = ["ostrom-goal complete lane; pwd", "ostrom-goal complete lane && pwd",
     "ostrom-goal complete lane | cat", "pwd; ostrom-goal complete lane", "ostrom-goal complete lane >out",
+    "ostrom-goal complete lane\npwd",
     'ostrom-goal set lane --statement "$(pwd)"', "ostrom-goal set lane --statement `pwd`"];
 
   test("Claude uses the active profile's native agent type for Worker edit and shell policy", () => {
@@ -2169,11 +2170,11 @@ describe("policy hook", () => {
       for (const [toolName, key] of [["Bash", "command"], ["exec_command", "command"], ["exec_command", "cmd"]]) {
         const call = (session, command, details) => tool(session, toolName, { [key]: command, workdir: directory }, details);
         prompt("manager");
-        for (const command of ["cat ~/.agents/AGENTS.md", "git status", "rg 'unclosed (|)' notes.md"]) {
+        for (const command of ["cat ~/.agents/AGENTS.md", "ls", "grep 'unclosed (|)' notes.md"]) {
           assert.equal(call("manager", command), null, command);
         }
         assert.equal(JSON.parse(fs.readFileSync(stateFile("manager"), "utf8")).count, 3);
-        for (const command of [nestedPatch, "rg --pre=touch text notes.md", "git diff --out=out.txt",
+        for (const command of [nestedPatch, "git status", "rg text notes.md", "rg --pre=touch text notes.md", "git diff --out=out.txt",
           "cat notes.md; touch task.txt", 'cat "$(touch task.txt)"']) {
           const decision = call("manager", command);
           assert.equal(decision.permissionDecision, "deny");

@@ -1197,24 +1197,10 @@ function isOneShotGithubRead(command) {
 
 // A single argv-style command. Quoted text may contain shell punctuation, but
 // the shell must not be able to run another command or change its redirections.
-const STANDALONE_SHELL_WORD = String.raw`(?:[^ \t\r\n'"\\$\x60<>;&|()*?\[\]{}#!]|\\[^\r\n]|'[^'\r\n]*'|"(?:[^"\\$\x60\r\n]|\\[^\r\n])*")`;
+const STANDALONE_SHELL_WORD = String.raw`(?:[^ \t\r\n'"\\$\x60<>;&|()*?\[\]{}#!]|\\[^\r\n]|'[^']*'|"(?:[^"\\$\x60]|\\[^\r\n])*")`;
 const STANDALONE_SHELL = new RegExp(String.raw`^[ \t]*([a-z-]+)(?:[ \t]+${STANDALONE_SHELL_WORD}+)*[ \t]*(?![\s\S])`);
+// Git and ripgrep can run helpers configured outside the command line.
 const LOCAL_READS = new Set(["cat", "grep", "head", "ls", "pwd", "tail", "wc"]);
-const GIT_READS = new Set(["diff", "log", "rev-parse", "show", "status"]);
-const GIT_UNSAFE_READ_OPTIONS = ["--output", "--ext-diff", "--textconv", "--show-signature"];
-
-function isLocalShellRead(command, program) {
-  if (LOCAL_READS.has(program)) return true;
-  if (program !== "git" && program !== "rg") return false;
-  const [, operation, ...args] = shlex(command, true);
-  if (program === "rg") {
-    return ![operation, ...args].some((arg) => /^--(?:pre|hostname-bin)(?:=|$)/.test(arg));
-  }
-  return GIT_READS.has(operation) && !args.some((arg) => {
-    const option = arg.split("=", 1)[0];
-    return option.startsWith("--") && option.length > 2 && GIT_UNSAFE_READ_OPTIONS.some((unsafe) => unsafe.startsWith(option));
-  });
-}
 
 function mutatingBash(command, allowMemoryRedirect = false) {
   let commands;
@@ -1445,7 +1431,7 @@ async function main() {
     const standaloneProgram = isShell ? STANDALONE_SHELL.exec(shellCommand)?.[1] : undefined;
     const managerGoalCommand = mainLoop && !workerContext && standaloneProgram === "ostrom-goal";
     if (codexManager && isShell && !managerState.worker && !workApproved() && !managerGoalCommand &&
-        !isOneShotGithubRead(shellCommand) && !isLocalShellRead(shellCommand, standaloneProgram)) {
+        !isOneShotGithubRead(shellCommand) && !LOCAL_READS.has(standaloneProgram)) {
       const [shellReason, shellRule] = classifyBash(shellCommand, event, false);
       if (shellReason) emitPreToolUse("deny", shellReason, shellRule);
       else emitPreToolUse("deny", "Enrolled Codex Managers need `Manager work approval: <link>` at the start " +
