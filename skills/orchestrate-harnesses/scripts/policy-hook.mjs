@@ -43,7 +43,8 @@ const stopReason = (codex) => `If this asks the user something, re-ask it with $
   "option first and offering your best guesses as options for open-ended answers. " +
   (codex ? "If a Chief PM is registered, route owner decisions there, and route other questions there if request_user_input is unavailable. "
     : "If it is an owner decision and a Chief PM is registered, send it to the Chief PM instead. ") +
-  "If it was not a question to the user, end the turn without it.";
+  "If your last message does not ask the user a question, stop now without writing anything more. " +
+  "Do not explain or acknowledge this check.";
 const TRANSCRIPT_TAIL_BYTES = 256 * 1024;
 const FOOTER = /(?<![^\n])-- WB_MSG\b[^\n]*/g;
 const FOOTER_FIELD = /\b(kind|re)=(\S+)/g;
@@ -613,9 +614,16 @@ function postToolModelContext(workers, event) {
   }
 }
 
-function endsWithQuestion(text) {
-  const trimmed = text.replace(/[\s*_`~]+$/, "");
-  return trimmed.endsWith("?") || trimmed.endsWith("？");
+function endsWithUserQuestion(text) {
+  const prose = text
+    .replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?^ {0,3}\1[ `~]*$/gm, "[code]")
+    .replace(/^\s*>[^\n]*/gm, "[quote]")
+    .replace(/(`+)[^\n]+?\1|"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|(?<!\w)'[^\n]*?'(?!\w)/g, "[quoted text]");
+  const tail = prose.replace(/[\s*_`~]+$/, "").split(/[.!?。！？]\s+|\r?\n/).at(-1).trim();
+  const sentence = tail.replace(/^(?:(?:[-+*]|\d+\))\s+)?[*_~]*/, "");
+  // A third party's request is reported speech, even with a trailing question mark.
+  if (/^(?:[Tt]hey ask(?:ed)?|(?:[Tt]he [\w -]+|(?!I\b|We\b|You\b)\p{Lu}[\p{L}'’-]*(?: \p{Lu}[\p{L}'’-]*)*) (?:asks|asked)) you to\b/u.test(sentence)) return false;
+  return /[?？]$/.test(sentence) || /^(?:should I|do you want|let me know whether)\b/i.test(sentence);
 }
 
 function isRelativeTo(child, parent) {
@@ -1022,7 +1030,7 @@ function emit(value) {
 
 async function shouldBlockQuestion(text, classifier) {
   if (!text) return false;
-  if (!classifier) return endsWithQuestion(text);
+  if (!classifier) return endsWithUserQuestion(text);
   try {
     const response = await fetch(classifier.url, {
       method: "POST",
@@ -1033,24 +1041,27 @@ async function shouldBlockQuestion(text, classifier) {
         questions: { asks: {
           type: "choice",
           instructions: "Does this final agent message end by asking the user for a decision, confirmation or answer before work can continue?",
-          criteria: { yes: "It asks the user to choose, confirm or answer, and the agent waits for that reply", no: "It reports results or explains, possibly listing follow-ups the user can do on their own; no reply is needed for work to continue" },
+          criteria: {
+            yes: "The agent directly asks the user to choose, confirm or answer, and waits for that reply. An unpunctuated request like 'Let me know whether' can qualify.",
+            no: "The agent reports results or explains. Third-party requests (such as 'It asks you to decide'), quotes, code, and lists describing decisions or follow-ups are not direct asks from the agent to the user.",
+          },
         } },
       }),
       signal: AbortSignal.timeout(2000),
     });
-    if (!response.ok) return endsWithQuestion(text);
+    if (!response.ok) return endsWithUserQuestion(text);
     const body = await response.json();
     const answer = body?.answers?.asks;
     const probabilities = answer?.probabilities;
     if (!isDict(answer) || !["yes", "no"].includes(answer.choice) || !Number.isFinite(answer.confidence) ||
         !isDict(probabilities) || !Number.isFinite(probabilities.yes) || !Number.isFinite(probabilities.no) ||
         probabilities.yes < 0 || probabilities.yes > 1 || probabilities.no < 0 || probabilities.no > 1) {
-      return endsWithQuestion(text);
+      return endsWithUserQuestion(text);
     }
     if (probabilities.yes >= 0.7) return true;
     if (probabilities.no >= 0.7) return false;
   } catch {}
-  return endsWithQuestion(text);
+  return endsWithUserQuestion(text);
 }
 
 async function main() {
