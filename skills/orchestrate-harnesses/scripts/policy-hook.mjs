@@ -993,9 +993,10 @@ async function t3Thread(id, { byCodexSession = false } = {}) {
                json_extract(payload_json, '$.modelSelection.model') AS model
         FROM orchestration_v2_projection_threads
         WHERE thread_id = ${byCodexSession ? `(
-          SELECT thread_id FROM orchestration_v2_projection_provider_threads
+          SELECT min(thread_id) FROM orchestration_v2_projection_provider_threads
           WHERE driver = 'codex' AND owner_node_id IS NULL
             AND json_extract(payload_json, '$.nativeThreadRef.nativeId') = ?
+          HAVING count(DISTINCT thread_id) = 1
         )` : "?"}
         LIMIT 1
       `).get(id);

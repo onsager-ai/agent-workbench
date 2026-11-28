@@ -1872,20 +1872,21 @@ describe("policy hook", () => {
     }
     const enrol = (...sessions) => writeEnrolment({ sessions });
     const t3Home = () => path.join(directory, "t3");
-    function mapCodexSessions(thread, lineage, sessions) {
-      const file = path.join(t3Home(), "userdata/statev2.sqlite");
+    const databaseFile = () => path.join(t3Home(), "userdata/statev2.sqlite");
+    function mapCodexSessions(thread, lineage, sessions, ownerNodeId = null) {
+      const file = databaseFile();
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const db = new DatabaseSync(file);
       try {
         db.exec(`
-          CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL);
-          CREATE TABLE orchestration_v2_projection_provider_threads (
+          CREATE TABLE IF NOT EXISTS orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS orchestration_v2_projection_provider_threads (
             thread_id TEXT NOT NULL, driver TEXT NOT NULL, owner_node_id TEXT, payload_json TEXT NOT NULL
           );
         `);
         db.prepare("INSERT INTO orchestration_v2_projection_threads VALUES (?, ?)").run(thread, JSON.stringify({ lineage }));
-        const insert = db.prepare("INSERT INTO orchestration_v2_projection_provider_threads VALUES (?, 'codex', NULL, ?)");
-        for (const nativeId of sessions) insert.run(thread, JSON.stringify({ nativeThreadRef: { nativeId } }));
+        const insert = db.prepare("INSERT INTO orchestration_v2_projection_provider_threads VALUES (?, 'codex', ?, ?)");
+        for (const nativeId of sessions) insert.run(thread, ownerNodeId, JSON.stringify({ nativeThreadRef: { nativeId } }));
       } finally {
         db.close();
       }
@@ -1957,7 +1958,7 @@ describe("policy hook", () => {
     test("Codex thread enrolment follows native session restarts", () => {
       const thread = "mcp:launch:example-manager";
       const sessions = ["native-first", "native-restart"];
-      mapCodexSessions(thread, { relationshipToParent: null }, sessions);
+      mapCodexSessions(thread, { relationshipToParent: null }, [...sessions, sessions[0]]);
       writeEnrolment({ threads: [thread] });
       prompt(sessions[0], APPROVED, { agent_type: "worker" });
       assert.ok(!fs.existsSync(stateFile(sessions[0])));
@@ -1977,13 +1978,63 @@ describe("policy hook", () => {
       assert.equal(patch("native-child"), null);
     });
 
-    test("missing T3 database leaves legacy Codex session enrolment working", () => {
-      writeEnrolment({ sessions: ["legacy-manager"], threads: ["mcp:launch:example-manager"] });
-      prompt("native-unmapped", APPROVED);
-      assert.ok(!fs.existsSync(stateFile("native-unmapped")));
-      assert.equal(patch("native-unmapped"), null);
-      prompt("legacy-manager");
-      assert.equal(JSON.parse(fs.readFileSync(stateFile("legacy-manager"), "utf8")).turn, "turn-1");
+    test("Codex thread enrolment rejects a native ID shared by a parent and child", () => {
+      const parent = "mcp:launch:example-parent";
+      const child = "thread:delegated-task:child";
+      const session = "native-shared";
+      mapCodexSessions(parent, { relationshipToParent: null }, [session]);
+      mapCodexSessions(child, { relationshipToParent: "subagent", parentThreadId: parent }, [session]);
+      writeEnrolment({ threads: [parent] });
+      prompt(session, APPROVED);
+      assert.ok(!fs.existsSync(stateFile(session)));
+      assert.equal(patch(session), null);
+    });
+
+    test("Codex ignores provider rows owned by a node", () => {
+      const thread = "mcp:launch:example-manager";
+      mapCodexSessions(thread, { relationshipToParent: null }, ["native-owned"], "child-node");
+      writeEnrolment({ threads: [thread] });
+      prompt("native-owned", APPROVED);
+      assert.ok(!fs.existsSync(stateFile("native-owned")));
+      assert.equal(patch("native-owned"), null);
+    });
+
+    test("an invalid threads entry disables thread enrolment without disabling valid sessions", () => {
+      const thread = "mcp:launch:example-manager";
+      mapCodexSessions(thread, { relationshipToParent: null }, ["native-mapped"]);
+      for (const [index, invalid] of [42, "", "  "].entries()) {
+        const legacy = `legacy-manager-${index}`;
+        writeEnrolment({ sessions: [legacy], threads: [thread, invalid] });
+        prompt("native-mapped", APPROVED);
+        assert.ok(!fs.existsSync(stateFile("native-mapped")), JSON.stringify(invalid));
+        prompt(legacy);
+        assert.equal(JSON.parse(fs.readFileSync(stateFile(legacy), "utf8")).turn, "turn-1");
+      }
+    });
+
+    for (const dbState of ["missing", "corrupt"]) {
+      test(`${dbState} T3 database leaves legacy Codex session enrolment working`, () => {
+        if (dbState === "corrupt") {
+          fs.mkdirSync(path.dirname(databaseFile()), { recursive: true });
+          fs.writeFileSync(databaseFile(), "not a SQLite database");
+        }
+        writeEnrolment({ sessions: ["legacy-manager"], threads: ["mcp:launch:example-manager"] });
+        prompt("native-unmapped", APPROVED);
+        assert.ok(!fs.existsSync(stateFile("native-unmapped")));
+        assert.equal(patch("native-unmapped"), null);
+        prompt("legacy-manager");
+        assert.equal(JSON.parse(fs.readFileSync(stateFile("legacy-manager"), "utf8")).turn, "turn-1");
+      });
+    }
+
+    test("invalid Codex enrolment JSON does not enrol a mapped thread", () => {
+      const thread = "mcp:launch:example-manager";
+      mapCodexSessions(thread, { relationshipToParent: null }, ["native-mapped"]);
+      writeEnrolment({ threads: [thread] });
+      fs.appendFileSync(enrolmentFile(), "{");
+      prompt("native-mapped", APPROVED);
+      assert.ok(!fs.existsSync(stateFile("native-mapped")));
+      assert.equal(patch("native-mapped"), null);
     });
 
     test("unenrolled native Codex denial names the mapped T3 thread", () => {
