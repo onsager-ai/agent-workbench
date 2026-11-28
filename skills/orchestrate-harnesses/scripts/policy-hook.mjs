@@ -41,7 +41,8 @@ const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the u
 const SCHEDULE_TASK = "This schedule_task call does not meet the registered schedule rules. " +
   "Use the personal automation registry before activating automation. A Claude Manager or an enrolled Antigravity or Codex Manager " +
   "can create or re-enable a schedule that matches an entry in policy.schedules for the current T3 thread. " +
-  "Codex supports fixed_time and once only. Identified schedules can be paused.";
+  "Codex creates and re-enables fixed_time and once only. A registered interval prompt update takes only scheduledTaskId and prompt. " +
+  "Identified schedules can be paused.";
 const BROWSER_TOOL = /^mcp__t3_code(?:_direct)?__(preview_.+|t3_preview_.+)$/;
 const BROWSER_MANAGER = "Browser tools other than status require a Claude Manager main loop with valid turn state.";
 const NATIVE_EDITS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
@@ -714,10 +715,13 @@ const SCHEDULE_UPDATE_KEYS = new Set(["scheduledTaskId", "enabled", "freshSessio
 function registeredScheduleAllowed(file, event, input, { thread, codex }) {
   if (!file || !thread) return false;
   const update = Object.hasOwn(input, "scheduledTaskId");
+  const promptOnly = update && Object.hasOwn(input, "prompt") && Object.keys(input).length === 2 &&
+    typeof input.prompt === "string" && Boolean(input.prompt.trim());
   if (update) {
-    if (typeof input.scheduledTaskId !== "string" || !input.scheduledTaskId.trim() || input.enabled !== true ||
+    if (typeof input.scheduledTaskId !== "string" || !input.scheduledTaskId.trim()) return false;
+    if (!promptOnly && (input.enabled !== true ||
         !Object.keys(input).every((key) => SCHEDULE_UPDATE_KEYS.has(key)) ||
-        (input.environmentId !== undefined && (typeof input.environmentId !== "string" || !input.environmentId.trim()))) return false;
+        (input.environmentId !== undefined && (typeof input.environmentId !== "string" || !input.environmentId.trim())))) return false;
   } else if (input.bindToCurrentThread !== true || typeof input.prompt !== "string" || !input.prompt.trim() ||
       (Object.hasOwn(input, "enabled") && input.enabled !== true) ||
       !Object.keys(input).every((key) => SCHEDULE_CREATE_KEYS.has(key)) ||
@@ -727,6 +731,8 @@ function registeredScheduleAllowed(file, event, input, { thread, codex }) {
   if (hasFreshSession && typeof input.freshSession !== "boolean") return false;
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
+    if (promptOnly) return config.policy.schedules?.some((entry) => entry.thread === thread &&
+      entry.schedule?.type === "interval" && entry.task_id === input.scheduledTaskId) ?? false;
     return config.policy.schedules?.some((entry) => entry.thread === thread &&
       (!codex || ["fixed_time", "once"].includes(entry.schedule?.type)) &&
       (!hasFreshSession || input.freshSession === (entry.fresh_session ?? false)) &&

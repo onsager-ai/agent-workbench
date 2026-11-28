@@ -53,6 +53,8 @@ Unknown keys and invalid configuration fail installation without changing manage
 
 `policy.schedules` lists registered recurring T3 schedules by `name`, `thread`, and exact `schedule`. A Claude Manager in the registered thread can create a matching thread-bound schedule. Set the optional `task_id` to the existing T3 scheduled task ID to also allow that Manager to re-enable it with `scheduledTaskId` and `enabled: true`. Re-enable calls can also supply `environmentId`. When a create or re-enable call supplies `freshSession`, it must match the entry’s optional `fresh_session` boolean, which defaults to `false`.
 
+The bound Manager can update a registered `interval` task's prompt in its own environment by passing only the registered `scheduledTaskId` and a nonblank `prompt`.
+
 ### Context windows
 
 Installation uses the base `policy.context` because native harness settings are shared across directories. `max_tokens` sets Claude Code's `autoCompactWindow` and Codex's `model_auto_compact_token_limit`. `gateway_window` still sets the assumed window for unknown Claude gateway IDs without `[1m]`. `codex_window` optionally sets Codex's `model_context_window`.
