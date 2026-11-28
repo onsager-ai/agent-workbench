@@ -714,16 +714,16 @@ function checkDelegation(workers, event, input, { stampRole, requireTier = false
   const update = {};
   if (provider === "codex" || target.driverKind === "codex" ||
       (codex && provider === undefined && target.model === tier?.model)) {
-    const options = target.options;
+    const options = target.options ?? {};
     const optionList = Array.isArray(options);
     const requested = optionList ? options.find((option) => option?.id === "reasoningEffort")?.value
-      : dict(options).reasoningEffort;
+      : options.reasoningEffort;
     const effort = solEffort({ name, tier }, requested, "target.options.reasoningEffort", !agy);
     if (effort.decision) return effort;
     if (effort.effort) {
       update.target = { ...target, options: optionList
         ? [...options, { id: "reasoningEffort", value: effort.effort }]
-        : { ...dict(options), reasoningEffort: effort.effort } };
+        : { ...options, reasoningEffort: effort.effort } };
     }
   }
   const extra = tier?.stamp ?? (readOnly ? READ_ONLY_STAMP : "");
