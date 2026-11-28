@@ -183,7 +183,11 @@ describe("workbench setup", () => {
     assert.ok(!exists(path.join(workspace, ".agents/hooks.json")));
   });
 
-  const antigravityMatcher = "^(run_command|mcp_t3-code_(delegate_task|t3_thread_send)|invoke_subagent|define_subagent|swarm|run_workflow)$";
+  const legacyAntigravityMatcher = "^(run_command|mcp_t3-code_(delegate_task|t3_thread_send)|invoke_subagent|define_subagent|swarm|run_workflow)$";
+  const antigravityMatcher = "^(run_command|write_to_file|replace_file_content|multi_replace_file_content|" +
+    "view_file|list_dir|find_by_name|grep_search|read_url_content|" +
+    "mcp_t3-code_(delegate_task|t3_thread_(send|launch|configure)|create_threads|schedule_task|watch_pull_request|(t3_)?preview_.+)|" +
+    "invoke_subagent|define_subagent|swarm|run_workflow)$";
   const antigravityGroup = (f) => ({ enabled: true, PreToolUse: [{ matcher: antigravityMatcher, hooks: [{ type: "command",
     command: [path.resolve(process.execPath), path.resolve(f.hook), "--host", "antigravity", "--workers", path.join(f.state, "workers.json")].map(shellQuote).join(" "),
   }] }] });
@@ -200,13 +204,17 @@ describe("workbench setup", () => {
     const expectedGroup = antigravityGroup(f);
     const matcher = new RegExp(f.json(hooksFile)["agent-workbench"].PreToolUse[0].matcher);
     for (const tool of ["run_command", "mcp_t3-code_delegate_task", "mcp_t3-code_t3_thread_send",
+      "write_to_file", "replace_file_content", "multi_replace_file_content", "view_file", "list_dir", "find_by_name", "grep_search",
+      "read_url_content", "mcp_t3-code_t3_thread_launch", "mcp_t3-code_t3_thread_configure", "mcp_t3-code_create_threads",
+      "mcp_t3-code_schedule_task", "mcp_t3-code_watch_pull_request", "mcp_t3-code_preview_open", "mcp_t3-code_t3_preview_close",
       "invoke_subagent", "define_subagent", "swarm", "run_workflow"]) assert.match(tool, matcher);
     for (const tool of ["other_run_command", "mcp_t3-code_delegate_task_extra", "mcp_t3-code_pull_request_read",
-      "mcp_t3-code_preview_open", "manage_subagents"]) assert.doesNotMatch(tool, matcher);
+      "mcp_other_preview_open", "manage_subagents"]) assert.doesNotMatch(tool, matcher);
     assert.deepEqual(f.json(hooksFile), {
       foreign: { enabled: true, PreToolUse: [{ matcher: "other", hooks: [{ type: "command", command: "foreign" }] }] },
       "agent-workbench": expectedGroup,
     });
+    assert.ok(!exists(path.join(f.state, "antigravity-managers.json")));
     const ownershipDir = path.join(f.state, "antigravity-workspaces");
     const records = fs.readdirSync(ownershipDir);
     assert.equal(records.length, 1);
@@ -224,32 +232,35 @@ describe("workbench setup", () => {
     assert.ok(!exists(ownershipFile));
   });
 
-  test("explicit install upgrades an unchanged owned shell-only Antigravity hook", () => {
-    const f = new Fixture();
-    const workspace = path.join(f.temporary, "workspace");
-    const hooksFile = path.join(workspace, ".agents/hooks.json");
-    const workspaceHash = crypto.createHash("sha256").update(workspace).digest("hex");
-    const ownershipFile = path.join(f.state, "antigravity-workspaces", `${workspaceHash}.json`);
-    f.installOrchestration();
-    const command = [path.resolve(process.execPath), path.resolve(f.hook), "--host", "antigravity"].map(shellQuote).join(" ");
-    const group = { enabled: true, PreToolUse: [{ matcher: "run_command", hooks: [{ type: "command", command }] }] };
-    const other = { enabled: true };
-    const record = { schema: 1, workspace, group };
-    f.write(ownershipFile, JSON.stringify(record));
-    f.write(hooksFile, JSON.stringify({ other, "agent-workbench": { ...group, enabled: false } }));
-    assert.match(f.run("install", ["--antigravity", "--workspace", workspace], false).stderr, /conflicts with its ownership record/);
-    assert.equal(f.json(hooksFile)["agent-workbench"].enabled, false);
-    assert.deepEqual(f.json(ownershipFile), record);
+  for (const matcher of ["run_command", legacyAntigravityMatcher]) {
+    test(`explicit install upgrades an unchanged owned Antigravity hook with matcher ${matcher}`, () => {
+      const f = new Fixture();
+      const workspace = path.join(f.temporary, "workspace");
+      const hooksFile = path.join(workspace, ".agents/hooks.json");
+      const workspaceHash = crypto.createHash("sha256").update(workspace).digest("hex");
+      const ownershipFile = path.join(f.state, "antigravity-workspaces", `${workspaceHash}.json`);
+      f.installOrchestration();
+      const command = [path.resolve(process.execPath), path.resolve(f.hook), "--host", "antigravity",
+        ...(matcher === "run_command" ? [] : ["--workers", path.join(f.state, "workers.json")])].map(shellQuote).join(" ");
+      const group = { enabled: true, PreToolUse: [{ matcher, hooks: [{ type: "command", command }] }] };
+      const other = { enabled: true };
+      const record = { schema: 1, workspace, group };
+      f.write(ownershipFile, JSON.stringify(record));
+      f.write(hooksFile, JSON.stringify({ other, "agent-workbench": { ...group, enabled: false } }));
+      assert.match(f.run("install", ["--antigravity", "--workspace", workspace], false).stderr, /conflicts with its ownership record/);
+      assert.equal(f.json(hooksFile)["agent-workbench"].enabled, false);
+      assert.deepEqual(f.json(ownershipFile), record);
 
-    f.write(hooksFile, JSON.stringify({ other, "agent-workbench": group }));
-    f.run("install", ["--antigravity", "--workspace", workspace]);
-    const updated = antigravityGroup(f);
-    assert.deepEqual(f.json(hooksFile), { other, "agent-workbench": updated });
-    assert.deepEqual(f.json(ownershipFile), { ...record, group: updated });
-    f.run("uninstall", ["--antigravity", "--workspace", workspace]);
-    assert.deepEqual(f.json(hooksFile), { other });
-    assert.ok(!exists(ownershipFile));
-  });
+      f.write(hooksFile, JSON.stringify({ other, "agent-workbench": group }));
+      f.run("install", ["--antigravity", "--workspace", workspace]);
+      const updated = antigravityGroup(f);
+      assert.deepEqual(f.json(hooksFile), { other, "agent-workbench": updated });
+      assert.deepEqual(f.json(ownershipFile), { ...record, group: updated });
+      f.run("uninstall", ["--antigravity", "--workspace", workspace]);
+      assert.deepEqual(f.json(hooksFile), { other });
+      assert.ok(!exists(ownershipFile));
+    });
+  }
 
   test("identical preexisting Antigravity hook is never adopted or removed", () => {
     const f = new Fixture();

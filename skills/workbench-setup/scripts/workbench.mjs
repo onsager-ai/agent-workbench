@@ -2006,13 +2006,17 @@ function stripTrailingNewlines(data) {
   return data.subarray(0, end);
 }
 
-const ANTIGRAVITY_MATCHER = "^(run_command|mcp_t3-code_(delegate_task|t3_thread_send)|invoke_subagent|define_subagent|swarm|run_workflow)$";
+const LEGACY_ANTIGRAVITY_MATCHER = "^(run_command|mcp_t3-code_(delegate_task|t3_thread_send)|invoke_subagent|define_subagent|swarm|run_workflow)$";
+const ANTIGRAVITY_MATCHER = "^(run_command|write_to_file|replace_file_content|multi_replace_file_content|" +
+  "view_file|list_dir|find_by_name|grep_search|read_url_content|" +
+  "mcp_t3-code_(delegate_task|t3_thread_(send|launch|configure)|create_threads|schedule_task|watch_pull_request|(t3_)?preview_.+)|" +
+  "invoke_subagent|define_subagent|swarm|run_workflow)$";
 
 function validAntigravityGroup(group) {
   if (!isDict(group) || Object.keys(group).sort().join(",") !== "PreToolUse,enabled" || group.enabled !== true ||
       !Array.isArray(group.PreToolUse) || group.PreToolUse.length !== 1) return false;
   const [entry] = group.PreToolUse;
-  if (!isDict(entry) || Object.keys(entry).sort().join(",") !== "hooks,matcher" || !["run_command", ANTIGRAVITY_MATCHER].includes(entry.matcher) ||
+  if (!isDict(entry) || Object.keys(entry).sort().join(",") !== "hooks,matcher" || !["run_command", LEGACY_ANTIGRAVITY_MATCHER, ANTIGRAVITY_MATCHER].includes(entry.matcher) ||
       !Array.isArray(entry.hooks) || entry.hooks.length !== 1) return false;
   const [handler] = entry.hooks;
   if (!isDict(handler) || Object.keys(handler).sort().join(",") !== "command,type" || handler.type !== "command" ||
