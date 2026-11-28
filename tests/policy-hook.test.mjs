@@ -1346,12 +1346,18 @@ describe("policy hook", () => {
       enrolment = path.join(directory, "state/agent-workbench/antigravity-managers.json");
       fs.mkdirSync(path.dirname(database), { recursive: true });
       fs.mkdirSync(path.dirname(enrolment), { recursive: true });
-      fs.writeFileSync(enrolment, JSON.stringify({ threads: [manager, child, "thread-other-relation", "thread-no-row"] }));
+      fs.writeFileSync(enrolment, JSON.stringify({
+        threads: [manager, child, "thread-other-relation", "thread-no-row", "thread-no-lineage", "thread-no-relationship", "thread-null-lineage"],
+      }));
       const db = new DatabaseSync(database);
       db.exec("CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL)");
       const insert = db.prepare("INSERT INTO orchestration_v2_projection_threads VALUES (?, ?)");
-      insert.run(manager, "{}");
-      insert.run("thread-unenrolled", "{}");
+      const topLevel = JSON.stringify({ lineage: { relationshipToParent: null, parentThreadId: null } });
+      insert.run(manager, topLevel);
+      insert.run("thread-unenrolled", topLevel);
+      insert.run("thread-no-lineage", "{}");
+      insert.run("thread-no-relationship", '{"lineage":{}}');
+      insert.run("thread-null-lineage", '{"lineage":null}');
       for (const [id, relationshipToParent] of [[child, "subagent"], ["thread-other-relation", "other"]]) {
         insert.run(id, JSON.stringify({ lineage: { relationshipToParent, parentThreadId: manager } }));
       }
@@ -1361,7 +1367,8 @@ describe("policy hook", () => {
     test("only enrolled top-level T3 threads have the Manager role", () => {
       // A conversation ID is the native ID, not a substitute for the T3 thread ID.
       assert.deepEqual(antigravity(launch, env, { conversationId: child }), { decision: "allow" });
-      for (const id of [child, "thread-other-relation", "thread-unenrolled", "thread-no-row", ""]) {
+      for (const id of [child, "thread-other-relation", "thread-unenrolled", "thread-no-row",
+        "thread-no-lineage", "thread-no-relationship", "thread-null-lineage", ""]) {
         const result = antigravity(launch, { ...env, T3CODE_THREAD_ID: id }, { conversationId: manager, lastUserInput: approval });
         assert.equal(result.decision, "deny", id);
         assert.match(result.reason, /Workers must not launch/);
@@ -1393,6 +1400,19 @@ describe("policy hook", () => {
       assert.deepEqual(antigravity(edit(), env, { lastUserInput: approval }), { decision: "allow" });
       assert.deepEqual(antigravity(run, env, { lastUserInput: approval }), { decision: "allow" });
       assert.match(antigravity(edit(), env, { lastUserInput: "Review only." }).reason, /Manager work approval/);
+    });
+
+    test("image output requires approval and has no memory-path exception", () => {
+      const image = { name: "generate_image", args: { ImageName: "example" } };
+      assert.match(antigravity(image, env).reason, /Manager work approval/);
+      assert.deepEqual(antigravity(image, env, { lastUserInput: approval }), { decision: "allow" });
+      assert.deepEqual(antigravity(image, { ...env, T3CODE_THREAD_ID: child }), { decision: "allow" });
+    });
+
+    test("a policy error after resolving the role returns an Antigravity denial", () => {
+      assert.deepEqual(antigravity(edit("write_to_file", { toString: null }), env), {
+        decision: "deny", reason: "Could not evaluate the Antigravity tool policy.",
+      });
     });
 
     test("the sixth work call is blocked until lastUserInput changes", () => {

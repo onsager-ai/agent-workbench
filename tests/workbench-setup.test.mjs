@@ -184,7 +184,7 @@ describe("workbench setup", () => {
   });
 
   const legacyAntigravityMatcher = "^(run_command|mcp_t3-code_(delegate_task|t3_thread_send)|invoke_subagent|define_subagent|swarm|run_workflow)$";
-  const antigravityMatcher = "^(run_command|write_to_file|replace_file_content|multi_replace_file_content|" +
+  const antigravityMatcher = "^(run_command|write_to_file|replace_file_content|multi_replace_file_content|generate_image|" +
     "view_file|list_dir|find_by_name|grep_search|read_url_content|" +
     "mcp_t3-code_(delegate_task|t3_thread_(send|launch|configure)|create_threads|schedule_task|watch_pull_request|(t3_)?preview_.+)|" +
     "invoke_subagent|define_subagent|swarm|run_workflow)$";
@@ -204,7 +204,7 @@ describe("workbench setup", () => {
     const expectedGroup = antigravityGroup(f);
     const matcher = new RegExp(f.json(hooksFile)["agent-workbench"].PreToolUse[0].matcher);
     for (const tool of ["run_command", "mcp_t3-code_delegate_task", "mcp_t3-code_t3_thread_send",
-      "write_to_file", "replace_file_content", "multi_replace_file_content", "view_file", "list_dir", "find_by_name", "grep_search",
+      "write_to_file", "replace_file_content", "multi_replace_file_content", "generate_image", "view_file", "list_dir", "find_by_name", "grep_search",
       "read_url_content", "mcp_t3-code_t3_thread_launch", "mcp_t3-code_t3_thread_configure", "mcp_t3-code_create_threads",
       "mcp_t3-code_schedule_task", "mcp_t3-code_watch_pull_request", "mcp_t3-code_preview_open", "mcp_t3-code_t3_preview_close",
       "invoke_subagent", "define_subagent", "swarm", "run_workflow"]) assert.match(tool, matcher);

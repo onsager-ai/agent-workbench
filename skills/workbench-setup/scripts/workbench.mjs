@@ -2007,7 +2007,7 @@ function stripTrailingNewlines(data) {
 }
 
 const LEGACY_ANTIGRAVITY_MATCHER = "^(run_command|mcp_t3-code_(delegate_task|t3_thread_send)|invoke_subagent|define_subagent|swarm|run_workflow)$";
-const ANTIGRAVITY_MATCHER = "^(run_command|write_to_file|replace_file_content|multi_replace_file_content|" +
+const ANTIGRAVITY_MATCHER = "^(run_command|write_to_file|replace_file_content|multi_replace_file_content|generate_image|" +
   "view_file|list_dir|find_by_name|grep_search|read_url_content|" +
   "mcp_t3-code_(delegate_task|t3_thread_(send|launch|configure)|create_threads|schedule_task|watch_pull_request|(t3_)?preview_.+)|" +
   "invoke_subagent|define_subagent|swarm|run_workflow)$";

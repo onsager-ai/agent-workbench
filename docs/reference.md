@@ -122,17 +122,22 @@ This is a cooperative guardrail, not a permission boundary. It trusts an operato
 
 ### Enrol an Antigravity Manager
 
-1. Install and select the workspace hook as described above. This role lookup was verified with T3 0.1.13 and its Antigravity provider.
-2. Copy the **T3 thread ID** from the top-level session's T3 link. Use that ID, not Antigravity's hook `conversationId`.
-3. Add it to `agent-workbench/antigravity-managers.json` under the hook's state root (`AGENT_WORKBENCH_STATE_HOME`, then `XDG_STATE_HOME`, then `~/.local/state`). The operator maintains the file; install does not create it.
+**Upgrade note:** Enrol your existing Antigravity Managers before upgrading the workspace hook. An unenrolled top-level session now gets Worker rules: it cannot launch, configure, or create threads; create or re-enable schedules with `schedule_task`; use T3 browser tools other than status; start `watch_pull_request`; or run recognized local automation shell commands. Pausing an identified schedule remains allowed.
+
+1. Copy the **T3 thread ID** from the top-level session's T3 link. Use that ID, not Antigravity's hook `conversationId`. This role lookup was verified with T3 0.1.13 and its Antigravity provider.
+2. Add it to `agent-workbench/antigravity-managers.json` under the hook's state root (`AGENT_WORKBENCH_STATE_HOME`, then `XDG_STATE_HOME`, then `~/.local/state`). The operator maintains the file; install does not create it.
 
    ```json
    {"threads": ["<T3 thread ID>"]}
    ```
 
-The hook reads the trimmed `T3CODE_THREAD_ID` and checks its lineage in `${T3CODE_HOME:-~/.t3}/userdata/statev2.sqlite` using read-only Node SQLite. Only a listed thread with a lineage row and no relationship to a parent is a Manager. Subagents and any thread with a non-null parent relationship are Workers even if listed. A missing or invalid enrolment file, absent thread ID or row, database error, or unavailable SQLite support never grants Manager authority. Node's built-in SQLite is available without a feature flag in Node 22.13+; Workbench's hook launcher requires Node 22.20+. Remove the ID to return the thread to Worker policy on the next hook call.
+3. Install or upgrade and select the workspace hook as described above.
 
-The first matched tool call with changed `lastUserInput` resets the Manager's count and approval. Antigravity has no `UserPromptSubmit` event, and `PreInvocation` runs before a model invocation, not necessarily once per user prompt. The hook stores a digest rather than the prompt text. Identical consecutive prompts are treated as one turn; change the wording to start a distinct turn. Put `Manager work approval: <link>` on its own line in the user prompt for direct work. Without it, native edits (`write_to_file`, `replace_file_content`, `multi_replace_file_content`) are blocked except in the Claude memory path, mutating `run_command` calls are blocked, and the sixth counted work call is denied. Only matched tools count, including the native read tools covered by the installer. Manager CI-log downloads are blocked even with work approval.
+The hook reads the trimmed `T3CODE_THREAD_ID` and checks its lineage in `${T3CODE_HOME:-~/.t3}/userdata/statev2.sqlite` using read-only Node SQLite. Only a listed thread whose row has a `lineage` object with `relationshipToParent` explicitly set to JSON `null` is a Manager. Missing lineage, a missing relationship field, and non-null relationships (including subagents) all mean Worker.
+
+**Troubleshooting:** A missing or invalid enrolment file, absent thread ID or row, database error, or unavailable SQLite support gives the session Worker rules. The same applies when the database cannot be opened or queried read-only, for example if a database in WAL mode needs its `-shm` file and the hook process cannot access it. Node's built-in SQLite is available without a feature flag in Node 22.13+; Workbench's hook launcher requires Node 22.20+. Remove the ID to return the thread to Worker policy on the next hook call.
+
+The first matched tool call with changed `lastUserInput` resets the Manager's count and approval. Antigravity has no `UserPromptSubmit` event, and `PreInvocation` runs before a model invocation, not necessarily once per user prompt. The hook stores a digest rather than the prompt text. Identical consecutive prompts are treated as one turn; change the wording to start a distinct turn. Put `Manager work approval: <link>` on its own line in the user prompt for direct work. Without it, native edits (`write_to_file`, `replace_file_content`, `multi_replace_file_content`) are blocked except in the Claude memory path, `generate_image` and mutating `run_command` calls are blocked, and the sixth counted work call is denied. Only matched tools count, including the native read tools covered by the installer. Manager CI-log downloads are blocked even with work approval.
 
 The workspace hook enforces shared T3 thread, watch, scheduling, and [browser rules](#t3-bot-browser-profiles) on the tools it matches under `mcp_t3-code_`. Workers cannot launch, configure, or create T3 threads. The hook does not map Claude's native wakeup tools, `PostToolUse` Worker-model observation, or `Stop` question check. Native Antigravity browser calls, other MCP server names, and any tools outside the workspace matcher are not covered.
 

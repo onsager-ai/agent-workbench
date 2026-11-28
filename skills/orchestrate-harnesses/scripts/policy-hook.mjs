@@ -27,7 +27,7 @@ const SCHEDULE_TASK = "New schedule_task calls are unavailable because the curre
   "A Claude Manager or an enrolled Antigravity Manager can create or re-enable a schedule that matches an entry in policy.schedules. Identified schedules can be paused.";
 const BROWSER_TOOL = /^mcp__t3_code(?:_direct)?__(preview_.+|t3_preview_.+)$/;
 const BROWSER_MANAGER = "Browser tools other than status require a Claude Manager main loop with valid turn state.";
-const AGY_EDITS = new Set(["write_to_file", "replace_file_content", "multi_replace_file_content"]);
+const AGY_EDITS = new Set(["write_to_file", "replace_file_content", "multi_replace_file_content", "generate_image"]);
 const AGY_SUBAGENTS = new Set(["invoke_subagent", "define_subagent", "swarm", "run_workflow"]);
 const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
 const OBSERVATION_COUNT_EXEMPT = /^mcp__t3[-_]code__(?:t3_thread_list|t3_thread_read|t3_thread_search|t3_environment_links)$/;
@@ -955,10 +955,11 @@ async function antigravityManager(thread) {
     const db = new DatabaseSync(path.join(home, "userdata", "statev2.sqlite"), { readOnly: true });
     try {
       const row = db.prepare(`
-        SELECT json_extract(payload_json, '$.lineage.relationshipToParent') AS rel
+        SELECT json_type(payload_json, '$.lineage') AS lineage,
+               json_type(payload_json, '$.lineage.relationshipToParent') AS relationship
         FROM orchestration_v2_projection_threads WHERE thread_id = ? LIMIT 1
       `).get(thread);
-      return row?.rel === null;
+      return row?.lineage === "object" && row.relationship === "null";
     } finally {
       db.close();
     }
@@ -1140,6 +1141,7 @@ async function main() {
   });
   let decision = null;
   let reason = null;
+  let agyRoleResolved = false;
   try {
     let event = JSON.parse(fs.readFileSync(0, "utf8"));
     if (!isDict(event)) return;
@@ -1157,6 +1159,7 @@ async function main() {
       if (tool === "mcp__t3_code__delegate_task" && !isDict(args.target)) args.target = {};
       const thread = process.env.T3CODE_THREAD_ID?.trim();
       agyManager = await antigravityManager(thread);
+      agyRoleResolved = true;
       if (agyManager) {
         // Hash the prompt and thread separately; neither raw prompts nor paths from IDs go on disk.
         const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
@@ -1331,7 +1334,9 @@ async function main() {
     }
     const isEdit = agy ? AGY_EDITS.has(tool) : ["Edit", "Write", "NotebookEdit", "MultiEdit"].includes(tool);
     if (enforceManager && !decision && isEdit) {
-      const filePath = agy ? dict(args).TargetFile : dict(args).file_path ?? dict(args).notebook_path;
+      // Image generation names its output but does not expose a TargetFile for the memory exception.
+      const filePath = agy ? (tool === "generate_image" ? undefined : dict(args).TargetFile)
+        : dict(args).file_path ?? dict(args).notebook_path;
       if (!isMemoryEdit(filePath, agy ? event.cwd || process.cwd() : process.cwd())) {
         decision = "deny";
         reason = managerGateReason(`${tool} to ${filePath || "a file"}`, stateFile);
@@ -1371,6 +1376,7 @@ async function main() {
       if (reason) decision = "deny";
     }
   } catch {
+    if (agyRoleResolved) emitPreToolUse("deny", "Could not evaluate the Antigravity tool policy.");
     return;
   }
   if (agy) emitPreToolUse(decision ? "deny" : "allow", reason);
