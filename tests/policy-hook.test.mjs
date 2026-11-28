@@ -1546,6 +1546,15 @@ describe("policy hook", () => {
       assert.deepEqual(workerCall(writer, shell(shellWrites[0])), { decision: "allow" });
     });
 
+    test("read-only Antigravity Workers cannot run unparseable shell commands", () => {
+      const readOnly = { ...env, T3CODE_THREAD_ID: child };
+      const run = (CommandLine) => antigravity({ name: "run_command", args: { CommandLine } }, readOnly);
+      const result = run("cat > f <<EOF\nit's\nEOF");
+      assert.equal(result.decision, "deny");
+      assert.match(result.reason, readOnlyDenial);
+      assert.deepEqual(run("git status"), { decision: "allow" });
+    });
+
     test("T3-delegated Claude and Codex sessions can resolve tier without native subagent fields", () => {
       const hookEnv = { ...process.env, ...env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") };
       const session_id = "t3-child";
