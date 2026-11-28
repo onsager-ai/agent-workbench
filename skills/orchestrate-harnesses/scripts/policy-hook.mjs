@@ -942,6 +942,7 @@ function policyStateDirectory() {
 }
 
 const isSessionId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value);
+const isT3ThreadId = (value) => typeof value === "string" && value.length > 0 && value === value.trim();
 
 function appendDenial(host, tool, rule, role, cwd) {
   try {
@@ -966,18 +967,16 @@ function managerStatePath(event) {
 // Codex 0.172 includes these markers on UserPromptSubmit and PreToolUse for spawned agents.
 const topLevelCodex = (event) => isSessionId(event.session_id) && event.agent_id == null && event.agent_type == null;
 
-function enrolledCodexManager(event) {
-  if (!topLevelCodex(event)) return false;
+function codexManagerEnrolment() {
   try {
-    const { sessions } = JSON.parse(fs.readFileSync(path.join(policyStateDirectory(), "codex-managers.json"), "utf8"));
-    return Array.isArray(sessions) && sessions.every(isSessionId) && sessions.includes(event.session_id);
+    return JSON.parse(fs.readFileSync(path.join(policyStateDirectory(), "codex-managers.json"), "utf8"));
   } catch {
-    return false;
+    return undefined;
   }
 }
 
-async function t3Thread(thread) {
-  if (!thread) return undefined;
+async function t3Thread(id, { byCodexSession = false } = {}) {
+  if (!id) return undefined;
   try {
     const home = process.env.T3CODE_HOME || path.join(os.homedir(), ".t3");
     const file = path.join(home, "userdata", "statev2.sqlite");
@@ -986,13 +985,20 @@ async function t3Thread(thread) {
     const db = new DatabaseSync(file, { readOnly: true });
     try {
       return db.prepare(`
-        SELECT json_type(payload_json, '$.lineage') AS lineage,
+        SELECT thread_id AS threadId,
+               json_type(payload_json, '$.lineage') AS lineage,
                json_type(payload_json, '$.lineage.relationshipToParent') AS relationshipType,
                json_extract(payload_json, '$.lineage.relationshipToParent') AS relationship,
                json_extract(payload_json, '$.providerInstanceId') AS providerInstanceId,
                json_extract(payload_json, '$.modelSelection.model') AS model
-        FROM orchestration_v2_projection_threads WHERE thread_id = ? LIMIT 1
-      `).get(thread);
+        FROM orchestration_v2_projection_threads
+        WHERE thread_id = ${byCodexSession ? `(
+          SELECT thread_id FROM orchestration_v2_projection_provider_threads
+          WHERE driver = 'codex' AND owner_node_id IS NULL
+            AND json_extract(payload_json, '$.nativeThreadRef.nativeId') = ?
+        )` : "?"}
+        LIMIT 1
+      `).get(id);
     } finally {
       db.close();
     }
@@ -1001,13 +1007,13 @@ async function t3Thread(thread) {
   }
 }
 
-const topLevelAntigravity = (row) => row?.lineage === "object" && row.relationshipType === "null";
+const topLevelT3Thread = (row) => row?.lineage === "object" && row.relationshipType === "null";
 
 function antigravityManager(thread, row) {
-  if (!topLevelAntigravity(row)) return false;
+  if (!topLevelT3Thread(row)) return false;
   try {
     const { threads } = JSON.parse(fs.readFileSync(path.join(policyStateDirectory(), "antigravity-managers.json"), "utf8"));
-    return Array.isArray(threads) && threads.every((id) => typeof id === "string" && id && id === id.trim()) &&
+    return Array.isArray(threads) && threads.every(isT3ThreadId) &&
       threads.includes(thread);
   } catch {
     return false;
@@ -1306,7 +1312,7 @@ async function main() {
       agyThread = await t3Thread(thread);
       agyManager = antigravityManager(thread, agyThread);
       agyRoleResolved = true;
-      if (!agyManager && topLevelAntigravity(agyThread)) {
+      if (!agyManager && topLevelT3Thread(agyThread)) {
         enrolmentHint = "This top-level Antigravity thread is not enrolled as a Manager, so Worker rules apply. " +
           `To use Manager rules, ask the harness owner to enrol thread ${thread}.`;
       }
@@ -1327,10 +1333,20 @@ async function main() {
       };
     }
     const stateFile = agy ? agyStateFile : managerStatePath(event);
-    const codexManager = codex && enrolledCodexManager(event);
-    if (codex && !codexManager && topLevelCodex(event)) {
+    const codexTopLevel = codex && topLevelCodex(event);
+    const enrolment = codexTopLevel ? codexManagerEnrolment() : undefined;
+    const sessions = enrolment?.sessions;
+    const threads = enrolment?.threads;
+    const sessionEnrolled = Array.isArray(sessions) && sessions.every(isSessionId) && sessions.includes(event.session_id);
+    const codexThread = codexTopLevel && !sessionEnrolled ? await t3Thread(event.session_id, { byCodexSession: true }) : undefined;
+    const threadEnrolled = topLevelT3Thread(codexThread) && Array.isArray(threads) && threads.every(isT3ThreadId) &&
+      threads.includes(codexThread.threadId);
+    const codexManager = sessionEnrolled || threadEnrolled;
+    if (codexTopLevel && !codexManager && (!codexThread || topLevelT3Thread(codexThread))) {
       enrolmentHint = "This top-level Codex session is not enrolled as a Manager. " +
-        `To use Manager rules, ask the harness owner to enrol session ${event.session_id}.`;
+        "To use Manager rules, ask the harness owner to " + (codexThread
+          ? `enrol T3 thread ${codexThread.threadId} under threads in codex-managers.json.`
+          : `enrol session ${event.session_id}.`);
     }
     if (event.hook_event_name === "UserPromptSubmit") {
       if (codexManager || (host === "claude" && event.agent_id == null)) {

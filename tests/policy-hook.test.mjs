@@ -1866,14 +1866,40 @@ describe("policy hook", () => {
     const policyDir = () => path.join(directory, "state", "agent-workbench");
     const enrolmentFile = () => path.join(policyDir(), "codex-managers.json");
     const stateFile = (session) => path.join(policyDir(), "manager-turns", `${session}.json`);
-    function enrol(...sessions) {
+    function writeEnrolment(enrolment) {
       fs.mkdirSync(policyDir(), { recursive: true });
-      fs.writeFileSync(enrolmentFile(), JSON.stringify({ sessions }));
+      fs.writeFileSync(enrolmentFile(), JSON.stringify(enrolment));
+    }
+    const enrol = (...sessions) => writeEnrolment({ sessions });
+    const t3Home = () => path.join(directory, "t3");
+    function mapCodexSessions(thread, lineage, sessions) {
+      const file = path.join(t3Home(), "userdata/statev2.sqlite");
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const db = new DatabaseSync(file);
+      try {
+        db.exec(`
+          CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL);
+          CREATE TABLE orchestration_v2_projection_provider_threads (
+            thread_id TEXT NOT NULL, driver TEXT NOT NULL, owner_node_id TEXT, payload_json TEXT NOT NULL
+          );
+        `);
+        db.prepare("INSERT INTO orchestration_v2_projection_threads VALUES (?, ?)").run(thread, JSON.stringify({ lineage }));
+        const insert = db.prepare("INSERT INTO orchestration_v2_projection_provider_threads VALUES (?, 'codex', NULL, ?)");
+        for (const nativeId of sessions) insert.run(thread, JSON.stringify({ nativeThreadRef: { nativeId } }));
+      } finally {
+        db.close();
+      }
     }
 
     const event = (hook_event_name, session_id, details) => codex({
       hook_event_name, session_id, turn_id: "turn-1", ...details,
-    }, { ...process.env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") });
+    }, {
+      ...process.env,
+      AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state"),
+      T3CODE_HOME: t3Home(),
+      T3CODE_THREAD_ID: "",
+      NODE_OPTIONS: "--disable-warning=ExperimentalWarning",
+    });
     const prompt = (session, text = "Plan and delegate.", details) => event("UserPromptSubmit", session, { prompt: text, ...details });
     const tool = (session, tool_name, tool_input = {}, details) => event("PreToolUse", session, { tool_name, tool_input, ...details });
     const bash = (session, command, details) => tool(session, "Bash", { command }, details);
@@ -1926,6 +1952,46 @@ describe("policy hook", () => {
       assert.deepEqual(JSON.parse(fs.readFileSync(stateFile("manager"), "utf8")), {
         worker: false, approved: true, count: 0, turn: "turn-1",
       });
+    });
+
+    test("Codex thread enrolment follows native session restarts", () => {
+      const thread = "mcp:launch:example-manager";
+      const sessions = ["native-first", "native-restart"];
+      mapCodexSessions(thread, { relationshipToParent: null }, sessions);
+      writeEnrolment({ threads: [thread] });
+      prompt(sessions[0], APPROVED, { agent_type: "worker" });
+      assert.ok(!fs.existsSync(stateFile(sessions[0])));
+      for (const session of sessions) {
+        prompt(session);
+        assert.equal(JSON.parse(fs.readFileSync(stateFile(session), "utf8")).turn, "turn-1");
+        assert.match(patch(session).permissionDecisionReason, /Manager work approval/);
+      }
+    });
+
+    test("Codex thread enrolment excludes a T3 subagent even without native worker markers", () => {
+      const thread = "thread:delegated-task:child";
+      mapCodexSessions(thread, { relationshipToParent: "subagent" }, ["native-child"]);
+      writeEnrolment({ threads: [thread] });
+      prompt("native-child", APPROVED);
+      assert.ok(!fs.existsSync(stateFile("native-child")));
+      assert.equal(patch("native-child"), null);
+    });
+
+    test("missing T3 database leaves legacy Codex session enrolment working", () => {
+      writeEnrolment({ sessions: ["legacy-manager"], threads: ["mcp:launch:example-manager"] });
+      prompt("native-unmapped", APPROVED);
+      assert.ok(!fs.existsSync(stateFile("native-unmapped")));
+      assert.equal(patch("native-unmapped"), null);
+      prompt("legacy-manager");
+      assert.equal(JSON.parse(fs.readFileSync(stateFile("legacy-manager"), "utf8")).turn, "turn-1");
+    });
+
+    test("unenrolled native Codex denial names the mapped T3 thread", () => {
+      const thread = "mcp:launch:example-unenrolled";
+      mapCodexSessions(thread, { relationshipToParent: null }, ["native-unenrolled"]);
+      const denial = tool("native-unenrolled", "mcp__t3_code__watch_pull_request", { repository: "org/project", number: 1 });
+      assert.equal(denial.permissionDecision, "deny");
+      assert.ok(denial.permissionDecisionReason.endsWith(`enrol T3 thread ${thread} under threads in codex-managers.json.`));
     });
 
     test("enrolled Codex Managers exempt delegation lifecycle calls from the work count", () => {
@@ -2006,7 +2072,7 @@ describe("policy hook", () => {
         { host: "codex", tool: name, rule: "unknown-automation", role: "unknown" },
         { host: "codex", tool: name, rule: "worker-automation", role: "worker" },
       ]);
-      assert.equal(entries[0].lane, process.env.T3CODE_THREAD_ID?.trim() || "test-lane");
+      assert.equal(entries[0].lane, "test-lane");
     });
 
     test("enrolled Codex Managers can use counted one-shot GitHub reads without approval", () => {
