@@ -235,7 +235,7 @@ describe("policy hook", () => {
     assert.equal(preview(session, "status"), null);
   });
 
-  test("Codex and Antigravity deny browser calls other than status", () => {
+  test("Codex denies browser calls other than status", () => {
     const session_id = "browser-other-hosts";
     browserPrompt(session_id, `${APPROVED}\n${BROWSER_TASK}`);
     const env = { ...process.env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") };
@@ -244,8 +244,6 @@ describe("policy hook", () => {
       const input = { tabId: "owner-tab", url: BOT_URL };
       const codex = run(JSON.stringify({ session_id, tool_name, tool_input: input }), { args: ["--host", "codex"], env });
       assert.equal(codex.stdout ? JSON.parse(codex.stdout).hookSpecificOutput.permissionDecision : null, allow ? null : "deny");
-      const antigravity = run(JSON.stringify({ toolCall: { name: tool_name, args: input } }), { args: ["--host", "antigravity"] });
-      assert.equal(JSON.parse(antigravity.stdout).decision, allow ? "allow" : "deny");
     }
   });
 
@@ -1324,12 +1322,110 @@ describe("policy hook", () => {
     assertAllowed("git push -u origin HEAD", feature);
   });
 
+  const antigravity = (toolCall, env) => {
+    const result = run(JSON.stringify({ toolCall }), { env, args: ["--workers", workers, "--host", "antigravity", "--extra", "forwarded"] });
+    return result.stdout ? JSON.parse(result.stdout) : null;
+  };
+
+  test("Antigravity resolves shipped non-provider tiers like other hosts but denies unknown models", () => {
+    const task = "Review this change.";
+    const sonnet = bundle.profiles.codex.tiers.sonnet.model;
+    const delegate = (target) => antigravity({ name: "mcp_t3-code_delegate_task", args: { task, target } });
+    for (const target of [
+      { providerInstanceId: "codex", model: "gpt-6-luna" },
+      { providerInstanceId: "codex", model: "luna" },
+      { providerInstanceId: "codex", model: "example-provider/gpt-6-luna[1m]" },
+      { providerInstanceId: "claudeAgent", model: sonnet },
+    ]) {
+      assert.deepEqual(delegate(target), { decision: "allow", overwrite: { task: `Role: Worker\n${task}` } });
+    }
+    const denied = delegate({ providerInstanceId: "codex", model: "unlisted" });
+    assert.equal(denied.decision, "deny");
+    assert.match(denied.reason, /match a configured Worker tier/);
+    assert.equal(denied.overwrite, undefined);
+  });
+
+  test("Antigravity stamps exact T3 delegation and ignores toolSummary", () => {
+    bundle.profile = null;
+    bundle.base.tiers.remote = { provider: "example-provider", model: "catalog/example-model", access: "read-only" };
+    bundle.base.ladder[0].tiers.push("remote");
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    const target = { providerInstanceId: "example-provider", model: "catalog/example-model" };
+    const delegate = (args) => antigravity({ name: "mcp_t3-code_delegate_task", args: { task: "Review this change.", target, ...args } });
+    const stamped = "Role: Worker\nThis Worker is read-only: no file edits, commits, pushes, PRs, or state changes.\nReview this change.";
+    const allow = { decision: "allow", overwrite: { task: stamped } };
+    assert.deepEqual(delegate({}), allow);
+    assert.deepEqual(delegate({ toolSummary: "Reviewing the change" }), allow);
+    assert.deepEqual(delegate({ task: stamped }), { decision: "allow" });
+    for (const unmatched of [{ ...target, model: "unlisted" }, { model: "unlisted" }, { ...target, providerInstanceId: "other-provider" }]) {
+      const denied = delegate({ target: unmatched });
+      assert.equal(denied.decision, "deny");
+      assert.match(denied.reason, unmatched.providerInstanceId === target.providerInstanceId
+        ? /exactly match a configured Worker model/ : /match a configured Worker tier/);
+      assert.equal(denied.overwrite, undefined);
+    }
+    assert.match(delegate({ target: { model: target.model } }).reason, /Set target\.providerInstanceId/);
+    assert.match(delegate({ isolation: "worktree" }).reason, /does not allow worktree isolation/);
+  });
+
+  test("Antigravity delegation keeps ladder approval separate from toolSummary", () => {
+    bundle.profile = null;
+    bundle.base.tiers.remote = { provider: "example-provider", model: "catalog/example-model", stamp: "Only edit assigned files." };
+    bundle.base.ladder[2].tiers.push("remote");
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    const approval = "L3 approval: https://example.test/approval";
+    const delegate = (task) => antigravity({ name: "mcp_t3-code_delegate_task", args: {
+      task, target: { providerInstanceId: "example-provider", model: "catalog/example-model" }, toolSummary: approval,
+    } });
+    const denied = delegate("Fix this issue.");
+    assert.equal(denied.decision, "deny");
+    assert.match(denied.reason, /needs the user's approval/);
+    const task = `Fix this issue.\n${approval}`;
+    assert.deepEqual(delegate(task), { decision: "allow", overwrite: { task: `Role: Worker\nOnly edit assigned files.\n${task}` } });
+    bundle.base.ladder[2].tiers.pop();
+    assert.ok(!bundle.base.tiers.remote.opt_in);
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    assert.match(delegate("Fix this issue.").reason, /not in the ladder/);
+    bundle.base.tiers.remote.opt_in = true;
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    assert.deepEqual(delegate("Fix this issue."), {
+      decision: "allow", overwrite: { task: "Role: Worker\nOnly edit assigned files.\nFix this issue." },
+    });
+  });
+
+  test("Antigravity overwrites only the message for a stampable T3 send", () => {
+    const env = t3Env("thread-12345678");
+    const send = (message, hookEnv) => antigravity({ name: "mcp_t3-code_t3_thread_send", args: {
+      threadId: "peer", mode: "auto", message, toolSummary: "Sending an update",
+    } }, hookEnv);
+    const message = "Done.\n-- WB_MSG kind=result re=previous";
+    const result = send(message, env);
+    assert.match(result.overwrite.message,
+      /^Done\.\n-- WB_MSG from=env-1\/thread-12345678 kind=result sent=\S+ id=12345678:1 re=previous$/);
+    assert.deepEqual(result, { decision: "allow", overwrite: { message: result.overwrite.message } });
+    assert.deepEqual(send("No footer.", env), { decision: "allow" });
+    assert.deepEqual(send(message, { ...env, T3CODE_THREAD_ID: "" }), { decision: "allow" });
+    fs.writeFileSync(path.join(directory, "wbmsg", "thread-12345678.seq"), "invalid counter");
+    assert.equal(send(message, env), null, "internal hook errors emit no decision");
+  });
+
+  test("Antigravity denies only the targeted native delegation tools", () => {
+    for (const name of ["invoke_subagent", "define_subagent", "swarm", "run_workflow"]) {
+      const result = antigravity({ name, args: {} });
+      assert.equal(result.decision, "deny", name);
+      assert.match(result.reason, /skip the Worker ladder; dispatch Workers with T3 delegate_task/);
+    }
+    for (const name of ["manage_subagents", "mcp_t3-code_pull_request_read"]) {
+      assert.deepEqual(antigravity({ name, args: { toolSummary: "Checking status" } }), { decision: "allow" });
+    }
+  });
+
+  test("Antigravity retains empty successful output on invalid hook JSON", () => {
+    assert.equal(run("{invalid", { args: ["--host", "antigravity"] }).stdout, "");
+  });
+
   test("Antigravity PreToolUse adapter shares Bash classification without role metadata", () => {
     assert.ok(fs.statSync(HOOK).mode & 0o111, "the configured hook entry point must be executable");
-    const antigravity = (toolCall) => {
-      const result = run(JSON.stringify({ toolCall }), { args: ["--workers", workers, "--host", "antigravity", "--extra", "forwarded"] });
-      return result.stdout ? JSON.parse(result.stdout) : null;
-    };
     assert.deepEqual(antigravity({ name: "run_command", args: { CommandLine: "gh run watch 123" } }), {
       decision: "deny", reason: "GitHub polling is disabled. Use watch_pull_request and the single-call status reads in orchestrate-harnesses' GitHub API budget section.",
     });
