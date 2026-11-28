@@ -69,6 +69,8 @@ Known limits: there are no read receipts, and the send result (steered, started 
 
 ### What goes to the Chief PM
 
+Send harness issues to the harness owner named in personal configuration (peers or team policy): wrong denials with the exact denial text, unclear rules, missing routes, and harness-caused stuck turns. If no harness owner is named, send them to the Chief PM or the user.
+
 When a Chief PM Manager is registered, message it only for a decision you need from it or the owner, a blocker you can't clear, a lane alert, or the result of a request it made. Don't send it plain status or information; it reads your lane status from your thread ([lane status](#lane-status-and-alerts)). Put one ask in each message, with your recommendation.
 
 Decide calls inside your own lane yourself when they spend no new money and touch none of the owner's reserved items: spend and caps, public posts, credentials and permissions, deletes, Caddy, Cloudflare or tailnet changes, product direction, and customer-facing releases. Note each such decision in your next status. No answer by a deadline is never approval; keep waiting, or ask again once.
