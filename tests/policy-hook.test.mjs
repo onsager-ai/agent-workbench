@@ -1780,6 +1780,17 @@ describe("policy hook", () => {
     }
   });
 
+  test("Claude Managers delegate shell commands when redirect parsing fails", () => {
+    const session = "manager-shell-parse";
+    for (const command of ["cat > f <<EOF\nit's\nEOF", `echo "unfinished > f`]) {
+      const result = browserCall(session, "Bash", { command });
+      assert.equal(result.permissionDecision, "deny", command);
+      assert.match(result.permissionDecisionReason, /changes files or state/, command);
+    }
+    assert.equal(browserCall(session, "Bash", { command: `grep "it's" f` }), null);
+    assert.equal(browserCall(session, "Bash", { command: "gh run view 123 --log-failed" }), null);
+  });
+
   test("Claude Manager shell writes may redirect only to project memory or /dev/null", () => {
     const memory = path.join(os.homedir(), ".claude/projects/p with spaces/memory/MEMORY.md");
     const homeRelative = "~/" + shellQuote(path.relative(os.homedir(), memory));

@@ -1184,7 +1184,9 @@ function mutatingBash(command, allowMemoryRedirect = false) {
   try {
     if (hasOutputRedirect(shlex(command, true, true), allowMemoryRedirect)) return true;
     commands = shellCommands(command);
-  } catch { return false; }
+  } catch {
+    return null; // A parse failure cannot establish that the command is read-only.
+  }
   for (const words of commands) {
     const [argv] = gitCommand(words);
     if (argv && MUTATING_GIT.has(argv[0])) return true;
@@ -1510,7 +1512,8 @@ async function main() {
         reason = managerGateReason(`${tool} to ${filePath || "a file"}`, stateFile);
       }
     }
-    if (enforceManager && !decision && isShell && shellWrite && (host !== "claude" || mutatingBash(shellCommand, true))) {
+    if (enforceManager && !decision && isShell && shellWrite !== false &&
+        (host !== "claude" || mutatingBash(shellCommand, true) !== false)) {
       decision = "deny";
       rule = RULE.managerShellWrite;
       reason = managerGateReason("A Bash command that changes files or state", stateFile);
