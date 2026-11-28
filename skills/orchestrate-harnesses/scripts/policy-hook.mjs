@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { CONFIG_MISSING, delegateTier, recentT3MessagesFrom, resolvePath, selectWorkerProfile, t3Thread, topLevelT3Thread, t3WorkerTier } from "./worker-context.mjs";
+import { CONFIG_MISSING, delegateTier, resolvePath, selectWorkerProfile, t3Thread, topLevelT3Thread, t3WorkerTier } from "./worker-context.mjs";
 
 const APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).";
 const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task branch, origin/main, " +
@@ -197,6 +197,8 @@ function nextSequence(stateDir, thread) {
   });
 }
 
+const footerIdPrefix = (thread) => `${thread.slice(-8)}:`;
+
 function stampFooter(args, stateDir) {
   const message = dict(args).message;
   if (typeof message !== "string") return null;
@@ -209,7 +211,7 @@ function stampFooter(args, stateDir) {
   const [environment, thread] = identity;
   const sent = new Date().toISOString().slice(0, 16) + "Z";
   const footer = `-- WB_MSG from=${environment}/${thread} kind=${fields.kind ?? "decision"} sent=${sent} ` +
-    `id=${thread.slice(-8)}:${nextSequence(stateDir, thread)} re=${fields.re ?? "none"}`;
+    `id=${footerIdPrefix(thread)}${nextSequence(stateDir, thread)} re=${fields.re ?? "none"}`;
   return { ...args, message: message.slice(0, last.index) + footer + message.slice(last.index + last[0].length) };
 }
 
@@ -223,23 +225,17 @@ function finalFooter(message) {
   if (entries.length === Object.keys(fields).length) return fields;
 }
 
-async function chiefInboxBlocks(workers, input) {
+function chiefInboxBlocks(workers, input) {
   if (!workers || typeof input?.threadId !== "string") return false;
   let chief;
   try { chief = JSON.parse(fs.readFileSync(workers, "utf8")).base.policy.chief_pm; } catch { return false; }
   if (!chief || input.threadId.trim() !== chief.thread) return false;
-  const identity = t3Identity();
-  const targetEnvironment = (typeof input.environmentId === "string" && input.environmentId.trim()) || identity?.[0];
+  const targetEnvironment = (typeof input.environmentId === "string" && input.environmentId.trim()) || t3Identity()?.[0];
   if (targetEnvironment !== chief.environment) return false;
   const footer = finalFooter(input.message);
   if (["decision-request", "blocked", "alert"].includes(footer?.kind)) return false;
-  if (footer?.kind !== "result" || !footer.re || footer.re === "none" || !identity?.[1]) return true;
-  const [environment, thread] = identity;
-  const requests = await recentT3MessagesFrom(thread, environment, chief);
-  return !requests?.some(({ text }) => {
-    const request = finalFooter(text);
-    return ["request", "decision-request"].includes(request?.kind) && request.id === footer.re;
-  });
+  const prefix = footerIdPrefix(chief.thread);
+  return !(footer?.kind === "result" && footer.re?.startsWith(prefix) && /^[1-9]\d*$/.test(footer.re.slice(prefix.length)));
 }
 
 // Port of Python shlex (posix mode, punctuation_chars=";|&()\n", whitespace " \t\r", commenters "#").
@@ -1680,9 +1676,9 @@ async function main() {
     }
     if (!decision && typeof tool === "string" && tool.endsWith("t3_thread_send")) {
       if (mainLoop && !workerContext && /^(?:mcp__t3_code(?:_direct)?__)?t3_thread_send$/.test(normalizedTool) &&
-          await chiefInboxBlocks(workers, args)) {
+          chiefInboxBlocks(workers, args)) {
         emitPreToolUse("deny", "Chief PM requires a final WB_MSG footer with kind=decision-request, kind=blocked, kind=alert, " +
-          "or kind=result replying to a verified Chief PM request. Record routine status and heartbeats in Ostrom or your own thread.", RULE.chiefInbox);
+          "or kind=result with re in Chief PM's WB_MSG ID format. Record routine status and heartbeats in Ostrom or your own thread.", RULE.chiefInbox);
         return;
       }
       const stamped = stampFooter(args, workers ? path.dirname(workers) : null);

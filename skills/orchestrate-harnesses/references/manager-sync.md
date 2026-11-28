@@ -81,7 +81,7 @@ Known limits: there are no read receipts, and the send result (steered, started 
 
 Send harness issues to the harness owner named in personal configuration (peers or team policy): wrong denials with the exact denial text, unclear rules, missing routes, and harness-caused stuck turns. If no harness owner is named, send them to the Chief PM or the user.
 
-When a Chief PM Manager is registered, use exactly one final `WB_MSG` footer for sends to that inbox. Use `kind=decision-request` for one decision you need from Chief PM or the owner and include your recommendation. Use `kind=blocked` for a blocker you cannot clear and `kind=alert` for a lane alert. Use `kind=result` with the request's exact `re` ID only when answering a request Chief PM sent to your thread. The hook checks the sender recorded by T3 in the recipient's recent local inbox, up to the latest 100 user messages. If the request cannot be verified, record the result in your own thread.
+When a Chief PM Manager is registered, use exactly one final `WB_MSG` footer for sends to that inbox. Use `kind=decision-request` for one decision you need from Chief PM or the owner and include your recommendation. Use `kind=blocked` for a blocker you cannot clear and `kind=alert` for a lane alert. When answering a Chief PM request, use `kind=result` and copy the request's exact `id` to `re`. The hook checks the ID format against the registered Chief PM thread. Confirm the original request before replying.
 
 Publish routine lane status and heartbeats in Ostrom. Keep your own thread current for handover. Apply the same routing on scheduled Manager turns.
 
