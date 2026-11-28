@@ -102,7 +102,7 @@ For an exception limited to one target and model, set `policy.manager_model_pair
 
 ### Chief PM inbox
 
-Set `policy.chief_pm: {environment: example-env, thread: example-thread}` in the base private `workers.yml` and rerun `agent-workbench install`. A Manager's `t3_thread_send` to that exact T3 environment and thread requires a single final `WB_MSG` footer with `kind=decision-request`, `kind=blocked`, or `kind=alert`. For `kind=result`, the hook checks that `re` has the registered Chief PM thread's last eight characters, a colon, and a positive decimal ordinal. Copy the ID from the original request. The hook checks syntax without opening message history. Scheduled turns use the same rule. Send routine lane status and heartbeats to Ostrom.
+Set `policy.chief_pm: {environment: example-env, thread: example-thread}` in the base private `workers.yml` and rerun `agent-workbench install`. A Manager's `t3_thread_send` to that exact T3 environment and thread requires a single final `WB_MSG` footer with `kind=decision-request`, `kind=blocked`, or `kind=alert`. For `kind=result`, the hook checks that `re` has the registered Chief PM thread's last eight characters, a colon, and a positive decimal ordinal. Copy the ID from the original request. The hook checks syntax without opening message history. Scheduled turns use the same rule. Post routine lane status and heartbeats in your own thread, where Ostrom and Chief PM read them.
 
 The hook covers the matched T3 send tools, including the Codex direct alias once its new hook is trusted. It does not cover human messages, attachment sends, or changes to already queued messages.
 

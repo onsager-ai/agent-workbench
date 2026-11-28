@@ -1678,7 +1678,7 @@ async function main() {
       if (mainLoop && !workerContext && /^(?:mcp__t3_code(?:_direct)?__)?t3_thread_send$/.test(normalizedTool) &&
           chiefInboxBlocks(workers, args)) {
         emitPreToolUse("deny", "Chief PM requires a final WB_MSG footer with kind=decision-request, kind=blocked, kind=alert, " +
-          "or kind=result with re in Chief PM's WB_MSG ID format. Record routine status and heartbeats in Ostrom or your own thread.", RULE.chiefInbox);
+          "or kind=result with re in Chief PM's WB_MSG ID format. Post routine lane status and heartbeats in your own thread.", RULE.chiefInbox);
         return;
       }
       const stamped = stampFooter(args, workers ? path.dirname(workers) : null);

@@ -115,7 +115,7 @@ describe("policy hook", () => {
     for (const message of [status, "Digest without a footer.", "Digest.\n-- WB_MSG kind=decision",
       "Ambiguous.\n-- WB_MSG kind=alert kind=status", "Digest.\n-- WB_MSG kind=alert\nFurther status.",
       "Digest.\n-- WB_MSG kind=alert\n-- WB_MSG kind=status", "-- WB_MSG kind=alert"]) {
-      assert.match(call(message).permissionDecisionReason, /in Ostrom or your own thread/, message);
+      assert.match(call(message).permissionDecisionReason, /in your own thread/, message);
     }
     assert.match(call(status, { threadId: "another-thread" }).updatedInput.message, /kind=status/);
     assert.match(call(status, { environmentId: "another-env" }).updatedInput.message, /kind=status/);
@@ -2679,13 +2679,13 @@ describe("policy hook", () => {
       for (const sendTool of ["mcp__t3_code__t3_thread_send", "mcp__t3_code_direct__t3_thread_send", "t3_thread_send"]) {
         const input = { environmentId: "chief-env", threadId: "chief-thread", mode: "queue" };
         const status = { ...input, message: "Scheduled heartbeat.\n\n-- WB_MSG kind=status" };
-        assert.match(tool(session, sendTool, status).permissionDecisionReason, /Ostrom/);
+        assert.match(tool(session, sendTool, status).permissionDecisionReason, /in your own thread/);
         assert.equal(tool("unmapped-session", sendTool, status), null);
         assert.equal(tool(session, sendTool, { ...input, message: "Service down.\n\n-- WB_MSG kind=alert" }), null);
       }
       fs.writeFileSync(path.join(t3Home(), "userdata/environment-id"), "chief-env\n");
       assert.match(tool(session, "mcp__t3_code__t3_thread_send", { threadId: "chief-thread",
-        message: "Scheduled heartbeat.\n\n-- WB_MSG kind=status" }).permissionDecisionReason, /Ostrom/);
+        message: "Scheduled heartbeat.\n\n-- WB_MSG kind=status" }).permissionDecisionReason, /in your own thread/);
     });
 
     test("delegate_task requires a model under the sanitized name", () => {

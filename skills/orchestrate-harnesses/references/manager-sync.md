@@ -83,7 +83,7 @@ Send harness issues to the harness owner named in personal configuration (peers 
 
 When a Chief PM Manager is registered, use exactly one final `WB_MSG` footer for sends to that inbox. Use `kind=decision-request` for one decision you need from Chief PM or the owner and include your recommendation. Use `kind=blocked` for a blocker you cannot clear and `kind=alert` for a lane alert. When answering a Chief PM request, use `kind=result` and copy the request's exact `id` to `re`. The hook checks the ID format against the registered Chief PM thread. Confirm the original request before replying.
 
-Publish routine lane status and heartbeats in Ostrom. Keep your own thread current for handover. Apply the same routing on scheduled Manager turns.
+Post routine lane status and heartbeats in your own thread, where Ostrom and Chief PM read them. Apply the same routing on scheduled Manager turns.
 
 Decide calls inside your own lane yourself when they spend no new money and touch none of the owner's reserved items: spend and caps, public posts, credentials and permissions, deletes, Caddy, Cloudflare or tailnet changes, product direction, and customer-facing releases. Note each such decision in your next status. No answer by a deadline is never approval; keep waiting, or ask again once.
 
@@ -101,7 +101,7 @@ After an exception, record the answer with its source link in your own thread. A
 
 ### Lane status and alerts
 
-When a Chief PM Manager is registered, each Manager keeps its lane status current in Ostrom and keeps a handover record in its own thread. Record one block per lane, each ending with a footer line `-- WB_MSG kind=status sent=<YYYY-MM-DDTHH:MMZ>`, in this form, with every field present:
+When a Chief PM Manager is registered, each Manager keeps its lane status and handover record current in its own thread. Record one block per lane, each ending with a footer line `-- WB_MSG kind=status sent=<YYYY-MM-DDTHH:MMZ>`, in this form, with every field present:
 
 ~~~text
 Lane: <project> · <scope>
