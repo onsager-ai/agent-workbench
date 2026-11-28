@@ -112,6 +112,8 @@ To create a schedule, use the entry's `name` as `title`, supply a nonblank `prom
 
 An optional `fresh_session` boolean defaults to `false`. If a create supplies `freshSession`, it must match that value. To let the same Manager re-enable a paused schedule, set the entry’s optional `task_id` to its T3 schedule ID and call with `scheduledTaskId` and `enabled: true`. The update may also include `environmentId` and a matching `freshSession`. Pause-only updates to identified schedules are unchanged.
 
+In a current Manager turn, the bound Manager can update an existing registered `interval` task's prompt with exactly `scheduledTaskId` and a nonblank `prompt`. Use the registered `task_id` and call from the bound thread in the local T3 environment. T3 keeps the stored interval, enabled state, and fresh-session setting.
+
 ### Hook denial log
 
 Each tool denial appends one JSON object to `<state root>/agent-workbench/denials/<YYYY-MM-DD>.jsonl`, using the UTC date. The state root is shared with `manager-turns` and comes from `AGENT_WORKBENCH_STATE_HOME`, then `XDG_STATE_HOME`, then `~/.local/state`. The fields are:

@@ -731,6 +731,7 @@ describe("policy hook", () => {
     const input = { title, prompt: "Check service health.", bindToCurrentThread: true, schedule: interval };
     const onceInput = { ...input, title: "One-time health check", schedule: once };
     const reenable = { scheduledTaskId: "task-1", enabled: true, freshSession: true };
+    const promptUpdate = { scheduledTaskId: "task-1", prompt: "Review the current health report." };
     const env = t3Env(thread);
     const tool_name = "mcp__t3-code__schedule_task";
     const direct = { tool_name: "mcp__t3_code_direct__schedule_task" };
@@ -748,6 +749,7 @@ describe("policy hook", () => {
     prompt("schedule-unconfigured");
     deny(call("schedule-unconfigured", input), "no schedule config");
     deny(call("schedule-unconfigured", onceInput), "no one-shot schedule config");
+    deny(call("schedule-unconfigured", promptUpdate), "no interval task registered");
     prompt("schedule-direct-worker", "Role: Worker\nDo the assigned work.");
     deny(call("schedule-direct-worker", input, direct), "unregistered direct Worker call");
     prompt("schedule-direct-pause");
@@ -766,6 +768,7 @@ describe("policy hook", () => {
     prompt("schedule-interval");
     assert.equal(call("schedule-interval", input), null);
     assert.equal(call("schedule-interval", { ...input, freshSession: true }), null);
+    assert.equal(call("schedule-interval", promptUpdate), null);
     assert.equal(JSON.parse(fs.readFileSync(path.join(managerTurns, "schedule-interval.json"), "utf8")).count, 0);
 
     prompt("schedule-no-environment-id");
@@ -813,6 +816,16 @@ describe("policy hook", () => {
       ["reenable-no-enable", { ...reenable, enabled: undefined }],
       ["reenable-invalid-environment", { ...reenable, environmentId: " " }],
       ["reenable-child", reenable, { agent_id: "worker-1" }],
+      ["prompt-update-wrong-thread", promptUpdate, {}, t3Env("wrong-thread")],
+      ["prompt-update-child", promptUpdate, { agent_id: "worker-1" }],
+      ["prompt-update-fixed-time", { ...promptUpdate, scheduledTaskId: "task-2" }],
+      ["prompt-update-unknown-task", { ...promptUpdate, scheduledTaskId: "other" }],
+      ["prompt-update-blank", { ...promptUpdate, prompt: " \n" }],
+      ["prompt-update-schedule", { ...promptUpdate, schedule: interval }],
+      ["prompt-update-fresh-session", { ...promptUpdate, freshSession: true }],
+      ["prompt-update-enable", { ...promptUpdate, enabled: true }],
+      ["prompt-update-pause", { ...promptUpdate, enabled: false }],
+      ["prompt-update-remote", { ...promptUpdate, environmentId: "env-1" }],
     ]) {
       const session = `schedule-${label}`;
       prompt(session);
@@ -822,6 +835,7 @@ describe("policy hook", () => {
     deny(call("schedule-worker", input), "Worker main loop");
     deny(call("schedule-worker", onceInput), "Worker main loop cannot create a one-shot schedule");
     deny(call("schedule-worker", reenable), "re-enable from Worker main loop");
+    deny(call("schedule-worker", promptUpdate), "prompt update from Worker main loop");
     deny(call("schedule-no-state", input), "missing state");
     deny(call("schedule-no-state", reenable), "re-enable with missing state");
     fs.writeFileSync(path.join(managerTurns, "schedule-invalid-state.json"), "not JSON");
@@ -1761,12 +1775,17 @@ describe("policy hook", () => {
       const schedule = { type: "interval", everyMs: 60000 };
       const input = { title: "Daily review", prompt: "Review updates.", schedule, bindToCurrentThread: true };
       const overlay = path.join(directory, "schedule-workers.yml");
-      fs.writeFileSync(overlay, JSON.stringify({ policy: { schedules: [{ name: input.title, thread: manager, schedule }] } }));
+      const promptUpdate = { scheduledTaskId: "interval-task", prompt: "Review the current health report." };
+      fs.writeFileSync(overlay, JSON.stringify({ policy: { schedules: [{
+        name: input.title, thread: manager, schedule, task_id: promptUpdate.scheduledTaskId,
+      }] } }));
       fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
       assert.deepEqual(antigravity(call("schedule_task", input), env), { decision: "allow" });
+      assert.deepEqual(antigravity(call("schedule_task", promptUpdate), env), { decision: "allow" });
       assert.equal(antigravity(call("schedule_task", { ...input, title: "Other review" }), env).decision, "deny");
       const worker = { ...env, T3CODE_THREAD_ID: child };
       assert.equal(antigravity(call("schedule_task", input), worker).decision, "deny");
+      assert.equal(antigravity(call("schedule_task", promptUpdate), worker).decision, "deny");
       assert.deepEqual(antigravity(call("schedule_task", { scheduledTaskId: "existing", enabled: false }), worker), { decision: "allow" });
     });
   });
@@ -2467,12 +2486,14 @@ describe("policy hook", () => {
       const reenable = { scheduledTaskId: "task-1", enabled: true };
       const fixedReenable = { ...reenable, scheduledTaskId: "task-2" };
       const intervalReenable = { ...reenable, scheduledTaskId: "task-3" };
+      const intervalPromptUpdate = { scheduledTaskId: "task-3", prompt: "Review the current health report." };
       const overlay = path.join(directory, "schedule-workers.yml");
       fs.writeFileSync(overlay, JSON.stringify({ policy: { schedules: [
         { name: input.title, thread, schedule, task_id: reenable.scheduledTaskId },
         { name: input.title, thread: workerThread, schedule, task_id: reenable.scheduledTaskId },
         { name: fixedInput.title, thread, schedule: fixedInput.schedule, task_id: fixedReenable.scheduledTaskId },
-        { name: intervalInput.title, thread, schedule: intervalInput.schedule, task_id: intervalReenable.scheduledTaskId },
+        { name: intervalInput.title, thread, schedule: intervalInput.schedule, task_id: intervalReenable.scheduledTaskId,
+          fresh_session: true },
       ] } }));
       fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
 
@@ -2493,10 +2514,13 @@ describe("policy hook", () => {
           assert.equal(tool(session, name, fixedReenable), null);
           assert.equal(tool(session, name, intervalInput)?.permissionDecision, "deny");
           assert.equal(tool(session, name, intervalReenable)?.permissionDecision, "deny");
+          assert.equal(tool(session, name, intervalPromptUpdate), null);
+          assert.equal(tool(session, name, { ...intervalPromptUpdate, freshSession: true })?.permissionDecision, "deny");
         }
+        assert.equal(JSON.parse(fs.readFileSync(stateFile(session), "utf8")).count, 0);
       };
       const denied = (session, details) => {
-        for (const payload of [input, reenable]) {
+        for (const payload of [input, reenable, intervalPromptUpdate]) {
           const decision = tool(session, tools[0], payload, details);
           assert.equal(decision?.permissionDecision, "deny", session);
           assert.match(decision.permissionDecisionReason, /policy\.schedules/);
