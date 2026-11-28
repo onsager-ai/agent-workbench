@@ -303,11 +303,13 @@ policy:
       expires_at: "2030-12-01T00:00:00Z"
 ```
 
-An eligible, write-capable T3 Worker child of the registered parent can call `agent-workbench ops run-once <job-id>` as a single foreground shell command. Use a unique ID and an absolute executable and working directory. The runner supplies the registered arguments and accepts only the ID from the Worker. Direct shell calls to `systemd-run` remain outside this route.
+An eligible, write-capable T3 Worker child of the registered parent can call `agent-workbench ops run-once <job-id>` as a single foreground shell command. Use a unique ID and an absolute executable and working directory. The registered working directory selects the Worker profile. The runner supplies the registered arguments and accepts only the ID from the Worker. Keep credentials out of the registered arguments because systemd exposes service command lines. Direct shell calls to `systemd-run` remain outside this route.
 
 The installed launcher requires Linux with a systemd user manager that supports transient `oneshot` services and an enforced cgroup v2 CPU quota. Quota is a whole percentage of one CPU, up to 100%. The service waits in the foreground with `Nice=19`, a `TimeoutStartSec` covering the entire service start, and control-group cleanup. hp-code-1 and hp-code-2 also use the thermal gate and refuse execution when the sensor is unavailable. The runner creates no timer or persistent restart. A disconnected foreground caller cannot extend the service deadline.
 
-Expiry applies before the job is accepted and when the capped service starts. An accepted job is claimed once on that host before systemd starts. A failed start or timeout consumes the claim. Check the command output and systemd journal, then register a new approved ID if a retry is needed. Keep the original claim under `~/.local/state/agent-workbench/one-shot-claims/`. This is a Workbench workflow control for normal hooked calls. A process with the same OS account can modify the user's installed files, state, or environment.
+Expiry applies before the job is accepted and before the registered executable starts, including after a thermal admission wait. An accepted job is claimed once on that host before systemd starts. A failed start or timeout consumes the claim. Check the command output and systemd journal, then register a new approved ID if a retry is needed. Keep the original claim under `~/.local/state/agent-workbench/one-shot-claims/`.
+
+The hook blocks ordinary Worker edits to the installed policy sources, bundle, and one-shot claims. This is a Workbench workflow control for normal hooked calls. A process with the same OS account can modify the user's installed files, state, or environment.
 
 ## Personal configuration across machines
 

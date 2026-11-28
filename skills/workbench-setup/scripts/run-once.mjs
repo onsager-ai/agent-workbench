@@ -29,7 +29,7 @@ const shortHost = () => os.hostname().split(".")[0];
 const unitName = (id) => `awb-once-${id}.service`;
 
 // Both the hook and CLI use the deployed policy and T3's observed child lineage.
-export async function authorizedOneShot(file, id, { cwd = process.cwd(), host = shortHost(), now = Date.now() } = {}) {
+export async function authorizedOneShot(file, id, { host = shortHost(), now = Date.now() } = {}) {
   if (process.platform !== "linux" || !exactText(id, JOB_ID) || !file) return undefined;
   try {
     const registry = JSON.parse(fs.readFileSync(file, "utf8")).base.policy.one_shot_jobs;
@@ -40,7 +40,7 @@ export async function authorizedOneShot(file, id, { cwd = process.cwd(), host = 
     const { t3Thread, t3WorkerTier } = await import("../../orchestrate-harnesses/scripts/worker-context.mjs");
     const row = await t3Thread(process.env.T3CODE_THREAD_ID?.trim());
     if (row?.relationship !== "subagent" || row.parentThreadId !== job.parent_thread) return undefined;
-    const tier = t3WorkerTier(file, { cwd }, row);
+    const tier = t3WorkerTier(file, { cwd: job.cwd }, row);
     return tier && tier.access !== "read-only" ? job : undefined;
   } catch {
     return undefined;
@@ -94,7 +94,7 @@ export function quotaEnforced(cpuMax, percent) {
   return positiveInteger(quota) && positiveInteger(period) && (100 * quota) / period <= percent;
 }
 
-function runInCgroup(encoded, home) {
+function runInCgroup(encoded, home, afterThermal = false) {
   const job = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
   if (!validOneShotJob(job) || job.host !== shortHost() || Date.parse(job.expires_at) <= Date.now()) {
     throw new Error("registered job is invalid, expired, or for a different host");
@@ -106,16 +106,21 @@ function runInCgroup(encoded, home) {
   }
   process.chdir(job.cwd);
   const env = { ...process.env, HOME: home };
-  const argv = thermalHosts.has(job.host)
-    ? ["/bin/sh", thermal, "gate", "--max-seconds", String(job.timeout_s), "--", ...job.argv] : job.argv;
   delete env.THERMAL_SYSFS;
   delete env.THERMAL_SETTLE_SECONDS;
+  // Repeat the expiry and cgroup checks after the thermal gate's admission wait.
+  const argv = thermalHosts.has(job.host) && !afterThermal
+    ? ["/bin/sh", thermal, "gate", "--max-seconds", String(job.timeout_s), "--",
+      process.execPath, modulePath, "--after-thermal", encoded, home]
+    : job.argv;
   process.execve(argv[0], argv, env);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === modulePath) {
   try {
-    runInCgroup(process.argv[2], process.argv[3]);
+    const [first, second, third] = process.argv.slice(2);
+    if (first === "--after-thermal") runInCgroup(second, third, true);
+    else runInCgroup(first, second);
   } catch (error) {
     console.error(`awb ops run-once: ${error.message}`);
     process.exitCode = 1;

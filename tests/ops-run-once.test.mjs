@@ -98,4 +98,11 @@ test("the executor refuses unbounded quotas and will not run the approved argv o
   assert.equal(child.status, 1);
   assert.match(child.stderr, /requires an enforced systemd cgroup v2 quota/);
   assert.equal(fs.existsSync(marker), false);
+
+  const expired = { ...job, argv: ["/usr/bin/touch", marker], expires_at: "2000-01-01T00:00:00Z" };
+  const encoded = Buffer.from(JSON.stringify(expired)).toString("base64url");
+  const afterThermal = spawnSync(process.execPath, [runner, "--after-thermal", encoded, home], { encoding: "utf8" });
+  assert.equal(afterThermal.status, 1);
+  assert.match(afterThermal.stderr, /expired/);
+  assert.equal(fs.existsSync(marker), false);
 });

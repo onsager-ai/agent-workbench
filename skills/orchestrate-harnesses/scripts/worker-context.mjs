@@ -4,6 +4,7 @@ import path from "node:path";
 
 export const CONFIG_MISSING = "Worker policy configuration is missing or unreadable; rerun agent-workbench install before dispatching Workers.";
 
+// Follow symlinks for the portion of a path that already exists.
 export function resolvePath(target) {
   const absolute = path.resolve(target);
   let existing = absolute;

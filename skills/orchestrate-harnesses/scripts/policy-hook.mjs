@@ -27,7 +27,7 @@ const RULE = {
   codexShellApproval: "codex-shell-approval", modelOverride: "model-override", inheritedModel: "inherited-model",
   nativeSubagent: "native-subagent", managerTurnReset: "manager-turn-reset", managerTurnUpdate: "manager-turn-update",
   readOnlyWorker: "read-only-worker", prWatchTarget: "pr-watch-target", workerAutomation: "worker-automation",
-  unknownAutomation: "unknown-automation", oneShotJob: "one-shot-job", policyError: "policy-error",
+  unknownAutomation: "unknown-automation", oneShotJob: "one-shot-job", oneShotState: "one-shot-state", policyError: "policy-error",
 };
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
@@ -465,7 +465,6 @@ function gitCommand(words) {
   return [argv, directory];
 }
 
-// Like Python Path.resolve(): follow symlinks for the part that exists.
 function resolveGitContext(event, gitCwd, cdCwd) {
   const cwd = event.cwd || process.cwd();
   if (gitCwd) return path.isAbsolute(gitCwd) ? gitCwd : resolvePath(path.join(cwd, gitCwd));
@@ -738,13 +737,29 @@ function registeredScheduleAllowed(file, event, input, { thread, codex }) {
   }
 }
 
+function literalShellBody(words) {
+  const [program, ...args] = commandWords(words);
+  const name = path.basename(program ?? "");
+  if (name === "eval") return args.join(" ");
+  if (!["bash", "sh", "zsh", "dash", "ksh"].includes(name)) return undefined;
+  const flag = args.findIndex((arg) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(arg));
+  return flag === -1 ? undefined : args[flag + 1];
+}
+
+function afterCdPrefix(words) {
+  return words[0] === "cd" && ["&&", "||"].includes(words[2]) ? words.slice(3) : words;
+}
+
 function isAutomationShellCommand(command) {
   if (/(?:^|[;&|\n]+)\s*(?:sudo\s+)?(?:crontab\b(?!\s+-[lr]\b)|systemctl\s+(?:enable|start|restart|daemon-reload)\b|(?:\S*\/)?systemd-run\b|at\b(?!q\b|rm\b)|nohup\b|daemonize\b|setsid\b)/i.test(command)) return true;
   if (!command.includes("systemd-run")) return false;
   try {
     return shellCommands(command).some((words) => {
-      const argv = commandWords(words[0] === "cd" && words[2] === "&&" ? words.slice(3) : words);
-      return argv.length > 0 && path.basename(argv[0]) === "systemd-run";
+      const statement = afterCdPrefix(words);
+      const [program] = commandWords(statement);
+      if (path.basename(program ?? "") === "systemd-run") return true;
+      const body = literalShellBody(statement);
+      return Boolean(body && isAutomationShellCommand(body));
     });
   } catch {
     return true;
@@ -757,9 +772,8 @@ function mentionsOneShotCall(command) {
     return shellCommands(command).some((words) => {
       const launcher = words.findIndex((word) => ONE_SHOT_LAUNCHERS.has(path.basename(word)));
       if (launcher !== -1 && words.indexOf("run-once", launcher + 1) !== -1) return true;
-      const [program, ...args] = commandWords(words);
-      return program && ["bash", "sh", "zsh", "dash", "eval"].includes(path.basename(program)) &&
-        args.some((arg) => ONE_SHOT_MENTION.test(arg));
+      const body = literalShellBody(afterCdPrefix(words));
+      return Boolean(body && mentionsOneShotCall(body));
     });
   } catch {
     return true;
@@ -1051,37 +1065,43 @@ function isMemoryEdit(file, cwd) {
   return !path.isAbsolute(relative) && parts.length >= 3 && parts[0] !== ".." && parts[1] === "memory";
 }
 
-function isMemoryPatch(command, cwd) {
-  if (typeof command !== "string") return false;
+function patchPaths(command) {
+  if (typeof command !== "string") return undefined;
   const lines = command.trim().split(/\r?\n/);
-  if (lines.shift() !== "*** Begin Patch" || lines.pop() !== "*** End Patch") return false;
+  if (lines.shift() !== "*** Begin Patch" || lines.pop() !== "*** End Patch") return undefined;
+  const files = [];
   let operation;
   let canMove = false;
   for (const line of lines) {
     const header = /^\*\*\* (Add|Delete|Update) File: (.+)$/.exec(line);
     if (header) {
       const [, kind, file] = header;
-      if (!isMemoryEdit(file, cwd)) return false;
+      files.push(file);
       operation = kind;
       canMove = kind === "Update";
       continue;
     }
     if (canMove && line.startsWith("*** Move to: ")) {
-      if (!isMemoryEdit(line.slice("*** Move to: ".length), cwd)) return false;
+      files.push(line.slice("*** Move to: ".length));
     } else if (operation === "Add" ? !line.startsWith("+") : operation !== "Update" ||
         !/^(?:[ +\-]|@@(?: |$)|\*\*\* End of File$)/.test(line)) {
-      return false;
+      return undefined;
     }
     canMove = false;
   }
-  return operation !== undefined;
+  return files.length ? files : undefined;
 }
 
+function isMemoryPatch(command, cwd) {
+  return patchPaths(command)?.every((file) => isMemoryEdit(file, cwd)) ?? false;
+}
+
+const OUTPUT_REDIRECT = /(?:&>>?|<>|>>?[&|]?)/;
 function hasOutputRedirect(tokens, allowMemoryRedirect) {
   return tokens.some(({ token, operator, substitutionRedirect }, index) => {
     if (substitutionRedirect) return true;
     if (!operator) return false;
-    const redirect = /(?:&>>?|<>|>>?[&|]?)/.exec(token);
+    const redirect = OUTPUT_REDIRECT.exec(token);
     if (!redirect) return false;
     const target = tokens[index + 1];
     if (redirect.index + redirect[0].length !== token.length || !target || target.operator) return true;
@@ -1094,6 +1114,79 @@ function hasOutputRedirect(tokens, allowMemoryRedirect) {
       ? path.join(os.homedir(), output.slice(2)) : output;
     return !path.isAbsolute(file) || !isMemoryEdit(file, process.cwd()) || !isMemoryEdit(resolvePath(file), process.cwd());
   });
+}
+
+function registeredPath(file, cwd) {
+  const expanded = file.replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, () => os.homedir());
+  return resolvePath(path.resolve(cwd, expanded));
+}
+
+function containsPath(root, file) {
+  const relative = path.relative(root, file);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function protectedJobPath(workers) {
+  const home = os.homedir();
+  const config = process.env.XDG_CONFIG_HOME;
+  const installed = path.join(home, ".local/state/agent-workbench");
+  const paths = [workers, path.join(installed, "workers.json"), path.join(installed, "one-shot-claims"),
+    path.join(home, ".agents/skills/orchestrate-harnesses/workers.yml"),
+    path.join(home, ".agents/skills/workbench-personal/workers.yml"),
+    path.join(home, ".agents/skills/workbench-personal/automations.yml"),
+    path.join(config && path.isAbsolute(config) ? config : path.join(home, ".config"), "agent-workbench/workers.yml"),
+  ].filter(Boolean).flatMap((file) => [path.resolve(file), resolvePath(file)]);
+  return (file, cwd, includeAncestor = false) => {
+    if (typeof file !== "string" || !file || file.includes("\0")) return false;
+    const target = registeredPath(file, cwd);
+    const pattern = /[*?\[{]/.test(target);
+    return paths.some((entry) => {
+      if (containsPath(entry, target) || (includeAncestor && containsPath(target, entry))) return true;
+      if (!pattern) return false;
+      // Check a literal glob against protected names without expanding directories.
+      for (let candidate = entry; ; candidate = path.dirname(candidate)) {
+        if (path.matchesGlob(candidate, target)) return true;
+        if (!includeAncestor || candidate === path.dirname(candidate)) return false;
+      }
+    });
+  };
+}
+
+const FILE_MUTATIONS = new Set(["chmod", "chown", "chgrp", "mkdir", "mv", "rm", "rmdir", "tee", "touch", "truncate", "unlink"]);
+function shellWritesJobPath(command, cwd, isProtected) {
+  try {
+    const directories = new Set([cwd]);
+    for (const words of shellCommands(command)) {
+      const statement = afterCdPrefix(words);
+      const here = statement === words ? cwd : registeredPath(words[1], cwd);
+      directories.add(here);
+      const [program, ...args] = commandWords(statement);
+      const name = path.basename(program ?? "");
+      if (name === "cd" && args.length === 1) {
+        cwd = registeredPath(args[0], here);
+        directories.add(cwd);
+      }
+      const body = literalShellBody(statement);
+      if (body && shellWritesJobPath(body, here, isProtected)) return true;
+      if (["cp", "install", "ln"].includes(name)) {
+        const directoryFlag = args.findIndex((arg) => /^(?:-t|--target-directory)(?:=|$)/.test(arg));
+        let destination = args.at(-1);
+        if (directoryFlag !== -1) {
+          const equals = args[directoryFlag].indexOf("=");
+          destination = equals === -1 ? args[directoryFlag + 1] : args[directoryFlag].slice(equals + 1);
+        }
+        if (isProtected(destination, here, true)) return true;
+      } else if (FILE_MUTATIONS.has(name) || (name === "sed" && args.some((arg) => /^(-i|--in-place)/.test(arg)))) {
+        if (args.some((file) => !file.startsWith("-") && isProtected(file, here, ["mv", "rm", "rmdir"].includes(name)))) return true;
+      }
+    }
+    const tokens = shlex(command, true, true);
+    return tokens.some(({ token, operator }, index) => operator && OUTPUT_REDIRECT.test(token) &&
+      !tokens[index + 1]?.operator && [...directories].some((directory) => isProtected(tokens[index + 1]?.token, directory)));
+  } catch {
+    // Only restrict writes with an identifiable target; this is not a general shell sandbox.
+    return false;
+  }
 }
 
 function readOnlyGithubApi(args) {
@@ -1367,7 +1460,7 @@ async function main() {
         if (oneShot && event.agent_id == null && event.agent_type == null &&
             shellInput.run_in_background !== true && shellInput.Blocking !== false) {
           const { authorizedOneShot } = await import("../../workbench-setup/scripts/run-once.mjs");
-          if (await authorizedOneShot(workers, oneShot[1], { cwd: shellInput.workdir ?? shellInput.Cwd ?? event.cwd })) {
+          if (await authorizedOneShot(workers, oneShot[1])) {
             if (agy) emitPreToolUse("allow");
             return;
           }
@@ -1402,6 +1495,20 @@ async function main() {
     if ((isEdit || agyStateWrite || isPatch || shellWrite) &&
         await readOnlyWorker(workers, event, agy, agyManager, agyThread)) {
       emitPreToolUse("deny", "Read-only Workers cannot edit files or run shell commands that change files or state.", RULE.readOnlyWorker);
+      return;
+    }
+    const suppliedCwd = shellInput.workdir ?? shellInput.Cwd ?? event.cwd;
+    const callCwd = typeof suppliedCwd === "string" ? suppliedCwd : process.cwd();
+    let jobPathMatcher;
+    const isJobPath = (...values) => (jobPathMatcher ??= protectedJobPath(workers))(...values);
+    const protectedWrite = isPatch
+      ? patchPaths(typeof args === "string" ? args : shellInput.command)?.some((file) => isJobPath(file, callCwd))
+      : isEdit ? [shellInput.file_path, shellInput.notebook_path, shellInput.TargetFile, shellInput.Path, shellInput.path]
+        .some((file) => isJobPath(file, callCwd, true))
+        : shellTool && shellWritesJobPath(shellCommand, callCwd, isJobPath);
+    if (protectedWrite && (workerContext || !mainLoop ||
+        (agyThread ?? await t3Thread(process.env.T3CODE_THREAD_ID?.trim()))?.relationship === "subagent")) {
+      emitPreToolUse("deny", "Workers cannot change the installed one-shot job policy, registry, or claims.", RULE.oneShotState);
       return;
     }
     const normalizedTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
