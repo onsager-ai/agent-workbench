@@ -31,7 +31,8 @@ const READ_ONLY_STAMP = "This Worker is read-only: no file edits, commits, pushe
 const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the user requests one; " +
   "set nonblank environmentId and projectId and select an exact configured model. " +
   "For models listed in policy.manager_models, quote the user's approval in the launch text as `L3 approval: <link to the approval>`. " +
-  "Model configuration calls have no approval text field and remain limited to non-opt-in L1/L2. " +
+  "Model configuration calls require an explicit threadId and are limited to non-opt-in L1/L2, " +
+  "except that threads listed in policy.manager_threads may be configured with a model listed in policy.manager_models. " +
   "Workers must not launch top-level threads or change thread models. Use a Worker or current-thread wakeup for follow-up work.";
 const SCHEDULE_TASK = "This schedule_task call does not meet the registered schedule rules. " +
   "Use the personal automation registry before activating automation. A Claude Manager or an enrolled Antigravity or Codex Manager " +
@@ -740,7 +741,7 @@ function hasL3Approval(text) {
   return typeof text === "string" && /^L3 approval: \S/m.test(text);
 }
 
-function launchModelAllowed(file, event, model, approved = false) {
+function launchModelAllowed(file, event, model, { approved = false, threadId, provider } = {}) {
   if (typeof model !== "string" || !model.trim()) return false;
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
@@ -750,7 +751,11 @@ function launchModelAllowed(file, event, model, approved = false) {
       const tier = config.tiers[name];
       return tier && !tier.opt_in && matches(tier);
     }));
-    return l1L2Allowed || (approved && config.policy.manager_models?.some((id) => id === model) === true);
+    const managerThreads = config.policy.manager_threads;
+    const listedTarget = Array.isArray(managerThreads) && managerThreads.includes(threadId);
+    const codexConfigure = listedTarget && provider === "codex";
+    return l1L2Allowed || ((approved || listedTarget) && config.policy.manager_models?.some((id) =>
+      id === model || (codexConfigure && id.replace(/^codex\//, "") === model.replace(/^codex\//, ""))) === true);
   } catch {
     return false;
   }
@@ -1493,16 +1498,19 @@ async function main() {
       const model = selection.model;
       const validIds = [input.environmentId, input.projectId].every((value) => typeof value === "string" && value.trim());
       const approved = hasL3Approval(input.message) || hasL3Approval(input.prompt);
-      if (!validIds || !launchModelAllowed(workers, event, model, approved)) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
+      if (!validIds || !launchModelAllowed(workers, event, model, { approved })) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
     } else if (configureModelSelection) {
       const selection = isDict(args.modelSelection) ? args.modelSelection : {};
-      if (!launchModelAllowed(workers, event, selection.model)) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
+      const { threadId } = args;
+      if (!isT3ThreadId(threadId) || !launchModelAllowed(workers, event, selection.model, { threadId, provider: selection.provider })) {
+        [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
+      }
     } else if (isCreateThreads) {
       const threads = isDict(args) && Array.isArray(args.threads) ? args.threads : [];
       if (!threads.length || threads.some((thread) => {
         const target = isDict(thread) && isDict(thread.target) ? thread.target : {};
         return ![target.environmentId, target.projectId].every((value) => typeof value === "string" && value.trim()) ||
-          !launchModelAllowed(workers, event, target.model, hasL3Approval(thread?.prompt));
+          !launchModelAllowed(workers, event, target.model, { approved: hasL3Approval(thread?.prompt) });
       })) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
     } else if (workerContext && (isPrWatch || isLocalAutomation)) {
       [decision, reason, rule] = ["deny", "Workers cannot create automation or initiate new watches. Use the current Manager thread for follow-up work.", RULE.workerAutomation];
