@@ -1135,6 +1135,11 @@ describe("policy hook", () => {
     }
   });
 
+  const reportedDecisions = "Sent the PR review to the coordinator. It asks you to decide four things:\n" +
+    "1. Whether to merge.\n2. Which tests to rerun.\n3. When to release.\n4. Who should review.\n" +
+    "No action is needed from you.";
+  const quotedQuestion = 'The reviewer asked: "Should we merge?"';
+
   test("stop classifier overrides question mark heuristic and falls back when uncertain or unreachable", async () => {
     const server = createServer((request, response) => {
       let body = "";
@@ -1144,8 +1149,12 @@ describe("policy hook", () => {
         assert.equal(request.headers.authorization, undefined);
         assert.equal(payload.model, "typesafe/jev-latest");
         const message = payload.state.message;
+        const report = ["Just a report?", reportedDecisions, quotedQuestion].includes(message);
+        if (message === reportedDecisions || message === quotedQuestion) {
+          assert.match(payload.questions.asks.criteria.no, /Third-party requests .* quotes, code, and lists describing decisions/);
+        }
         const probabilities = message === "Actual ask." ? { yes: 0.8, no: 0.2 } :
-          message === "Just a report?" ? { yes: 0.1, no: 0.9 } : { yes: 0.5, no: 0.5 };
+          report ? { yes: 0.1, no: 0.9 } : { yes: 0.5, no: 0.5 };
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify({ answers: { asks: { choice: probabilities.yes >= 0.7 ? "yes" : "no", confidence: 0.9, probabilities } } }));
       });
@@ -1160,6 +1169,8 @@ describe("policy hook", () => {
       const invoke = async (message) => invokeStopAsync({ hook_event_name: "Stop", last_assistant_message: message });
       assert.equal((await invoke("Actual ask.")).decision, "block");
       assert.equal(await invoke("Just a report?"), null);
+      assert.equal(await invoke(reportedDecisions), null);
+      assert.equal(await invoke(quotedQuestion), null);
       assert.equal((await invoke("Unclear? ")).decision, "block");
 
       bundle.base.policy.stop_classifier.url = "http://127.0.0.1:1/unreachable";
@@ -1176,6 +1187,34 @@ describe("policy hook", () => {
     assert.equal(result.decision, "block");
     assert.match(result.reason, /AskUserQuestion/);
     assert.match(result.reason, /recommended option first/);
+    assert.match(result.reason, /stop now without writing anything more/);
+    assert.match(result.reason, /Do not explain or acknowledge this check/);
+  });
+
+  test("stop passes reported decisions and quoted or code questions", () => {
+    for (const message of [
+      reportedDecisions,
+      quotedQuestion,
+      "The PR asks you to decide whether to merge?",
+      "They ask you to decide whether to merge?",
+      "Alex Morgan asks you to decide whether to merge?",
+      "The example is `Should I merge?`",
+      "```text\nDo you want to merge?\n```",
+      "> Should I merge?",
+    ]) {
+      assert.equal(invokeStop({ hook_event_name: "Stop", last_assistant_message: message }), null, message);
+    }
+  });
+
+  test("stop still blocks direct requests after reports and without a question mark", () => {
+    for (const message of [
+      `${reportedDecisions} Should I merge?`,
+      'Should I merge "option A"?',
+      "Do you want me to merge.",
+      "Let me know whether to merge.",
+    ]) {
+      assert.equal(invokeStop({ hook_event_name: "Stop", last_assistant_message: message }).decision, "block", message);
+    }
   });
 
   test("stop blocks a question from the transcript tail", () => {
