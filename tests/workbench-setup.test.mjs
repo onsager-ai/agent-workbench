@@ -768,7 +768,7 @@ describe("workbench setup", () => {
       `fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\n` +
       `fs.writeFileSync(${JSON.stringify(template)}, "new public template\\n");\n` +
       `let s = fs.readFileSync(${JSON.stringify(f.script)}, "utf8");\n` +
-      `s = s.replace("process.exitCode = main();", ${JSON.stringify(`fs.writeFileSync(${JSON.stringify(marker)}, "fresh"); process.exitCode = main();`)});\n` +
+      `s = s.replace("process.exitCode = await main();", ${JSON.stringify(`fs.writeFileSync(${JSON.stringify(marker)}, "fresh"); process.exitCode = await main();`)});\n` +
       `fs.writeFileSync(${JSON.stringify(f.script)}, s);\n`);
     f.run("update", ["--skills-cmd", command]);
     assert.deepEqual(f.json(log), ["update", "host-ops", "workbench-setup", "-g", "-y"]);
