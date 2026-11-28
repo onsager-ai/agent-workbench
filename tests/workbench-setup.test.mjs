@@ -1134,6 +1134,23 @@ describe("workbench setup", () => {
     }
   });
 
+  test("the installer validates Manager thread lists and resolves profile inheritance", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const manager_threads = ["example-t3-thread"];
+    const configure = (value) => f.write(f.overridePath, JSON.stringify({ policy: { manager_threads: value } }));
+    configure(manager_threads);
+    f.run("install");
+    const installed = () => f.json(path.join(f.state, "workers.json"));
+    assert.deepEqual(installed().base.policy.manager_threads, manager_threads);
+    assert.deepEqual(installed().profiles.codex.policy.manager_threads, manager_threads);
+
+    for (const value of [null, {}, "example-t3-thread", [null], [42], [""], [" \t"]]) {
+      configure(value);
+      assert.match(f.run("install", [], false).stderr, /policy\.manager_threads must be a list of nonblank T3 thread ID strings/);
+    }
+  });
+
   test("only valid T3 schedule entries are accepted by the installer", () => {
     const f = new Fixture();
     f.installOrchestration();

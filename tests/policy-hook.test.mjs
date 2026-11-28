@@ -832,8 +832,9 @@ describe("policy hook", () => {
     const alias = "example/manager-alias";
     const alternate = "example/alternate-manager";
     const manager_models = [primary, alias, alternate];
+    const manager_threads = ["configured-target"];
     const overlay = path.join(directory, "manager-models.yml");
-    fs.writeFileSync(overlay, JSON.stringify({ profile: "codex", policy: { manager_models } }));
+    fs.writeFileSync(overlay, JSON.stringify({ profile: "codex", policy: { manager_models, manager_threads } }));
     fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
     const env = { AGENT_WORKBENCH_STATE_HOME: path.join(directory, "launch-approval-state") };
     const ids = { environmentId: "env", projectId: "project" };
@@ -871,6 +872,9 @@ describe("policy hook", () => {
     assert.equal(call("mcp__t3-code__t3_thread_configure", {
       threadId: "thread-1", modelSelection: { model: alternate },
     }).permissionDecision, "deny");
+    assert.equal(call("mcp__t3-code__t3_thread_configure", {
+      threadId: manager_threads[0], modelSelection: { model: alternate },
+    }), null);
   });
 
   test("an empty Manager model list grants no T3 thread creation exception", () => {
@@ -2236,9 +2240,11 @@ describe("policy hook", () => {
       const approved = "Run the task.\nL3 approval: https://example.test/approval";
       const model = "codex/example/manager-model";
       const bareModel = "example/manager-model";
-      const target = "enrolled-target";
+      const target = "configured-target";
       const overlay = path.join(directory, "manager-models.yml");
-      fs.writeFileSync(overlay, JSON.stringify({ profile: "codex", policy: { manager_models: [model, "example/other-manager"] } }));
+      fs.writeFileSync(overlay, JSON.stringify({ profile: "codex", policy: {
+        manager_models: [model, "example/other-manager"], manager_threads: [target],
+      } }));
       fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
       const launch = { ...ids, modelSelection: { model } };
       const configure = { threadId: "thread-1", modelSelection: { model: "gpt-6-luna" } };
@@ -2250,7 +2256,7 @@ describe("policy hook", () => {
         const launchTool = namespace + "t3_thread_launch";
         const createTool = namespace + "create_threads";
         const configureTool = namespace + "t3_thread_configure";
-        writeEnrolment({ sessions: [session, worker], threads: [target] });
+        writeEnrolment({ sessions: [session, worker], threads: ["enrolled-but-not-listed"] });
         prompt(session);
         assert.match(tool(session, launchTool, launch).permissionDecisionReason, /L3 approval:/);
         assert.equal(tool(session, launchTool, { ...launch, message: approved }), null);
@@ -2265,7 +2271,7 @@ describe("policy hook", () => {
         for (const managerModel of [model, bareModel, "codex/example/other-manager"]) {
           assert.equal(tool(session, configureTool, { ...configureManager, modelSelection: { provider: "codex", model: managerModel } }), null);
         }
-        assert.equal(tool(session, configureTool, { ...configureManager, threadId: "not-enrolled" }).permissionDecision, "deny");
+        assert.equal(tool(session, configureTool, { ...configureManager, threadId: "enrolled-but-not-listed" }).permissionDecision, "deny");
         assert.equal(tool(session, configureTool, { modelSelection: configureManager.modelSelection }).permissionDecision, "deny");
         assert.equal(tool(session, configureTool, { modelSelection: configure.modelSelection }).permissionDecision, "deny");
         for (const modelSelection of [
