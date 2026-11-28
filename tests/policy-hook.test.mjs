@@ -124,7 +124,10 @@ describe("policy hook", () => {
       assert.match(call(tool, { file_path: "notes.md" }, "fast").permissionDecisionReason, readOnlyDenial);
       for (const type of ["standard", "unknown", undefined]) assert.equal(call(tool, { file_path: "notes.md" }, type), null);
     }
-    for (const command of shellWrites) assert.match(call("Bash", { command }, "fast").permissionDecisionReason, readOnlyDenial);
+    for (const command of shellWrites) {
+      assert.match(call("Bash", { command }, "fast").permissionDecisionReason, readOnlyDenial);
+      assert.equal(call("Bash", { command }, "standard"), null, command);
+    }
     for (const command of shellReads) assert.equal(call("Bash", { command }, "fast"), null, command);
   });
 
@@ -1373,8 +1376,12 @@ describe("policy hook", () => {
       const db = new DatabaseSync(database);
       db.exec("CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL)");
       const insert = db.prepare("INSERT INTO orchestration_v2_projection_threads VALUES (?, ?)");
-      bundle.base.tiers.reader = { provider, model: readerModel, access: "read-only" };
-      bundle.base.tiers.writer = { provider, model: writerModel };
+      const overlay = path.join(directory, "worker-access.yml");
+      fs.writeFileSync(overlay, JSON.stringify({ tiers: {
+        reader: { provider, model: readerModel, access: "read-only" },
+        writer: { provider, model: writerModel },
+      } }));
+      bundle = workerBundle(WORKERS, [overlay]);
       fs.writeFileSync(workers, JSON.stringify(bundle));
       const topLevel = JSON.stringify({ lineage: { relationshipToParent: null, parentThreadId: null },
         providerInstanceId: provider, modelSelection: { model: writerModel } });
@@ -1465,7 +1472,9 @@ describe("policy hook", () => {
         const call = (thread, payload = event) => run(payload, { env: { ...hookEnv, T3CODE_THREAD_ID: thread }, args });
         call(writer, JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id, prompt: "Role: Worker\nEdit the file." }));
         assert.equal(call(writer).stdout, "");
-        assert.match(JSON.parse(call(child).stdout).hookSpecificOutput.permissionDecisionReason, readOnlyDenial);
+        const output = call(child).stdout;
+        assert.ok(output, `expected a denial from the ${host} hook`);
+        assert.match(JSON.parse(output).hookSpecificOutput.permissionDecisionReason, readOnlyDenial);
       }
     });
 
@@ -1765,19 +1774,25 @@ describe("policy hook", () => {
     }, details);
 
     test("Codex uses the configured native subagent profile for edit and shell policy", () => {
-      bundle.base.tiers.reader = { harness: "codex", model: "example-reader", access: "read-only" };
-      bundle.base.tiers.writer = { harness: "codex", model: "example-writer", access: "write" };
+      const overlay = path.join(directory, "worker-access.yml");
+      fs.writeFileSync(overlay, JSON.stringify({ tiers: {
+        reader: { harness: "codex", model: "example-reader", access: "read-only" },
+        writer: { harness: "codex", model: "example-writer", access: "write" },
+      } }));
+      bundle = workerBundle(WORKERS, [overlay]);
       fs.writeFileSync(workers, JSON.stringify(bundle));
       const reader = { agent_id: "child", agent_type: "reader" };
       assert.match(patch("native-child", reader).permissionDecisionReason, readOnlyDenial);
       for (const agent_type of ["writer", "unknown", undefined]) {
         assert.equal(patch("native-child", { agent_id: "child", agent_type }), null);
       }
-      for (const name of ["Bash", "exec_command"]) {
+      for (const [name, key] of [["Bash", "command"], ["exec_command", "command"], ["exec_command", "cmd"]]) {
+        const shell = (command, agent = reader) => tool("native-child", name, { [key]: command }, agent);
         for (const command of shellWrites) {
-          assert.match(tool("native-child", name, { command }, reader).permissionDecisionReason, readOnlyDenial);
+          assert.match(shell(command).permissionDecisionReason, readOnlyDenial);
+          assert.equal(shell(command, { ...reader, agent_type: "writer" }), null, command);
         }
-        for (const command of shellReads) assert.equal(tool("native-child", name, { command }, reader), null, command);
+        for (const command of shellReads) assert.equal(shell(command), null, command);
       }
     });
 
@@ -1831,8 +1846,8 @@ describe("policy hook", () => {
       const nestedPatch = `bash -c ${shellQuote("apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: task.txt\n+work\n*** End Patch\nPATCH")}`;
       const reason = "Enrolled Codex Managers can't run shell commands without " +
         "`Manager work approval: <link>` at the start of the turn; send shell work to a Worker.";
-      for (const toolName of ["Bash", "exec_command"]) {
-        const call = (session, command, details) => tool(session, toolName, { command, workdir: directory }, details);
+      for (const [toolName, key] of [["Bash", "command"], ["exec_command", "command"], ["exec_command", "cmd"]]) {
+        const call = (session, command, details) => tool(session, toolName, { [key]: command, workdir: directory }, details);
         prompt("manager");
         for (const command of ["git status", nestedPatch]) {
           const decision = call("manager", command);

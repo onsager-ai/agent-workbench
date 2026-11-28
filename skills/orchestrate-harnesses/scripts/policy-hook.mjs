@@ -948,9 +948,11 @@ function enrolledCodexManager(event) {
 async function t3Thread(thread) {
   if (!thread) return undefined;
   try {
-    const { DatabaseSync } = await import("node:sqlite");
     const home = process.env.T3CODE_HOME || path.join(os.homedir(), ".t3");
-    const db = new DatabaseSync(path.join(home, "userdata", "statev2.sqlite"), { readOnly: true });
+    const file = path.join(home, "userdata", "statev2.sqlite");
+    if (!fs.existsSync(file)) return undefined;
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(file, { readOnly: true });
     try {
       return db.prepare(`
         SELECT json_type(payload_json, '$.lineage') AS lineage,
@@ -1267,7 +1269,9 @@ async function main() {
     const codexTurnMatches = () => !codexManager || Boolean(managerState.turn && managerState.turn === event.turn_id);
     const workApproved = () => managerState.approved && codexTurnMatches();
     const isShell = agy ? tool === "run_command" : tool === "Bash" || (codexManager && tool === "exec_command");
-    const command = isDict(args) ? args[agy ? "CommandLine" : "command"] : undefined;
+    const shellInput = isDict(args) ? args : {};
+    const command = agy ? shellInput.CommandLine
+      : codex && tool === "exec_command" ? shellInput.command ?? shellInput.cmd : shellInput.command;
     const shellCommand = typeof command === "string" ? command : "";
     if (codexManager && isShell && !managerState.worker && !workApproved()) {
       emit({ hookSpecificOutput: {

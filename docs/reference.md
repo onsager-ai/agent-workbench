@@ -90,7 +90,7 @@ The `PreToolUse` hook denies the native edit tools listed below and shell calls 
 
 On Claude and Codex, a T3-delegated thread without native agent fields can also resolve its tier from its own T3 row. The hook keeps the existing behavior when it cannot resolve the tier on either harness. An agent ID alone or a generic subagent profile used with a model override does not identify the configured tier. A standalone Worker launched without native tier identity or a T3 delegation record may have only its brief and native permissions.
 
-The shell classifier recognizes patterns such as output redirection, mutating Git commands, and common file operations. It does not analyze arbitrary scripts, every CLI mutation, or writes through tools outside the hook's coverage. Use native permissions and isolation for a security boundary.
+The shell classifier recognizes patterns such as output redirection, mutating Git commands, and common file operations. It does not analyze arbitrary scripts (such as `python -c`) or recognize every CLI mutation (such as `dd`, `install`, and `ln` without a shell output redirection). Writes through tools outside the hook's coverage remain possible. Use native permissions and isolation for a security boundary.
 
 ### Manager models for T3 thread creation
 
