@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, beforeEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -1322,10 +1323,151 @@ describe("policy hook", () => {
     assertAllowed("git push -u origin HEAD", feature);
   });
 
-  const antigravity = (toolCall, env) => {
-    const result = run(JSON.stringify({ toolCall }), { env, args: ["--workers", workers, "--host", "antigravity", "--extra", "forwarded"] });
+  const antigravity = (toolCall, env, event = {}) => {
+    const hookEnv = { ...process.env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state"), ...env };
+    const result = run(JSON.stringify({ toolCall, ...event }), { env: hookEnv, args: ["--workers", workers, "--host", "antigravity", "--extra", "forwarded"] });
     return result.stdout ? JSON.parse(result.stdout) : null;
   };
+
+  describe("Antigravity T3 roles", () => {
+    const manager = "thread-top-level";
+    const child = "thread:delegated-task:child";
+    const approval = "Manager work approval: https://example.com/approval";
+    const edit = (name = "write_to_file", TargetFile = "/workspace/src/file.mjs") => ({ name, args: { TargetFile } });
+    const call = (name, args = {}) => ({ name: `mcp_t3-code_${name}`, args });
+    const launch = call("t3_thread_launch", { environmentId: "env", projectId: "project", modelSelection: { model: "gpt-6-luna" } });
+    let enrolment;
+    let database;
+    let env;
+
+    beforeEach(() => {
+      env = { T3CODE_THREAD_ID: ` ${manager} `, T3CODE_HOME: path.join(directory, "t3"), NODE_OPTIONS: "--disable-warning=ExperimentalWarning" };
+      database = path.join(env.T3CODE_HOME, "userdata/statev2.sqlite");
+      enrolment = path.join(directory, "state/agent-workbench/antigravity-managers.json");
+      fs.mkdirSync(path.dirname(database), { recursive: true });
+      fs.mkdirSync(path.dirname(enrolment), { recursive: true });
+      fs.writeFileSync(enrolment, JSON.stringify({
+        threads: [manager, child, "thread-other-relation", "thread-no-row", "thread-no-lineage", "thread-no-relationship", "thread-null-lineage"],
+      }));
+      const db = new DatabaseSync(database);
+      db.exec("CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL)");
+      const insert = db.prepare("INSERT INTO orchestration_v2_projection_threads VALUES (?, ?)");
+      const topLevel = JSON.stringify({ lineage: { relationshipToParent: null, parentThreadId: null } });
+      insert.run(manager, topLevel);
+      insert.run("thread-unenrolled", topLevel);
+      insert.run("thread-no-lineage", "{}");
+      insert.run("thread-no-relationship", '{"lineage":{}}');
+      insert.run("thread-null-lineage", '{"lineage":null}');
+      for (const [id, relationshipToParent] of [[child, "subagent"], ["thread-other-relation", "other"]]) {
+        insert.run(id, JSON.stringify({ lineage: { relationshipToParent, parentThreadId: manager } }));
+      }
+      db.close();
+    });
+
+    test("only enrolled top-level T3 threads have the Manager role", () => {
+      // A conversation ID is the native ID, not a substitute for the T3 thread ID.
+      assert.deepEqual(antigravity(launch, env, { conversationId: child }), { decision: "allow" });
+      for (const id of [child, "thread-other-relation", "thread-unenrolled", "thread-no-row",
+        "thread-no-lineage", "thread-no-relationship", "thread-null-lineage", ""]) {
+        const result = antigravity(launch, { ...env, T3CODE_THREAD_ID: id }, { conversationId: manager, lastUserInput: approval });
+        assert.equal(result.decision, "deny", id);
+        assert.match(result.reason, /Workers must not launch/);
+      }
+      for (const invalid of ["{bad JSON", JSON.stringify({ threads: [manager, null] })]) {
+        fs.writeFileSync(enrolment, invalid);
+        assert.equal(antigravity(launch, env).decision, "deny");
+      }
+      fs.unlinkSync(enrolment);
+      assert.equal(antigravity(launch, env).decision, "deny");
+    });
+
+    test("lineage database errors and missing database fall back to Worker", () => {
+      fs.writeFileSync(database, "not a database");
+      assert.match(antigravity(launch, env).reason, /Workers must not launch/);
+      fs.unlinkSync(database);
+      assert.match(antigravity(launch, env).reason, /Workers must not launch/);
+      assert.equal(fs.existsSync(database), false);
+    });
+
+    test("Manager edits and mutating shell calls need current approval except for memory edits", () => {
+      const run = { name: "run_command", args: { CommandLine: "touch file.mjs" } };
+      for (const name of ["write_to_file", "replace_file_content", "multi_replace_file_content"]) {
+        assert.match(antigravity(edit(name), env).reason, /Manager work approval/);
+      }
+      const memory = path.join(os.homedir(), ".claude/projects/example/memory/notes.md");
+      assert.deepEqual(antigravity(edit("write_to_file", memory), env), { decision: "allow" });
+      assert.match(antigravity(run, env).reason, /changes files or state/);
+      assert.deepEqual(antigravity(edit(), env, { lastUserInput: approval }), { decision: "allow" });
+      assert.deepEqual(antigravity(run, env, { lastUserInput: approval }), { decision: "allow" });
+      assert.match(antigravity(edit(), env, { lastUserInput: "Review only." }).reason, /Manager work approval/);
+    });
+
+    test("image output requires approval and has no memory-path exception", () => {
+      const image = { name: "generate_image", args: { ImageName: "example" } };
+      assert.match(antigravity(image, env).reason, /Manager work approval/);
+      assert.deepEqual(antigravity(image, env, { lastUserInput: approval }), { decision: "allow" });
+      assert.deepEqual(antigravity(image, { ...env, T3CODE_THREAD_ID: child }), { decision: "allow" });
+    });
+
+    test("a routine resolved Worker call allows without creating Manager state", () => {
+      const state = path.join(directory, "state/agent-workbench/manager-turns");
+      const worker = { ...env, T3CODE_THREAD_ID: child };
+      assert.equal(fs.existsSync(state), false);
+      assert.deepEqual(antigravity({ name: "run_command", args: { CommandLine: "git status --short" } }, worker), {
+        decision: "allow",
+      });
+      assert.equal(fs.existsSync(state), false);
+    });
+
+    test("a policy error after resolving the role returns an Antigravity denial", () => {
+      assert.deepEqual(antigravity(edit("write_to_file", { toString: null }), env), {
+        decision: "deny", reason: "Could not evaluate the Antigravity tool policy.",
+      });
+    });
+
+    test("the sixth work call is blocked until lastUserInput changes", () => {
+      const read = { name: "view_file", args: { AbsolutePath: "/workspace/file.mjs" } };
+      const prompt = { lastUserInput: "Review this." };
+      for (let i = 0; i < 5; i++) assert.deepEqual(antigravity(read, env, prompt), { decision: "allow" });
+      assert.deepEqual(antigravity(call("t3_thread_send"), env, prompt), { decision: "allow" });
+      assert.match(antigravity(read, env, prompt).reason, /sixth counted work call/);
+      assert.deepEqual(antigravity(read, env, { lastUserInput: "Review the next file." }), { decision: "allow" });
+    });
+
+    test("Workers cannot configure threads, start automation, or use a browser except status", () => {
+      const worker = { ...env, T3CODE_THREAD_ID: child };
+      for (const tool of [call("t3_thread_configure", { modelSelection: { model: "gpt-6-luna" } }),
+        call("t3_thread_configure"), call("create_threads"), call("watch_pull_request", { threadId: child }),
+        { name: "run_command", args: { CommandLine: "crontab -e" } }, call("preview_open"), call("t3_preview_close")]) {
+        assert.equal(antigravity(tool, worker).decision, "deny", tool.name);
+      }
+      assert.deepEqual(antigravity(call("preview_status"), worker), { decision: "allow" });
+      assert.deepEqual(antigravity(call("preview_open"), env), { decision: "allow" });
+    });
+
+    test("Antigravity bot browser grants reset without releasing the profile binding", () => {
+      configureBrowser();
+      const open = call("preview_open", { profileId: BOT, url: BOT_URL, reuseExistingTab: false });
+      const granted = { lastUserInput: `${APPROVED}\n${BROWSER_TASK}` };
+      assert.match(antigravity(open, env).reason, /needs a Browser task grant/);
+      assert.deepEqual(antigravity(open, env, granted), { decision: "allow" });
+      assert.match(antigravity(call("preview_evaluate"), env, granted).reason, /Script evaluation is blocked/);
+      assert.match(antigravity(call("preview_open"), env, { lastUserInput: "Next task." }).reason, /needs a Browser task grant/);
+    });
+
+    test("registered schedule creation is restricted to the enrolled Manager on that thread", () => {
+      const schedule = { type: "interval", everyMs: 60000 };
+      const input = { title: "Daily review", prompt: "Review updates.", schedule, bindToCurrentThread: true };
+      const overlay = path.join(directory, "schedule-workers.yml");
+      fs.writeFileSync(overlay, JSON.stringify({ policy: { schedules: [{ name: input.title, thread: manager, schedule }] } }));
+      fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
+      assert.deepEqual(antigravity(call("schedule_task", input), env), { decision: "allow" });
+      assert.equal(antigravity(call("schedule_task", { ...input, title: "Other review" }), env).decision, "deny");
+      const worker = { ...env, T3CODE_THREAD_ID: child };
+      assert.equal(antigravity(call("schedule_task", input), worker).decision, "deny");
+      assert.deepEqual(antigravity(call("schedule_task", { scheduledTaskId: "existing", enabled: false }), worker), { decision: "allow" });
+    });
+  });
 
   test("Antigravity resolves shipped non-provider tiers like other hosts but denies unknown models", () => {
     const task = "Review this change.";
@@ -1406,7 +1548,9 @@ describe("policy hook", () => {
     assert.deepEqual(send("No footer.", env), { decision: "allow" });
     assert.deepEqual(send(message, { ...env, T3CODE_THREAD_ID: "" }), { decision: "allow" });
     fs.writeFileSync(path.join(directory, "wbmsg", "thread-12345678.seq"), "invalid counter");
-    assert.equal(send(message, env), null, "internal hook errors emit no decision");
+    assert.deepEqual(send(message, env), {
+      decision: "deny", reason: "Could not evaluate the Antigravity tool policy.",
+    }, "a corrupt footer counter denies the send rather than letting it proceed unstamped");
   });
 
   test("Antigravity denies only the targeted native delegation tools", () => {

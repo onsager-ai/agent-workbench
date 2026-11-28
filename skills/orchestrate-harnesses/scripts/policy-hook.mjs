@@ -24,9 +24,11 @@ const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the u
   "Workers must not launch top-level threads or change thread models. Use a Worker or current-thread wakeup for follow-up work.";
 const SCHEDULE_TASK = "New schedule_task calls are unavailable because the current T3 schema has no model selection field. " +
   "Use the personal automation registry before activating automation. " +
-  "A Claude Manager can create or re-enable a schedule that matches an entry in policy.schedules. Identified schedules can be paused.";
+  "A Claude Manager or an enrolled Antigravity Manager can create or re-enable a schedule that matches an entry in policy.schedules. Identified schedules can be paused.";
 const BROWSER_TOOL = /^mcp__t3_code(?:_direct)?__(preview_.+|t3_preview_.+)$/;
 const BROWSER_MANAGER = "Browser tools other than status require a Claude Manager main loop with valid turn state.";
+const AGY_EDITS = new Set(["write_to_file", "replace_file_content", "multi_replace_file_content", "generate_image"]);
+const AGY_SUBAGENTS = new Set(["invoke_subagent", "define_subagent", "swarm", "run_workflow"]);
 const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
 const OBSERVATION_COUNT_EXEMPT = /^mcp__t3[-_]code__(?:t3_thread_list|t3_thread_read|t3_thread_search|t3_environment_links)$/;
 const COUNT_EXEMPT = /^(?:mcp__t3[-_]code__)?(?:t3_thread_send|t3_thread_configure|schedule_task|list_scheduled_tasks|delete_scheduled_task|watch_pull_request|t3_queue|send_to_user|t3_pending_request|t3_background_wait|Agent|Task|spawn_agent|delegate_task|AskUserQuestion|ToolSearch|pull_request_merge|pull_request_review|pull_request_respond|link_pull_requests?|unwatch_pull_request|pull_request_create)$/;
@@ -942,6 +944,41 @@ function enrolledCodexManager(event) {
   }
 }
 
+async function antigravityManager(thread) {
+  if (!thread) return false;
+  try {
+    const { threads } = JSON.parse(fs.readFileSync(path.join(policyStateDirectory(), "antigravity-managers.json"), "utf8"));
+    if (!Array.isArray(threads) || !threads.every((id) => typeof id === "string" && id && id === id.trim()) ||
+        !threads.includes(thread)) return false;
+    const { DatabaseSync } = await import("node:sqlite");
+    const home = process.env.T3CODE_HOME || path.join(os.homedir(), ".t3");
+    const db = new DatabaseSync(path.join(home, "userdata", "statev2.sqlite"), { readOnly: true });
+    try {
+      const row = db.prepare(`
+        SELECT json_type(payload_json, '$.lineage') AS lineage,
+               json_type(payload_json, '$.lineage.relationshipToParent') AS relationship
+        FROM orchestration_v2_projection_threads WHERE thread_id = ? LIMIT 1
+      `).get(thread);
+      return row?.lineage === "object" && row.relationship === "null";
+    } finally {
+      db.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+function resetManagerTurn(previous, prompt, turn, worker = previous.worker || /^Role: Worker\r?$/m.test(prompt)) {
+  const approved = /^Manager work approval: \S/m.test(prompt);
+  const browser = approved && !worker ? browserGrants(prompt) : [];
+  return {
+    worker, count: 0, approved, turn,
+    ...(browser.length ? { browser } : {}),
+    ...(isProfileId(previous.botProfile) ? { botProfile: previous.botProfile } : {}),
+    ...(previous.invalidBrowser && !isProfileId(previous.botProfile) ? { invalidBrowser: true } : {}),
+  };
+}
+
 function readManagerState(file) {
   const fresh = { worker: false, count: 0, approved: false };
   if (!file) return fresh;
@@ -1095,50 +1132,52 @@ async function main() {
   const workers = workersArgument(process.argv.slice(2));
   const host = hostArgument(process.argv.slice(2));
   const codex = host === "codex";
+  const agy = host === "antigravity";
+  const emitPreToolUse = (decision, reason) => emit(agy ? { decision, ...(reason ? { reason } : {}) } : {
+    hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision, permissionDecisionReason: reason },
+  });
+  const emitUpdate = (input, overwrite) => emit(agy ? { decision: "allow", overwrite } : {
+    hookSpecificOutput: { hookEventName: "PreToolUse", ...(codex ? { permissionDecision: "allow" } : {}), updatedInput: input },
+  });
   let decision = null;
   let reason = null;
+  let agyRoleResolved = false;
   try {
-    const event = JSON.parse(fs.readFileSync(0, "utf8"));
+    let event = JSON.parse(fs.readFileSync(0, "utf8"));
     if (!isDict(event)) return;
-    if (host === "antigravity") {
+    let agyManager = false;
+    let agyTurn;
+    let agyStateFile;
+    if (agy) {
       const toolCall = isDict(event.toolCall) ? event.toolCall : {};
       const { toolSummary: ignored, ...args } = isDict(toolCall.args) ? toolCall.args : {};
-      const tool = typeof toolCall.name === "string" ? toolCall.name.replace(/^mcp_t3-code_/, "mcp__t3_code__") : "";
-      if (tool === "run_command") {
-        const reason = classifyBash(args.CommandLine, { cwd: args.Cwd }, false);
-        emit(reason ? { decision: "deny", reason } : { decision: "allow" });
-      } else if (tool === "mcp__t3_code__delegate_task") {
-        const result = checkDelegation(workers, event, { ...args, target: isDict(args.target) ? args.target : {} },
-          { stampRole: true, requireTier: true });
-        if (result.decision) emit({ decision: "deny", reason: result.reason });
-        else emit({ decision: "allow", ...(result.task === undefined ? {} : { overwrite: { task: result.task } }) });
-      } else if (tool === "mcp__t3_code__t3_thread_send") {
-        const stamped = stampFooter(args, workers ? path.dirname(workers) : null);
-        emit({ decision: "allow", ...(stamped ? { overwrite: { message: stamped.message } } : {}) });
-      } else if (["invoke_subagent", "define_subagent", "swarm", "run_workflow"].includes(tool)) {
-        emit({ decision: "deny", reason: "Antigravity's own subagent tools skip the Worker ladder; dispatch Workers with T3 delegate_task." });
-      } else {
-        emit({ decision: "allow" });
+      const tool = typeof toolCall.name === "string" ? toolCall.name.replace(/^mcp_t3-code_/, "mcp__t3_code__") : undefined;
+      if (AGY_SUBAGENTS.has(tool)) {
+        emitPreToolUse("deny", "Antigravity's own subagent tools skip the Worker ladder; dispatch Workers with T3 delegate_task.");
+        return;
       }
-      return;
+      if (tool === "mcp__t3_code__delegate_task" && !isDict(args.target)) args.target = {};
+      const thread = process.env.T3CODE_THREAD_ID?.trim();
+      agyManager = await antigravityManager(thread);
+      agyRoleResolved = true;
+      if (agyManager) {
+        // Hash the prompt and thread separately; neither raw prompts nor paths from IDs go on disk.
+        const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
+        agyTurn = hash(typeof event.lastUserInput === "string" ? event.lastUserInput : "");
+        agyStateFile = managerStatePath({ session_id: `antigravity-${hash(thread)}` });
+      }
+      event = {
+        hook_event_name: "PreToolUse", tool_name: tool, tool_input: args,
+        session_id: thread, cwd: event.cwd, lastUserInput: event.lastUserInput,
+      };
     }
-    const stateFile = managerStatePath(event);
+    const stateFile = agy ? agyStateFile : managerStatePath(event);
     const codexManager = codex && enrolledCodexManager(event);
     if (event.hook_event_name === "UserPromptSubmit") {
       if (codexManager || (host === "claude" && event.agent_id == null)) {
         try {
-          updateManagerState(stateFile, (previous) => {
-            const prompt = typeof event.prompt === "string" ? event.prompt : "";
-            const worker = previous.worker || /^Role: Worker\r?$/m.test(prompt);
-            const approved = /^Manager work approval: \S/m.test(prompt);
-            const browser = approved && !worker ? browserGrants(prompt) : [];
-            return {
-              worker, count: 0, approved, turn: codexManager ? event.turn_id : crypto.randomUUID(),
-              ...(browser.length ? { browser } : {}),
-              ...(isProfileId(previous.botProfile) ? { botProfile: previous.botProfile } : {}),
-              ...(previous.invalidBrowser && !isProfileId(previous.botProfile) ? { invalidBrowser: true } : {}),
-            };
-          });
+          updateManagerState(stateFile, (previous) => resetManagerTurn(previous,
+            typeof event.prompt === "string" ? event.prompt : "", codexManager ? event.turn_id : crypto.randomUUID()));
         } catch {
           // Block the new prompt if old turn grants may still be on disk.
           emit({ decision: "block", reason: "Could not reset the Manager turn state." });
@@ -1172,14 +1211,26 @@ async function main() {
     if (event.hook_event_name != null && event.hook_event_name !== "PreToolUse") return;
     const tool = event.tool_name;
     const args = "tool_input" in event ? event.tool_input : {};
-    const mainLoop = codex ? codexManager : !event.agent_id;
+    const mainLoop = agy ? agyManager : codex ? codexManager : !event.agent_id;
     // An unenrolled session must not keep using state from its time as a Manager.
     let managerState = readManagerState(codex && !codexManager ? null : stateFile);
-    const workerContext = managerState.worker || Boolean(event.agent_id) || (codex && event.agent_type != null);
+    if (agyManager && managerState.turn !== agyTurn) {
+      const prompt = typeof event.lastUserInput === "string" ? event.lastUserInput : "";
+      try {
+        managerState = updateManagerState(stateFile, (current) => current.turn === agyTurn
+          ? current : resetManagerTurn(current, prompt, agyTurn, false));
+      } catch {
+        emitPreToolUse("deny", "Could not reset the Manager turn state.");
+        return;
+      }
+    }
+    const workerContext = (agy && !agyManager) || managerState.worker || Boolean(event.agent_id) || (codex && event.agent_type != null);
     // Never carry an approval or browser grant over to a different native Codex turn.
     const codexTurnMatches = () => !codexManager || Boolean(managerState.turn && managerState.turn === event.turn_id);
     const workApproved = () => managerState.approved && codexTurnMatches();
-    const isShell = tool === "Bash" || (codexManager && tool === "exec_command");
+    const isShell = agy ? tool === "run_command" : tool === "Bash" || (codexManager && tool === "exec_command");
+    const command = isDict(args) ? args[agy ? "CommandLine" : "command"] : undefined;
+    const shellCommand = typeof command === "string" ? command : "";
     if (codexManager && isShell && !managerState.worker && !workApproved()) {
       emit({ hookSpecificOutput: {
         hookEventName: "PreToolUse",
@@ -1195,10 +1246,11 @@ async function main() {
     const isDelegateTask = normalizedTool === "mcp__t3_code__delegate_task" ||
       (codexManager && canonicalTool === "mcp__t3_code__delegate_task");
     const previewTool = browserToolName(tool);
-    const browserWorker = () => (!codexManager && (host !== "claude" || event.agent_id != null)) ||
+    const browserWorker = () => (agy ? !agyManager : !codexManager && (host !== "claude" || event.agent_id != null)) ||
       managerState.worker || !managerState.turn || managerState.invalidBrowser || !codexTurnMatches();
     if (previewTool === "preview_status") {
       auditBrowserCall(stateFile, event, isDict(args) ? args : {}, managerState.botProfile, "status", null, browserWorker());
+      if (agy) emitPreToolUse("allow");
       return;
     }
     const isScheduleTask = /^mcp__t3_code(?:_direct)?__schedule_task$/.test(canonicalTool);
@@ -1208,7 +1260,7 @@ async function main() {
     const isPrWatch = canonicalTool === "watch_pull_request" || canonicalTool === "mcp__t3_code__watch_pull_request";
     const isLocalWakeup = tool === "CronCreate" || (tool === "Skill" && isDict(args) && args.skill === "loop");
     const isLocalAutomation = isLocalWakeup ||
-      (isShell && isDict(args) && isAutomationShellCommand(args.command ?? ""));
+      (isShell && isAutomationShellCommand(shellCommand));
     const configureModelSelection = isThreadConfigure && isDict(args) && Object.hasOwn(args, "modelSelection");
     if (isScheduleTask) {
       const input = isDict(args) ? args : {};
@@ -1216,13 +1268,13 @@ async function main() {
       const pauseOnly = typeof input.scheduledTaskId === "string" && input.scheduledTaskId.trim() &&
         input.enabled === false && Object.keys(input).every((key) => safePauseKeys.has(key)) &&
         (input.environmentId === undefined || (typeof input.environmentId === "string" && input.environmentId.trim()));
-      if (!pauseOnly && !(host === "claude" && event.agent_id == null && managerState.worker === false &&
+      if (!pauseOnly && !((agyManager || (host === "claude" && event.agent_id == null)) && managerState.worker === false &&
           managerState.turn && !managerState.invalidBrowser && registeredScheduleAllowed(workers, event, input))) {
         [decision, reason] = ["deny", SCHEDULE_TASK];
       }
     } else if (isPrWatch && !hasPrWatchTarget(args)) {
       [decision, reason] = ["deny", "Bind a PR watch to a repository and pull request, URL, or explicit threadId."];
-    } else if ((isThreadLaunch || isCreateThreads || configureModelSelection) && workerContext) [decision, reason] = ["deny", THREAD_LAUNCH];
+    } else if ((isThreadLaunch || isCreateThreads || configureModelSelection || (agy && isThreadConfigure)) && workerContext) [decision, reason] = ["deny", THREAD_LAUNCH];
     else if ((isThreadLaunch || isCreateThreads || configureModelSelection) && codex && !codexManager) {
       [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; top-level thread creation and model changes are denied here."];
     } else if (isThreadLaunch) {
@@ -1254,7 +1306,7 @@ async function main() {
         managerState = updateManagerState(stateFile, (current) => current.turn !== managerState.turn
           ? current : { ...current, count: current.count + 1 });
       } catch (error) {
-        if (!previewTool) throw error;
+        if (!previewTool && !agy) throw error;
         [decision, reason] = ["deny", "Could not update the Manager turn state."];
       }
       if (!decision && managerState.count > 5) {
@@ -1266,7 +1318,8 @@ async function main() {
       const input = isDict(args) ? args : {};
       if (!decision) {
         reason = browserWorker()
-          ? (codexManager ? BROWSER_MANAGER.replace("Claude Manager", "enrolled Codex Manager") : BROWSER_MANAGER)
+          ? (agy ? BROWSER_MANAGER.replace("Claude Manager", "enrolled Antigravity Manager")
+            : codexManager ? BROWSER_MANAGER.replace("Claude Manager", "enrolled Codex Manager") : BROWSER_MANAGER)
           : previewDecision(previewTool, input, managerState, stateFile, workers, event);
         if (reason) decision = "deny";
       }
@@ -1279,31 +1332,33 @@ async function main() {
         !isMemoryPatch(isDict(args) ? args.command : undefined, typeof event.cwd === "string" ? event.cwd : process.cwd())) {
       [decision, reason] = ["deny", managerGateReason("apply_patch to a file", stateFile)];
     }
-    if (enforceManager && !decision && ["Edit", "Write", "NotebookEdit", "MultiEdit"].includes(tool)) {
-      const filePath = dict(args).file_path ?? dict(args).notebook_path ?? "";
-      if (!isMemoryEdit(filePath, process.cwd())) {
+    const isEdit = agy ? AGY_EDITS.has(tool) : ["Edit", "Write", "NotebookEdit", "MultiEdit"].includes(tool);
+    if (enforceManager && !decision && isEdit) {
+      // Image generation names its output but does not expose a TargetFile for the memory exception.
+      const filePath = agy ? (tool === "generate_image" ? undefined : dict(args).TargetFile)
+        : dict(args).file_path ?? dict(args).notebook_path;
+      if (!isMemoryEdit(filePath, agy ? event.cwd || process.cwd() : process.cwd())) {
         decision = "deny";
         reason = managerGateReason(`${tool} to ${filePath || "a file"}`, stateFile);
       }
     }
-    if (enforceManager && !decision && isShell && mutatingBash(dict(args).command ?? "")) {
+    if (enforceManager && !decision && isShell && mutatingBash(shellCommand)) {
       decision = "deny";
       reason = managerGateReason("A Bash command that changes files or state", stateFile);
     }
     if (!decision && typeof tool === "string" && tool.endsWith("t3_thread_send")) {
       const stamped = stampFooter(args, workers ? path.dirname(workers) : null);
-      // Codex only honors updatedInput together with permissionDecision:allow.
-      if (stamped) {
-        emit({ hookSpecificOutput: { hookEventName: "PreToolUse", ...(codex ? { permissionDecision: "allow" } : {}), updatedInput: stamped } });
-      }
+      if (stamped) emitUpdate(stamped, { message: stamped.message });
+      else if (agy) emitPreToolUse("allow");
       return;
     }
     if (!decision && isDelegateTask) {
       const input = dict(args);
-      const result = checkDelegation(workers, event, input, { stampRole: mainLoop });
+      const result = checkDelegation(workers, event, input, { stampRole: agy || mainLoop, requireTier: agy });
       if (result.decision) ({ decision, reason } = result);
       else if (result.task !== undefined) {
-        emit({ hookSpecificOutput: { hookEventName: "PreToolUse", ...(codex ? { permissionDecision: "allow" } : {}), updatedInput: { ...input, task: result.task } } });
+        emitUpdate({ ...input, task: result.task }, { task: result.task });
+        return;
       }
     } else if (tool === "spawn_agent") {
       const subagentType = dict(args).agent_type;
@@ -1317,15 +1372,15 @@ async function main() {
       } else if (approval || args.model === "opus") [decision, reason] = gate(approval ?? APPROVAL, args.prompt);
       else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason] = ["deny", INHERITED_MODEL];
     } else if (!decision && isShell) {
-      const command = dict(args).command ?? "";
-      if (typeof command !== "string") return;
-      reason = classifyBash(command, event, mainLoop);
+      reason = classifyBash(shellCommand, agy ? { cwd: dict(args).Cwd ?? event.cwd } : event, mainLoop);
       if (reason) decision = "deny";
     }
   } catch {
+    if (agyRoleResolved) emitPreToolUse("deny", "Could not evaluate the Antigravity tool policy.");
     return;
   }
-  if (decision) {
+  if (agy) emitPreToolUse(decision ? "deny" : "allow", reason);
+  else if (decision) {
     // Codex fails open on "ask", so it gets a deny that tells the model to obtain approval first.
     if (codex && decision === "ask") [decision, reason] = ["deny", `${reason} Get the user's approval, then retry.`];
     emit({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision, permissionDecisionReason: reason } });
