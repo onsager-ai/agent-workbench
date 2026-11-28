@@ -253,8 +253,17 @@ function validateWorkerShape(config, { profile = false } = {}) {
               schedule.weekdays.some((day) => !isInt(day) || day < 0 || day > 6))) {
             throw new Conflict(`${where}.schedule.weekdays must be a list of integers from 0 to 6; correct it in workers.yml`);
           }
+        } else if (schedule?.type === "once") {
+          keys(schedule, ["type", "runAt"], `${where}.schedule`);
+          const timestamp = typeof schedule.runAt === "string" &&
+            /^(\d{4}-\d{2}-\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(schedule.runAt);
+          // Date can normalize impossible dates, so check the original day in UTC.
+          if (!timestamp || timestamp[0] !== schedule.runAt ||
+              new Date(`${timestamp[1]}T00:00:00Z`).getUTCDate() !== Number(timestamp[1].slice(-2))) {
+            throw new Conflict(`${where}.schedule.runAt must be an ISO 8601 timestamp with a timezone; correct it in workers.yml`);
+          }
         } else {
-          throw new Conflict(`${where}.schedule.type must be interval or fixed_time; correct it in workers.yml`);
+          throw new Conflict(`${where}.schedule.type must be interval, fixed_time, or once; correct it in workers.yml`);
         }
       }
     }

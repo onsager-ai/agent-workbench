@@ -1134,7 +1134,7 @@ describe("workbench setup", () => {
     }
   });
 
-  test("only valid recurring T3 schedule entries are accepted by the installer", () => {
+  test("only valid T3 schedule entries are accepted by the installer", () => {
     const f = new Fixture();
     f.installOrchestration();
     const setup = new Setup(f.home);
@@ -1145,7 +1145,11 @@ describe("workbench setup", () => {
       schedule: { type: "fixed_time", timeOfDay: "08:30", weekdays: [0, 6] } };
     const daily = { ...fixed, task_id: "task-1", fresh_session: true,
       schedule: { type: "fixed_time", timeOfDay: "09:00" } };
-    const schedules = [interval, { ...fixed, fresh_session: false }, daily];
+    const once = { name: "One-time check", thread: "thread-1",
+      schedule: { type: "once", runAt: "2027-01-15T09:00:00Z" } };
+    const onceWithOffset = { ...once, name: "Leap-day check",
+      schedule: { ...once.schedule, runAt: "2028-02-29T09:00:00.123+05:30" } };
+    const schedules = [interval, { ...fixed, fresh_session: false }, daily, once, onceWithOffset];
     const configure = (value) => f.write(f.overridePath, JSON.stringify({ policy: { schedules: value } }));
     configure(schedules);
     f.run("install");
@@ -1161,10 +1165,15 @@ describe("workbench setup", () => {
       { type: "interval", everyMs: "60000" }, { ...interval.schedule, timeOfDay: "09:00" },
       { type: "fixed_time" }, { ...fixed.schedule, timeOfDay: "24:00" },
       { ...fixed.schedule, weekdays: [7] }, { ...fixed.schedule, weekdays: "weekdays" },
-      { type: "webhook" }, { type: "once", runAt: "2026-12-01T09:00:00Z" },
+      { type: "webhook" }, { ...once.schedule, everyMs: 60000 },
     ]) {
       configure([{ ...interval, schedule }]);
       assert.throws(() => setup.workersBundle(), /policy\.schedules|everyMs/, JSON.stringify(schedule));
+    }
+    for (const runAt of [undefined, 42, "", "not a date", "2027-01-15", "2027-01-15T09:00:00",
+      "2027-02-29T09:00:00Z", "2027-01-15T24:00:00Z", "2027-01-15T09:00:00+24:00", "2027-01-15T09:00:00Z\n"]) {
+      configure([{ ...once, schedule: { ...once.schedule, runAt } }]);
+      assert.throws(() => setup.workersBundle(), /schedule\.runAt must be an ISO 8601 timestamp/, JSON.stringify(runAt));
     }
     for (const task_id of [null, 42, "", " "]) {
       configure([{ ...interval, task_id }]);
