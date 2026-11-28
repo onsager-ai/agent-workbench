@@ -100,9 +100,15 @@ Set `policy.manager_models` in your `workers.yml` override to a list of exact, n
 
 ### Registered T3 schedules
 
-For an automation already listed in the private registry, put its `name`, T3 `thread` ID, and exact `schedule` in `policy.schedules` in your `workers.yml` override, then rerun `agent-workbench install`. No schedules are allowlisted by default, and the hook does not read the registry. Only a Claude Manager main loop or an enrolled Antigravity Manager in that thread can create the schedule: use the name as `title`, supply a nonblank `prompt`, and set `bindToCurrentThread: true` to run on the thread's current model. The schedule must match the configured object exactly: `interval` uses integer `everyMs` of at least 60000, or `fixed_time` uses a quoted 24-hour `timeOfDay` (`"09:00"`) and optional `weekdays` (0 for Sunday through 6 for Saturday).
+For an automation already listed in the private registry, put its `name`, T3 `thread` ID, and exact `schedule` in `policy.schedules` in your `workers.yml` override, then rerun `agent-workbench install`. No schedules are allowlisted by default, and the hook does not read the registry. A Claude Manager main loop or an enrolled Antigravity or Codex Manager can create or re-enable schedules only from that T3 thread and within a current Manager turn. Codex uses the T3 thread mapped to its native session and denies the call if there is no unique top-level match. Codex can create or re-enable `fixed_time` and `once` schedules only. Workers cannot create or re-enable schedules.
 
-An optional `fresh_session` boolean defaults to `false`. If a create supplies `freshSession`, it must match that value. To let the same Manager re-enable a paused schedule, set the entry’s optional `task_id` to its T3 schedule ID and call with `scheduledTaskId` and `enabled: true`. The update may also include `environmentId` and a matching `freshSession`. Codex denies creates and re-enables. Pause-only updates to identified schedules are unchanged.
+To create a schedule, use the entry's `name` as `title`, supply a nonblank `prompt`, and set `bindToCurrentThread: true` to run on the thread's current model. Match the configured `schedule` object exactly:
+
+- `interval`: integer `everyMs` of at least 60000.
+- `fixed_time`: quoted 24-hour `timeOfDay` (`"09:00"`) and optional `weekdays` (0 for Sunday through 6 for Saturday).
+- `once`: quoted ISO 8601 `runAt` timestamp with seconds and a timezone, for example `schedule: {type: once, runAt: "2027-01-15T09:00:00Z"}`. Use the same `runAt` string in the call.
+
+An optional `fresh_session` boolean defaults to `false`. If a create supplies `freshSession`, it must match that value. To let the same Manager re-enable a paused schedule, set the entry’s optional `task_id` to its T3 schedule ID and call with `scheduledTaskId` and `enabled: true`. The update may also include `environmentId` and a matching `freshSession`. Pause-only updates to identified schedules are unchanged.
 
 ### Hook denial log
 

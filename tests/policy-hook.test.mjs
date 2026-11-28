@@ -722,7 +722,9 @@ describe("policy hook", () => {
     const title = "Hourly health check";
     const interval = { type: "interval", everyMs: 3600000 };
     const fixed = { type: "fixed_time", timeOfDay: "09:15", weekdays: [1, 3] };
+    const once = { type: "once", runAt: "2027-01-15T09:00:00Z" };
     const input = { title, prompt: "Check service health.", bindToCurrentThread: true, schedule: interval };
+    const onceInput = { ...input, title: "One-time health check", schedule: once };
     const reenable = { scheduledTaskId: "task-1", enabled: true, freshSession: true };
     const env = t3Env(thread);
     const tool_name = "mcp__t3-code__schedule_task";
@@ -740,6 +742,7 @@ describe("policy hook", () => {
 
     prompt("schedule-unconfigured");
     deny(call("schedule-unconfigured", input), "no schedule config");
+    deny(call("schedule-unconfigured", onceInput), "no one-shot schedule config");
     prompt("schedule-direct-worker", "Role: Worker\nDo the assigned work.");
     deny(call("schedule-direct-worker", input, direct), "unregistered direct Worker call");
     prompt("schedule-direct-pause");
@@ -751,6 +754,7 @@ describe("policy hook", () => {
     fs.writeFileSync(overlay, JSON.stringify({ policy: { schedules: [
       { name: title, thread, schedule: interval, task_id: reenable.scheduledTaskId, fresh_session: true },
       { name: "Scheduled review", thread, schedule: fixed, task_id: "task-2" },
+      { name: onceInput.title, thread, schedule: once },
     ] } }));
     fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
 
@@ -770,6 +774,9 @@ describe("policy hook", () => {
     assert.equal(call("schedule-fixed", fixedInput), null);
     assert.equal(call("schedule-fixed", { ...fixedInput, freshSession: false }), null);
 
+    prompt("schedule-once");
+    assert.equal(call("schedule-once", onceInput), null);
+
     prompt("schedule-reenable");
     assert.equal(call("schedule-reenable", reenable), null);
     assert.equal(call("schedule-reenable", { scheduledTaskId: reenable.scheduledTaskId, enabled: true }), null);
@@ -782,7 +789,9 @@ describe("policy hook", () => {
       ["different-interval", { ...input, schedule: { ...interval, everyMs: 60000 } }],
       ["different-weekdays", { ...fixedInput, schedule: { ...fixed, weekdays: [3, 1] } }],
       ["webhook", { ...input, schedule: { type: "webhook" } }],
-      ["once", { ...input, schedule: { type: "once", runAt: "2026-12-01T09:00:00Z" } }],
+      ["once-unregistered", { ...onceInput, title: "Another one-time check" }],
+      ["once-wrong-run-at", { ...onceInput, schedule: { ...once, runAt: "2027-01-15T09:01:00Z" } }],
+      ["once-wrong-thread", onceInput, {}, t3Env("wrong-thread")],
       ["missing-bind", { ...input, bindToCurrentThread: undefined }],
       ["extra-key", { ...input, environmentId: "env-1" }],
       ["update", { ...input, scheduledTaskId: "existing" }],
@@ -806,6 +815,7 @@ describe("policy hook", () => {
     }
     prompt("schedule-worker", "Role: Worker\nDo the assigned work.");
     deny(call("schedule-worker", input), "Worker main loop");
+    deny(call("schedule-worker", onceInput), "Worker main loop cannot create a one-shot schedule");
     deny(call("schedule-worker", reenable), "re-enable from Worker main loop");
     deny(call("schedule-no-state", input), "missing state");
     deny(call("schedule-no-state", reenable), "re-enable with missing state");
@@ -813,30 +823,6 @@ describe("policy hook", () => {
     deny(call("schedule-invalid-state", input), "invalid state");
     deny(call("schedule-invalid-state", reenable), "re-enable with invalid state");
 
-    const session_id = "schedule-codex";
-    prompt(session_id);
-    const result = run(JSON.stringify({ session_id, tool_name, tool_input: input }), {
-      args: ["--host", "codex", "--workers", workers], env: { ...env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") },
-    });
-    deny(JSON.parse(result.stdout).hookSpecificOutput, "Codex host");
-
-    const enrolledSession = "schedule-enrolled-codex";
-    fs.writeFileSync(path.join(directory, "state/agent-workbench/codex-managers.json"),
-      JSON.stringify({ sessions: [enrolledSession] }));
-    const codexOptions = {
-      args: ["--host", "codex", "--workers", workers],
-      env: { ...env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") },
-    };
-    const codexTurn = { session_id: enrolledSession, turn_id: "turn-1" };
-    run(JSON.stringify({ ...codexTurn, hook_event_name: "UserPromptSubmit", prompt: "Create the registered schedule." }),
-      codexOptions);
-    assert.equal(JSON.parse(fs.readFileSync(path.join(managerTurns, `${enrolledSession}.json`), "utf8")).turn,
-      codexTurn.turn_id);
-    for (const name of [tool_name, direct.tool_name]) {
-      const create = run(JSON.stringify({ ...codexTurn, hook_event_name: "PreToolUse", tool_name: name, tool_input: input }),
-        codexOptions);
-      deny(JSON.parse(create.stdout).hookSpecificOutput, `enrolled Codex host with matching schedule (${name})`);
-    }
     assert.equal(call("schedule-pause", { scheduledTaskId: "existing", enabled: false }), null);
     deny(call("schedule-pause", { ...reenable, enabled: false }), "pause with freshSession");
   });
@@ -2291,10 +2277,74 @@ describe("policy hook", () => {
       assert.match(tool("direct-manager", delegate, { target: {} }).permissionDecisionReason, /Set target.model/);
       assert.equal(tool("outside", delegate, { target: {} }), null);
       for (const session of ["direct-manager", "outside"]) {
-        assert.match(tool(session, schedule, {}).permissionDecisionReason, /New schedule_task calls/);
+        assert.match(tool(session, schedule, {}).permissionDecisionReason, /policy\.schedules/);
         assert.equal(tool(session, schedule, { scheduledTaskId: "s-1", enabled: false }), null);
       }
       assert.equal(JSON.parse(fs.readFileSync(stateFile("direct-manager"), "utf8")).count, 0);
+    });
+
+    test("Codex Managers may create and re-enable registered schedules on their mapped T3 thread", () => {
+      const thread = "registered-thread";
+      const workerThread = "worker-thread";
+      const schedule = { type: "once", runAt: "2027-01-15T09:00:00Z" };
+      const input = { title: "One-time check", prompt: "Check service health.", bindToCurrentThread: true, schedule };
+      const fixedInput = { ...input, title: "Daily check", schedule: { type: "fixed_time", timeOfDay: "09:00" } };
+      const intervalInput = { ...input, title: "Interval check", schedule: { type: "interval", everyMs: 60000 } };
+      const reenable = { scheduledTaskId: "task-1", enabled: true };
+      const fixedReenable = { ...reenable, scheduledTaskId: "task-2" };
+      const intervalReenable = { ...reenable, scheduledTaskId: "task-3" };
+      const overlay = path.join(directory, "schedule-workers.yml");
+      fs.writeFileSync(overlay, JSON.stringify({ policy: { schedules: [
+        { name: input.title, thread, schedule, task_id: reenable.scheduledTaskId },
+        { name: input.title, thread: workerThread, schedule, task_id: reenable.scheduledTaskId },
+        { name: fixedInput.title, thread, schedule: fixedInput.schedule, task_id: fixedReenable.scheduledTaskId },
+        { name: intervalInput.title, thread, schedule: intervalInput.schedule, task_id: intervalReenable.scheduledTaskId },
+      ] } }));
+      fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
+
+      const topLevel = { relationshipToParent: null };
+      mapCodexSessions(thread, topLevel, ["thread-manager", "session-manager"]);
+      mapCodexSessions("other-thread", topLevel, ["wrong-thread"]);
+      mapCodexSessions(workerThread, { relationshipToParent: "subagent" }, ["delegated-worker"]);
+      writeEnrolment({
+        threads: [thread, "other-thread"],
+        sessions: ["session-manager", "unmapped-manager", "delegated-worker"],
+      });
+      const tools = ["mcp__t3_code__schedule_task", "mcp__t3_code_direct__schedule_task"];
+      const allowed = (session) => {
+        for (const name of tools) {
+          assert.equal(tool(session, name, input), null);
+          assert.equal(tool(session, name, reenable), null);
+          assert.equal(tool(session, name, fixedInput), null);
+          assert.equal(tool(session, name, fixedReenable), null);
+          assert.equal(tool(session, name, intervalInput)?.permissionDecision, "deny");
+          assert.equal(tool(session, name, intervalReenable)?.permissionDecision, "deny");
+        }
+      };
+      const denied = (session, details) => {
+        for (const payload of [input, reenable]) {
+          const decision = tool(session, tools[0], payload, details);
+          assert.equal(decision?.permissionDecision, "deny", session);
+          assert.match(decision.permissionDecisionReason, /policy\.schedules/);
+        }
+      };
+
+      denied("thread-manager"); // No turn yet.
+      prompt("thread-manager");
+      allowed("thread-manager");
+      denied("thread-manager", { turn_id: "stale-turn" });
+      denied("thread-manager", { agent_type: "worker" });
+
+      for (const session of ["session-manager", "wrong-thread", "unmapped-manager", "delegated-worker"]) prompt(session);
+      allowed("session-manager");
+      prompt("session-manager", "Role: Worker\nDo the assigned work.");
+      denied("session-manager");
+      denied("wrong-thread");
+      denied("unmapped-manager");
+      denied("delegated-worker");
+
+      writeEnrolment({ sessions: ["session-manager"] });
+      denied("thread-manager"); // Still mapped, but no longer enrolled.
     });
 
     test("Codex PR watches require an enrolled Manager under both T3 namespaces", () => {

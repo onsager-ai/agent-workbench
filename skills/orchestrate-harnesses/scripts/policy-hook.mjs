@@ -33,9 +33,10 @@ const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the u
   "For models listed in policy.manager_models, quote the user's approval in the launch text as `L3 approval: <link to the approval>`. " +
   "Model configuration calls have no approval text field and remain limited to non-opt-in L1/L2. " +
   "Workers must not launch top-level threads or change thread models. Use a Worker or current-thread wakeup for follow-up work.";
-const SCHEDULE_TASK = "New schedule_task calls are unavailable because the current T3 schema has no model selection field. " +
-  "Use the personal automation registry before activating automation. " +
-  "A Claude Manager or an enrolled Antigravity Manager can create or re-enable a schedule that matches an entry in policy.schedules. Identified schedules can be paused.";
+const SCHEDULE_TASK = "This schedule_task call does not meet the registered schedule rules. " +
+  "Use the personal automation registry before activating automation. A Claude Manager or an enrolled Antigravity or Codex Manager " +
+  "can create or re-enable a schedule that matches an entry in policy.schedules for the current T3 thread. " +
+  "Codex supports fixed_time and once only. Identified schedules can be paused.";
 const BROWSER_TOOL = /^mcp__t3_code(?:_direct)?__(preview_.+|t3_preview_.+)$/;
 const BROWSER_MANAGER = "Browser tools other than status require a Claude Manager main loop with valid turn state.";
 const NATIVE_EDITS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
@@ -758,8 +759,7 @@ function launchModelAllowed(file, event, model, approved = false) {
 const SCHEDULE_CREATE_KEYS = new Set(["title", "prompt", "schedule", "bindToCurrentThread", "clientRequestId", "enabled", "freshSession"]);
 const SCHEDULE_UPDATE_KEYS = new Set(["scheduledTaskId", "enabled", "freshSession", "environmentId"]);
 
-function registeredScheduleAllowed(file, event, input) {
-  const thread = process.env.T3CODE_THREAD_ID?.trim();
+function registeredScheduleAllowed(file, event, input, { thread, codex }) {
   if (!file || !thread) return false;
   const update = Object.hasOwn(input, "scheduledTaskId");
   if (update) {
@@ -769,13 +769,14 @@ function registeredScheduleAllowed(file, event, input) {
   } else if (input.bindToCurrentThread !== true || typeof input.prompt !== "string" || !input.prompt.trim() ||
       (Object.hasOwn(input, "enabled") && input.enabled !== true) ||
       !Object.keys(input).every((key) => SCHEDULE_CREATE_KEYS.has(key)) ||
-      !["interval", "fixed_time"].includes(input.schedule?.type)) return false;
+      !["interval", "fixed_time", "once"].includes(input.schedule?.type)) return false;
 
   const hasFreshSession = Object.hasOwn(input, "freshSession");
   if (hasFreshSession && typeof input.freshSession !== "boolean") return false;
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
     return config.policy.schedules?.some((entry) => entry.thread === thread &&
+      (!codex || ["fixed_time", "once"].includes(entry.schedule?.type)) &&
       (!hasFreshSession || input.freshSession === (entry.fresh_session ?? false)) &&
       (update ? entry.task_id === input.scheduledTaskId :
         entry.name === input.title && isDeepStrictEqual(entry.schedule, input.schedule))) ?? false;
@@ -1464,9 +1465,22 @@ async function main() {
       const pauseOnly = typeof input.scheduledTaskId === "string" && input.scheduledTaskId.trim() &&
         input.enabled === false && Object.keys(input).every((key) => safePauseKeys.has(key)) &&
         (input.environmentId === undefined || (typeof input.environmentId === "string" && input.environmentId.trim()));
-      if (!pauseOnly && !((agyManager || (host === "claude" && event.agent_id == null)) && managerState.worker === false &&
-          managerState.turn && !managerState.invalidBrowser && registeredScheduleAllowed(workers, event, input))) {
-        [decision, reason, rule] = ["deny", SCHEDULE_TASK, RULE.schedule];
+      if (!pauseOnly) {
+        const scheduleManager = agyManager || codexManager || (host === "claude" && event.agent_id == null);
+        let allowed = false;
+        if (scheduleManager && managerState.worker === false && managerState.turn &&
+            !managerState.invalidBrowser && codexTurnMatches()) {
+          let thread;
+          if (codex) {
+            // Session-enrolled Managers can resolve their role without a thread; schedules cannot.
+            const row = codexThread ?? await t3Thread(event.session_id, { byCodexSession: true });
+            if (topLevelT3Thread(row)) thread = row.threadId;
+          } else {
+            thread = process.env.T3CODE_THREAD_ID?.trim();
+          }
+          allowed = registeredScheduleAllowed(workers, event, input, { thread, codex });
+        }
+        if (!allowed) [decision, reason, rule] = ["deny", SCHEDULE_TASK, RULE.schedule];
       }
     } else if (isPrWatch && !hasPrWatchTarget(args)) {
       [decision, reason, rule] = ["deny", "Bind a PR watch to a repository and pull request, URL, or explicit threadId.", RULE.prWatchTarget];
