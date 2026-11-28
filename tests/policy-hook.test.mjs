@@ -1820,6 +1820,26 @@ describe("policy hook", () => {
       });
     });
 
+    test("enrolled Codex Managers exempt delegation lifecycle calls from the work count", () => {
+      enrol("lifecycle");
+      prompt("lifecycle");
+      const lifecycleTools = [
+        "mcp__t3_code__orchestrator_capabilities",
+        "mcp__t3_code__task_status",
+        "mcp__t3_code__task_cancel",
+        "mcp__t3_code__t3_thread_wait",
+        "SendMessage",
+        "TaskStop",
+      ];
+      for (let i = 1; i <= 5; i++) assert.equal(bash("lifecycle", "ls"), null);
+      assert.equal(JSON.parse(fs.readFileSync(stateFile("lifecycle"), "utf8")).count, 5);
+      for (const tool_name of lifecycleTools) {
+        assert.equal(tool("lifecycle", tool_name), null, tool_name);
+        assert.equal(JSON.parse(fs.readFileSync(stateFile("lifecycle"), "utf8")).count, 5, tool_name);
+      }
+      assert.match(bash("lifecycle", "ls").permissionDecisionReason, /sixth counted work call/);
+    });
+
     test("enrolled Codex Managers count apply_patch even when the patch is denied", () => {
       enrol("counted");
       for (const session of ["counted", "not-counted"]) {
