@@ -2006,18 +2006,22 @@ function stripTrailingNewlines(data) {
   return data.subarray(0, end);
 }
 
+const ANTIGRAVITY_MATCHER = "^(run_command|mcp_t3-code_(delegate_task|t3_thread_send)|invoke_subagent|define_subagent|swarm|run_workflow)$";
+
 function validAntigravityGroup(group) {
   if (!isDict(group) || Object.keys(group).sort().join(",") !== "PreToolUse,enabled" || group.enabled !== true ||
       !Array.isArray(group.PreToolUse) || group.PreToolUse.length !== 1) return false;
   const [entry] = group.PreToolUse;
-  if (!isDict(entry) || Object.keys(entry).sort().join(",") !== "hooks,matcher" || entry.matcher !== "run_command" ||
+  if (!isDict(entry) || Object.keys(entry).sort().join(",") !== "hooks,matcher" || !["run_command", ANTIGRAVITY_MATCHER].includes(entry.matcher) ||
       !Array.isArray(entry.hooks) || entry.hooks.length !== 1) return false;
   const [handler] = entry.hooks;
   if (!isDict(handler) || Object.keys(handler).sort().join(",") !== "command,type" || handler.type !== "command" ||
       typeof handler.command !== "string") return false;
   try {
     const parts = shellSplit(handler.command);
-    return parts.length === 4 && path.isAbsolute(parts[0]) && path.isAbsolute(parts[1]) &&
+    const validArgs = entry.matcher === "run_command" ? parts.length === 4
+      : parts.length === 6 && parts[4] === "--workers" && path.isAbsolute(parts[5]);
+    return validArgs && path.isAbsolute(parts[0]) && path.isAbsolute(parts[1]) &&
       parts[2] === "--host" && parts[3] === "antigravity" && parts.map(shellQuote).join(" ") === handler.command;
   } catch {
     return false;
@@ -2077,24 +2081,24 @@ function antigravityWorkspace(workspace, setup, remove = false) {
       });
     }
 
+    if (hasGroup && !owned) {
+      throw new Conflict(`hooks.json already contains an unowned agent-workbench group: ${hooksFile}; resolve it manually; the existing hook was not adopted`);
+    }
+    if (hasGroup && !isDeepStrictEqual(current, owned)) {
+      throw new Conflict(`Agent Workbench Antigravity hook conflicts with its ownership record: ${hooksFile}; changed configuration was left untouched`);
+    }
+
     let group = owned;
-    if (!group) {
-      if (hasGroup) throw new Conflict(`hooks.json already contains an unowned agent-workbench group: ${hooksFile}; resolve it manually; the existing hook was not adopted`);
+    if (owned?.PreToolUse[0].matcher !== ANTIGRAVITY_MATCHER) {
       const adapter = path.resolve(setup.policyHook);
       let info;
       try { info = fs.statSync(adapter); } catch {}
       if (!info?.isFile() || !(info.mode & 0o111)) {
-        throw new Conflict(`Antigravity shell adapter is not installed or executable: ${adapter}; install orchestrate-harnesses, then retry`);
+        throw new Conflict(`Antigravity policy adapter is not installed or executable: ${adapter}; install orchestrate-harnesses, then retry`);
       }
-      const command = [path.resolve(process.execPath), adapter, "--host", "antigravity"].map(shellQuote).join(" ");
-      group = { enabled: true, PreToolUse: [{ matcher: "run_command", hooks: [{ type: "command", command }] }] };
-    }
-    if (hasGroup) {
-      if (!owned || !isDeepStrictEqual(current, owned)) {
-        throw new Conflict(`Agent Workbench Antigravity hook conflicts with its ownership record: ${hooksFile}; changed configuration was left untouched`);
-      }
-      return;
-    }
+      const command = [path.resolve(process.execPath), adapter, "--host", "antigravity", "--workers", setup.workersPath].map(shellQuote).join(" ");
+      group = { enabled: true, PreToolUse: [{ matcher: ANTIGRAVITY_MATCHER, hooks: [{ type: "command", command }] }] };
+    } else if (hasGroup) return;
 
     mkdirLeaf(ownershipDir, 0o700);
     const record = Buffer.from(JSON.stringify({ schema: 1, workspace: root, group }, null, 2) + "\n");

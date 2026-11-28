@@ -661,7 +661,7 @@ function dispatchApproval(file, event, tier) {
   }
 }
 
-function delegateTier(file, event, { model, providerInstanceId, driverKind }) {
+function delegateTier(file, event, { model, providerInstanceId, driverKind }, exact = false) {
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
     const entries = Object.entries(config.tiers);
@@ -675,6 +675,12 @@ function delegateTier(file, event, { model, providerInstanceId, driverKind }) {
     if (providers.has(driverKind) || (!providerInstanceId && providerTiers.some(([, tier]) => tier.model === model))) {
       return { denial: "Set target.providerInstanceId to the provider of the configured Worker tier in the active profile." };
     }
+    if (exact) {
+      const match = !providerInstanceId && entries.find(([, tier]) =>
+        !tier.provider && (tier.model === model || tier.claude_route === model));
+      return match ? { name: match[0], tier: match[1] }
+        : { denial: "Set target.model and target.providerInstanceId (for provider tiers) to exactly match a configured Worker tier in the active profile." };
+    }
     // Legacy matching accepts tier names, model IDs and routes, ignoring prefixes and context suffixes.
     const full = String(model).replace(/\[[^\]]*\]$/, "");
     const short = full.split("/").pop();
@@ -684,9 +690,35 @@ function delegateTier(file, event, { model, providerInstanceId, driverKind }) {
       }
     }
   } catch {
-    // Without readable configuration there is no tier to check.
+    if (exact) return { denial: CONFIG_MISSING };
+    // Legacy calls pass through when no tier can be resolved.
   }
   return {};
+}
+
+function checkDelegation(workers, event, input, { stampRole, exact = false }) {
+  const target = dict(input.target);
+  if (!target.model) return { decision: "deny", reason: T3_MODEL };
+  const { name, tier, denial } = delegateTier(workers, event, target, exact);
+  if (denial) return { decision: "deny", reason: denial };
+  const readOnly = tier?.access === "read-only";
+  const isolation = tier?.isolation ?? (readOnly ? ["shared"] : ["shared", "worktree"]);
+  const requestedIsolation = input.isolation ?? "shared";
+  if ((tier?.provider || tier?.isolation || tier?.access) && !isolation.includes(requestedIsolation)) {
+    return { decision: "deny", reason: `Worker ${name} does not allow ${requestedIsolation} isolation; use ${isolation.join(" or ")}.` };
+  }
+  const [decision, reason] = gate(name && dispatchApproval(workers, event, name), input.task);
+  if (decision) return { decision, reason };
+  const extra = tier?.stamp ?? (readOnly ? READ_ONLY_STAMP : "");
+  if (!stampRole && !extra) return {};
+  const task = typeof input.task === "string" ? input.task : "";
+  const role = /^Role: Worker$/m;
+  let stamped = role.test(task) ? task : `Role: Worker\n${task}`;
+  if (extra) {
+    const header = `Role: Worker\n${extra}`;
+    if (!stamped.includes(`${header}\n`) && !stamped.endsWith(header)) stamped = stamped.replace(role, () => header);
+  }
+  return stamped === task ? {} : { task: stamped };
 }
 
 function hasL3Approval(text) {
@@ -1075,11 +1107,24 @@ async function main() {
     if (!isDict(event)) return;
     if (host === "antigravity") {
       const toolCall = isDict(event.toolCall) ? event.toolCall : {};
-      const args = isDict(toolCall.args) ? toolCall.args : {};
-      const browserTool = browserToolName(toolCall.name);
-      const reason = browserTool && browserTool !== "preview_status" ? BROWSER_MANAGER
-        : toolCall.name === "run_command" ? classifyBash(args.CommandLine, { cwd: args.Cwd }, false) : null;
-      emit(reason ? { decision: "deny", reason } : { decision: "allow" });
+      const { toolSummary: ignored, ...args } = isDict(toolCall.args) ? toolCall.args : {};
+      const tool = typeof toolCall.name === "string" ? toolCall.name.replace(/^mcp_t3-code_/, "mcp__t3_code__") : "";
+      if (tool === "run_command") {
+        const reason = classifyBash(args.CommandLine, { cwd: args.Cwd }, false);
+        emit(reason ? { decision: "deny", reason } : { decision: "allow" });
+      } else if (tool === "mcp__t3_code__delegate_task") {
+        const result = checkDelegation(workers, event, { ...args, target: isDict(args.target) ? args.target : {} },
+          { stampRole: true, exact: true });
+        if (result.decision) emit({ decision: "deny", reason: result.reason });
+        else emit({ decision: "allow", ...(result.task === undefined ? {} : { overwrite: { task: result.task } }) });
+      } else if (tool === "mcp__t3_code__t3_thread_send") {
+        const stamped = stampFooter(args, workers ? path.dirname(workers) : null);
+        emit({ decision: "allow", ...(stamped ? { overwrite: { message: stamped.message } } : {}) });
+      } else if (["invoke_subagent", "define_subagent", "swarm", "run_workflow"].includes(tool)) {
+        emit({ decision: "deny", reason: "Antigravity's own subagent tools skip the Worker ladder; dispatch Workers with T3 delegate_task." });
+      } else {
+        emit({ decision: "allow" });
+      }
       return;
     }
     const stateFile = managerStatePath(event);
@@ -1260,32 +1305,10 @@ async function main() {
     }
     if (!decision && isDelegateTask) {
       const input = dict(args);
-      const target = dict(input.target);
-      if (!target.model) [decision, reason] = ["deny", T3_MODEL];
-      else {
-        const { name, tier, denial } = delegateTier(workers, event, target);
-        const readOnly = tier?.access === "read-only";
-        const isolation = tier?.isolation ?? (readOnly ? ["shared"] : ["shared", "worktree"]);
-        const requestedIsolation = input.isolation ?? "shared";
-        if (denial) {
-          [decision, reason] = ["deny", denial];
-        } else if ((tier?.provider || tier?.isolation || tier?.access) && !isolation.includes(requestedIsolation)) {
-          [decision, reason] = ["deny", `Worker ${name} does not allow ${requestedIsolation} isolation; use ${isolation.join(" or ")}.`];
-        } else {
-          [decision, reason] = gate(name && dispatchApproval(workers, event, name), input.task);
-        }
-        const extra = tier?.stamp ?? (readOnly ? READ_ONLY_STAMP : "");
-        if (!decision && (mainLoop || extra)) {
-          const task = typeof input.task === "string" ? input.task : "";
-          const role = /^Role: Worker$/m;
-          let stamped = role.test(task) ? task : `Role: Worker\n${task}`;
-          if (extra) {
-            const header = `Role: Worker\n${extra}`;
-            if (!stamped.includes(`${header}\n`) && !stamped.endsWith(header)) stamped = stamped.replace(role, () => header);
-          }
-          if (stamped !== task) emit({ hookSpecificOutput: { hookEventName: "PreToolUse", ...(codex ? { permissionDecision: "allow" } : {}), updatedInput: { ...input, task: stamped } } });
-          return;
-        }
+      const result = checkDelegation(workers, event, input, { stampRole: mainLoop });
+      if (result.decision) ({ decision, reason } = result);
+      else if (result.task !== undefined) {
+        emit({ hookSpecificOutput: { hookEventName: "PreToolUse", ...(codex ? { permissionDecision: "allow" } : {}), updatedInput: { ...input, task: result.task } } });
       }
     } else if (tool === "spawn_agent") {
       const subagentType = dict(args).agent_type;
