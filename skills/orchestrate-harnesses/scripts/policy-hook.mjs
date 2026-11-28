@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { CONFIG_MISSING, delegateTier, resolvePath, selectWorkerProfile, t3Thread, topLevelT3Thread, t3WorkerTier } from "./worker-context.mjs";
 
 const APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).";
 const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task branch, origin/main, " +
@@ -14,6 +15,9 @@ const POLLING = "Blocking GitHub waits are disabled. Use watch_pull_request for 
   "for status or logs (see orchestrate-harnesses' GitHub API budget section).";
 const SLEEP_LOOP = "Sleep loops are disabled. Use t3_background_wait or Monitor.";
 const CI_DOWNLOAD = "Artifact downloads write files. Send this step to the branch Worker.";
+const ONE_SHOT_CALL = /^[ \t]*agent-workbench[ \t]+ops[ \t]+run-once[ \t]+([a-z][a-z0-9-]{0,63})[ \t]*(?![\s\S])/;
+const ONE_SHOT_LAUNCHERS = new Set(["agent-workbench", "awb", "workbench.mjs", "workbench.py", "awb.mjs"]);
+const ONE_SHOT_MENTION = /\b(?:agent-workbench|awb|workbench\.(?:mjs|py))\b[\s\S]*\brun-once\b/;
 const RULE = {
   protectedBranch: "protected-branch", polling: "github-polling", sleepLoop: "sleep-loop",
   ciDownload: "ci-download", delegationModel: "delegation-model", delegationTier: "delegation-tier",
@@ -23,7 +27,7 @@ const RULE = {
   codexShellApproval: "codex-shell-approval", modelOverride: "model-override", inheritedModel: "inherited-model",
   nativeSubagent: "native-subagent", managerTurnReset: "manager-turn-reset", managerTurnUpdate: "manager-turn-update",
   readOnlyWorker: "read-only-worker", prWatchTarget: "pr-watch-target", workerAutomation: "worker-automation",
-  unknownAutomation: "unknown-automation", policyError: "policy-error",
+  unknownAutomation: "unknown-automation", oneShotJob: "one-shot-job", policyError: "policy-error",
 };
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
@@ -52,7 +56,7 @@ const COUNT_EXEMPT = /^(?:mcp__t3[-_]code__)?(?:t3_thread_send|t3_thread_configu
 const MUTATING_GIT = new Set(["commit", "push", "tag", "merge", "rebase", "reset", "checkout", "switch", "stash", "add"]);
 const APPROVAL_LINE = "Get it first (through the Chief PM when one is registered), then add a line " +
   "`L3 approval: <link to the approval>` to the brief and retry.";
-const CONFIG_MISSING = "Worker policy configuration is missing or unreadable; rerun agent-workbench install before dispatching Workers.";
+
 const INHERITED_MODEL ="Built-in agents inherit the Manager's model. Use a tier agent " +
   "(subagent_type: <role>) or pass model explicitly.";
 const INHERITING_AGENT_TYPES = new Set([undefined, null, "general-purpose", "Plan", "Explore", "claude"]);
@@ -462,22 +466,6 @@ function gitCommand(words) {
 }
 
 // Like Python Path.resolve(): follow symlinks for the part that exists.
-function resolvePath(target) {
-  const absolute = path.resolve(target);
-  let existing = absolute;
-  const rest = [];
-  for (;;) {
-    try {
-      return path.join(fs.realpathSync(existing), ...rest);
-    } catch {
-      const parent = path.dirname(existing);
-      if (parent === existing) return absolute;
-      rest.unshift(path.basename(existing));
-      existing = parent;
-    }
-  }
-}
-
 function resolveGitContext(event, gitCwd, cdCwd) {
   const cwd = event.cwd || process.cwd();
   if (gitCwd) return path.isAbsolute(gitCwd) ? gitCwd : resolvePath(path.join(cwd, gitCwd));
@@ -647,19 +635,6 @@ function endsWithUserQuestion(text) {
   return /[?？]$/.test(sentence) || /^(?:should I|do you want|let me know whether)\b/i.test(sentence);
 }
 
-function isRelativeTo(child, parent) {
-  const base = path.normalize(parent).replace(/(.)\/+$/, "$1");
-  return child === base || child.startsWith(base === "/" ? "/" : base + "/");
-}
-
-function selectWorkerProfile(bundle, event) {
-  const cwd = resolvePath(event.cwd || process.cwd());
-  const rule = bundle.select.find((entry) => isRelativeTo(cwd, entry.path));
-  const profile = rule?.profile ?? bundle.profile;
-  const config = profile ? bundle.profiles[profile] : bundle.base;
-  return { config, profile, cwd };
-}
-
 function dispatchApproval(file, event, tier) {
   try {
     if (file === null) throw new Error("missing workers path");
@@ -680,36 +655,6 @@ function dispatchApproval(file, event, tier) {
   } catch {
     return CONFIG_MISSING;
   }
-}
-
-function delegateTier(file, event, { model, providerInstanceId, driverKind }, requireTier) {
-  try {
-    const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
-    const entries = Object.entries(config.tiers);
-    const providerTiers = entries.filter(([, tier]) => tier.provider);
-    const providers = new Set(providerTiers.map(([, tier]) => tier.provider));
-    if (providers.has(providerInstanceId)) {
-      const match = providerTiers.find(([, tier]) => tier.provider === providerInstanceId && tier.model === model);
-      if (match) return { name: match[0], tier: match[1] };
-      return { denial: "For this provider, target.model must exactly match a configured Worker model in the active profile." };
-    }
-    if (providers.has(driverKind) || (!providerInstanceId && providerTiers.some(([, tier]) => tier.model === model))) {
-      return { denial: "Set target.providerInstanceId to the provider of the configured Worker tier in the active profile." };
-    }
-    // Non-provider tiers match tier names, model IDs and routes, ignoring provider instance IDs and normalizing model strings.
-    const full = String(model).replace(/\[[^\]]*\]$/, "");
-    const short = full.split("/").pop();
-    for (const [name, tier] of entries) {
-      if (!tier.provider && (name === full || [tier.model, tier.claude_route].some((value) => value === full || value === short))) {
-        return { name, tier };
-      }
-    }
-  } catch {
-    if (requireTier) return { denial: CONFIG_MISSING };
-  }
-  return requireTier
-    ? { denial: "Set target.model and target.providerInstanceId (for provider tiers) to match a configured Worker tier in the active profile." }
-    : {};
 }
 
 function checkDelegation(workers, event, input, { stampRole, requireTier = false }) {
@@ -794,7 +739,31 @@ function registeredScheduleAllowed(file, event, input, { thread, codex }) {
 }
 
 function isAutomationShellCommand(command) {
-  return /(?:^|[;&|]+\s*)(?:sudo\s+)?(?:crontab\b(?!\s+-[lr]\b)|systemctl\s+(?:enable|start|restart|daemon-reload)\b|systemd-run\b|at\b(?!q\b|rm\b)|nohup\b|daemonize\b|setsid\b)/i.test(command);
+  if (/(?:^|[;&|\n]+)\s*(?:sudo\s+)?(?:crontab\b(?!\s+-[lr]\b)|systemctl\s+(?:enable|start|restart|daemon-reload)\b|(?:\S*\/)?systemd-run\b|at\b(?!q\b|rm\b)|nohup\b|daemonize\b|setsid\b)/i.test(command)) return true;
+  if (!command.includes("systemd-run")) return false;
+  try {
+    return shellCommands(command).some((words) => {
+      const argv = commandWords(words[0] === "cd" && words[2] === "&&" ? words.slice(3) : words);
+      return argv.length > 0 && path.basename(argv[0]) === "systemd-run";
+    });
+  } catch {
+    return true;
+  }
+}
+
+function mentionsOneShotCall(command) {
+  if (!ONE_SHOT_MENTION.test(command)) return false;
+  try {
+    return shellCommands(command).some((words) => {
+      const launcher = words.findIndex((word) => ONE_SHOT_LAUNCHERS.has(path.basename(word)));
+      if (launcher !== -1 && words.indexOf("run-once", launcher + 1) !== -1) return true;
+      const [program, ...args] = commandWords(words);
+      return program && ["bash", "sh", "zsh", "dash", "eval"].includes(path.basename(program)) &&
+        args.some((arg) => ONE_SHOT_MENTION.test(arg));
+    });
+  } catch {
+    return true;
+  }
 }
 
 function hasPrWatchTarget(input) {
@@ -987,41 +956,6 @@ function codexManagerEnrolment() {
   }
 }
 
-async function t3Thread(id, { byCodexSession = false } = {}) {
-  if (!id) return undefined;
-  try {
-    const home = process.env.T3CODE_HOME || path.join(os.homedir(), ".t3");
-    const file = path.join(home, "userdata", "statev2.sqlite");
-    if (!fs.existsSync(file)) return undefined;
-    const { DatabaseSync } = await import("node:sqlite");
-    const db = new DatabaseSync(file, { readOnly: true });
-    try {
-      return db.prepare(`
-        SELECT thread_id AS threadId,
-               json_type(payload_json, '$.lineage') AS lineage,
-               json_type(payload_json, '$.lineage.relationshipToParent') AS relationshipType,
-               json_extract(payload_json, '$.lineage.relationshipToParent') AS relationship,
-               json_extract(payload_json, '$.providerInstanceId') AS providerInstanceId,
-               json_extract(payload_json, '$.modelSelection.model') AS model
-        FROM orchestration_v2_projection_threads
-        WHERE thread_id = ${byCodexSession ? `(
-          SELECT min(thread_id) FROM orchestration_v2_projection_provider_threads
-          WHERE driver = 'codex' AND owner_node_id IS NULL
-            AND json_extract(payload_json, '$.nativeThreadRef.nativeId') = ?
-          HAVING count(DISTINCT thread_id) = 1
-        )` : "?"}
-        LIMIT 1
-      `).get(id);
-    } finally {
-      db.close();
-    }
-  } catch {
-    return undefined;
-  }
-}
-
-const topLevelT3Thread = (row) => row?.lineage === "object" && row.relationshipType === "null";
-
 function antigravityManager(thread, row) {
   if (!topLevelT3Thread(row)) return false;
   try {
@@ -1031,11 +965,6 @@ function antigravityManager(thread, row) {
   } catch {
     return false;
   }
-}
-
-function t3WorkerTier(workers, event, row) {
-  if (row?.relationship !== "subagent" || typeof row.model !== "string" || !row.model.trim()) return undefined;
-  return delegateTier(workers, event, row, false).tier;
 }
 
 async function readOnlyWorker(workers, event, agy, agyManager, agyThread) {
@@ -1427,10 +1356,29 @@ async function main() {
     const codexTurnMatches = () => !codexManager || Boolean(managerState.turn && managerState.turn === event.turn_id);
     const workApproved = () => managerState.approved && codexTurnMatches();
     const isShell = agy ? tool === "run_command" : tool === "Bash" || (codexManager && tool === "exec_command");
+    const shellTool = isShell || (codex && tool === "exec_command");
     const shellInput = isDict(args) ? args : {};
     const command = agy ? shellInput.CommandLine
       : codex && tool === "exec_command" ? shellInput.command ?? shellInput.cmd : shellInput.command;
     const shellCommand = typeof command === "string" ? command : "";
+    const oneShot = shellTool && ONE_SHOT_CALL.exec(shellCommand);
+    if (oneShot || (shellTool && mentionsOneShotCall(shellCommand))) {
+      try {
+        if (oneShot && event.agent_id == null && event.agent_type == null &&
+            shellInput.run_in_background !== true && shellInput.Blocking !== false) {
+          const { authorizedOneShot } = await import("../../workbench-setup/scripts/run-once.mjs");
+          if (await authorizedOneShot(workers, oneShot[1], { cwd: shellInput.workdir ?? shellInput.Cwd ?? event.cwd })) {
+            if (agy) emitPreToolUse("allow");
+            return;
+          }
+        }
+      } catch {
+        // An unavailable runner or missing caller evidence cannot authorize execution.
+      }
+      emitPreToolUse("deny", "Use a standalone `agent-workbench ops run-once <job-id>` call in the foreground " +
+        "from an eligible T3 Worker for an unexpired job registered to this host and parent thread.", RULE.oneShotJob);
+      return;
+    }
     const standaloneProgram = isShell ? STANDALONE_SHELL.exec(shellCommand)?.[1] : undefined;
     const managerGoalCommand = mainLoop && !workerContext && standaloneProgram === "ostrom-goal";
     if (codexManager && isShell && !managerState.worker && !workApproved() && !managerGoalCommand &&
@@ -1476,7 +1424,9 @@ async function main() {
     const isPrWatch = canonicalTool === "watch_pull_request" || canonicalTool === "mcp__t3_code__watch_pull_request";
     const isLocalWakeup = tool === "CronCreate" || (tool === "Skill" && isDict(args) && args.skill === "loop");
     const isLocalAutomation = isLocalWakeup ||
-      (isShell && !managerGoalCommand && isAutomationShellCommand(shellCommand));
+      (shellTool && !managerGoalCommand && isAutomationShellCommand(shellCommand));
+    const localAutomationWorker = isLocalAutomation && !workerContext &&
+      (agyThread ?? await t3Thread(process.env.T3CODE_THREAD_ID?.trim()))?.relationship === "subagent";
     const configureModelSelection = isThreadConfigure && isDict(args) && Object.hasOwn(args, "modelSelection");
     if (isScheduleTask) {
       const input = isDict(args) ? args : {};
@@ -1526,7 +1476,7 @@ async function main() {
         return ![target.environmentId, target.projectId].every((value) => typeof value === "string" && value.trim()) ||
           !launchModelAllowed(workers, event, target.model, { approved: hasL3Approval(thread?.prompt) });
       })) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
-    } else if (workerContext && (isPrWatch || isLocalAutomation)) {
+    } else if ((workerContext && (isPrWatch || isLocalAutomation)) || localAutomationWorker) {
       [decision, reason, rule] = ["deny", "Workers cannot create automation or initiate new watches. Use the current Manager thread for follow-up work.", RULE.workerAutomation];
     } else if (codex && !codexManager && !event.agent_id && (isPrWatch || isLocalAutomation)) {
       [decision, reason, rule] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; ambiguous automation creation is denied here.", RULE.unknownAutomation];

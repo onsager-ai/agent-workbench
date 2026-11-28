@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import tty from "node:tty";
 import { isDeepStrictEqual } from "node:util";
 import { runOps, opsHelp } from "./ops.mjs";
+import { runOnceCommand, validOneShotJob } from "./run-once.mjs";
 import { showLanes } from "./lanes.mjs";
 
 const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
@@ -52,7 +53,7 @@ const CODEX_HOOK_TIMEOUT = 30;
 export class Conflict extends Error {}
 
 const CONTEXT_INTEGER_KEYS = ["max_tokens", "gateway_window", "codex_window", "manager_window", "worker_window"];
-const INTEGER_KEYS = new Set(["version", "timeout_s", "max_auto_rework", "everyMs", ...CONTEXT_INTEGER_KEYS]);
+const INTEGER_KEYS = new Set(["version", "timeout_s", "max_auto_rework", "everyMs", "cpu_quota_percent", ...CONTEXT_INTEGER_KEYS]);
 
 // Parse like PyYAML's safe_load: YAML 1.1, repeated keys keep the last value, keys must be strings
 // (YAML 1.1 reads `no`, `on` and `null` as non-strings), and floats are not accepted in integer fields.
@@ -194,7 +195,21 @@ function validateWorkerShape(config, { profile = false } = {}) {
   }
   if (has(config, "policy")) {
     keys(config.policy, ["max_auto_rework", "context", "stop_classifier", "browser", "schedules", "manager_models",
-      "manager_threads", "manager_model_pairs"], "policy");
+      "manager_threads", "manager_model_pairs", "one_shot_jobs"], "policy");
+    if (has(config.policy, "one_shot_jobs")) {
+      const { one_shot_jobs } = config.policy;
+      if (!Array.isArray(one_shot_jobs)) {
+        throw new Conflict("policy.one_shot_jobs must be a list; correct it in workers.yml");
+      }
+      const ids = new Set();
+      for (const [index, job] of one_shot_jobs.entries()) {
+        const where = `policy.one_shot_jobs[${index}]`;
+        keys(job, ["id", "host", "parent_thread", "argv", "cwd", "cpu_quota_percent", "timeout_s", "expires_at"], where);
+        if (!validOneShotJob(job)) throw new Conflict(`${where} does not describe a valid registered one-shot job`);
+        if (ids.has(job.id)) throw new Conflict(`${where} repeats job ID ${job.id}`);
+        ids.add(job.id);
+      }
+    }
     if (has(config.policy, "manager_models")) {
       const { manager_models } = config.policy;
       if (!Array.isArray(manager_models) || manager_models.some((model) => typeof model !== "string" || !model.trim())) {
@@ -431,6 +446,9 @@ export function workerBundle(distributed, overlays = [], home = null) {
     for (const [name, profile] of Object.entries(profiles)) {
       if (!name) throw new Conflict("profile name must be a nonempty string; assign a name in workers.yml");
       validateWorkerShape(profile, { profile: true });
+      if (profile.policy && has(profile.policy, "one_shot_jobs")) {
+        throw new Conflict("policy.one_shot_jobs belongs in the base policy; move it out of the profile in workers.yml");
+      }
     }
     return config;
   };
@@ -2218,7 +2236,7 @@ function parseArguments(argv) {
 
 function printHelp(command) {
   if (command === "ops") {
-    console.log(opsHelp);
+    console.log(`${opsHelp}\n       agent-workbench ops run-once <job-id>`);
   } else if (!command) {
     console.log(`${USAGE}\n\nCommands:`);
     for (const [name, description] of Object.entries(COMMANDS)) console.log(`  ${name.padEnd(10)} ${description}`);
@@ -2242,7 +2260,11 @@ export function main(argv = process.argv.slice(2)) {
   if (args.help) { printHelp(args.helpCommand ?? (args.command === "help" ? undefined : args.command)); return 0; }
   try {
     if (args.command === "version") { console.log(RELEASE); return 0; }
-    if (args.command === "ops") return runOps(args.ops, path.resolve(args.home));
+    if (args.command === "ops") {
+      const home = path.resolve(args.home);
+      if (args.ops[0] === "run-once") return runOnceCommand(args.ops.slice(1), home);
+      return runOps(args.ops, home);
+    }
     if (args.command === "lanes") { showLanes(args); return 0; }
     if (args.workspace !== undefined && args.command === "uninstall") {
       antigravityWorkspace(args.workspace, new Setup(args.home), true);
@@ -2261,4 +2283,4 @@ export function main(argv = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = main();
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = await main();

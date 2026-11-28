@@ -1176,6 +1176,29 @@ describe("workbench setup", () => {
     }
   });
 
+  test("the installer validates fixed one-shot jobs in the base policy", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const job = {
+      id: "example-once", host: "example-host", parent_thread: "example-manager", cwd: "/tmp",
+      argv: ["/usr/bin/true"], cpu_quota_percent: 25, timeout_s: 60, expires_at: "2999-12-01T00:00:00Z",
+    };
+    const configure = (config) => f.write(f.overridePath, JSON.stringify(config));
+    configure({ policy: { one_shot_jobs: [job] } });
+    f.run("install");
+    const installed = f.json(path.join(f.state, "workers.json"));
+    assert.deepEqual(installed.base.policy.one_shot_jobs, [job]);
+    for (const config of [
+      { profiles: { codex: { policy: { one_shot_jobs: [job] } } } },
+      ...[[job, job], [{ ...job, argv: ["relative"] }], [{ ...job, cwd: "relative" }],
+        [{ ...job, timeout_s: 0 }], [{ ...job, expires_at: "invalid" }],
+        [{ ...job, cpu_quota_percent: 101 }], [{ ...job, quota: 30 }]].map((one_shot_jobs) => ({ policy: { one_shot_jobs } })),
+    ]) {
+      configure(config);
+      assert.match(f.run("install", [], false).stderr, /policy\.one_shot_jobs/);
+    }
+  });
+
   test("only valid T3 schedule entries are accepted by the installer", () => {
     const f = new Fixture();
     f.installOrchestration();
