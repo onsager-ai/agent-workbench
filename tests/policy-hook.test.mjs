@@ -111,6 +111,28 @@ describe("policy hook", () => {
   }));
   const preview = (session, tool, input, extras) => browserCall(session, `mcp__t3-code__preview_${tool}`, input, extras);
 
+  const githubReads = [
+    "gh pr view 1 --json headRefOid,statusCheckRollup",
+    "gh pr checks 1",
+    "gh run view 123",
+    "gh run view 123 --log-failed",
+    "gh run list --commit abc",
+    "gh api repos/o/r/actions/runs/123/logs",
+    "gh api --method GET repos/o/r",
+  ];
+
+  function denialEntries() {
+    const out = path.join(directory, "state", "agent-workbench", "denials");
+    const files = fs.readdirSync(out).sort();
+    assert.ok(files.every((name) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(name)));
+    return files.flatMap((name) => fs.readFileSync(path.join(out, name), "utf8").trimEnd().split("\n").map((line) => {
+      const { time, ...entry } = JSON.parse(line);
+      assert.equal(new Date(time).toISOString(), time);
+      assert.equal(time.slice(0, 10), name.slice(0, 10));
+      return entry;
+    }));
+  }
+
   const readOnlyDenial = /Read-only Workers cannot edit files/;
   const shellReads = ["git status --short", "git show HEAD", "git log -1", "cat notes.md", "grep text notes.md", "gh pr view 1"];
   const shellWrites = ["touch notes.md", "git commit -m change", "echo change > notes.md"];
@@ -129,6 +151,30 @@ describe("policy hook", () => {
       assert.equal(call("Bash", { command }, "standard"), null, command);
     }
     for (const command of shellReads) assert.equal(call("Bash", { command }, "fast"), null, command);
+  });
+
+  test("denial records contain only metadata and use the thread ID or cwd basename", () => {
+    const call = (tool_name, tool_input, thread) => invoke(JSON.stringify({
+      session_id: "denial-manager", tool_name, tool_input, cwd: "/sensitive/parent/worktree",
+    }), { ...process.env, T3CODE_THREAD_ID: thread });
+    assert.equal(call("Read", { file_path: "/sensitive/input" }, "t3-lane"), null);
+    assert.equal(call("Edit", { file_path: "/sensitive/output", new_string: "private text" }, "t3-lane").permissionDecision, "deny");
+    assert.equal(call("Bash", { command: "echo private-command > /sensitive/file" }, "").permissionDecision, "deny");
+    assert.deepEqual(denialEntries(), [
+      { host: "claude", tool: "Edit", rule: "manager-edit", role: "manager", lane: "t3-lane" },
+      { host: "claude", tool: "Bash", rule: "manager-shell-write", role: "manager", lane: "worktree" },
+    ]);
+  });
+
+  test("an unwritable denial destination does not change the denial", () => {
+    const state = path.join(directory, "state", "agent-workbench");
+    fs.mkdirSync(state, { recursive: true });
+    const log = path.join(state, "denials");
+    fs.writeFileSync(log, "not a directory");
+    const result = browserCall("denial-manager", "Bash", { command: "touch notes.md" });
+    assert.equal(result.permissionDecision, "deny");
+    assert.match(result.permissionDecisionReason, /changes files or state/);
+    assert.equal(fs.readFileSync(log, "utf8"), "not a directory");
   });
 
   test("browser profile configuration is optional and validates profile IDs and URLs", () => {
@@ -1438,6 +1484,23 @@ describe("policy hook", () => {
       assert.equal(antigravity(launch, env).decision, "deny");
     });
 
+    test("unenrolled top-level threads report the enrolment hint and an unknown role", () => {
+      const id = "thread-unenrolled";
+      const unenrolled = { ...env, T3CODE_THREAD_ID: id };
+      const hint = "This top-level Antigravity thread is not enrolled as a Manager, so Worker rules apply. " +
+        `To use Manager rules, ask the harness owner to enrol thread ${id}.`;
+      assert.ok(antigravity(edit(), unenrolled).reason.endsWith(hint));
+      assert.ok(antigravity(launch, unenrolled).reason.endsWith(hint));
+      assert.ok(antigravity({ name: "swarm" }, unenrolled).reason.endsWith(hint));
+      assert.doesNotMatch(antigravity(edit(), { ...env, T3CODE_THREAD_ID: child }).reason, /enrol thread/);
+      assert.deepEqual(denialEntries(), [
+        { host: "antigravity", tool: "write_to_file", rule: "read-only-worker", role: "unknown", lane: id },
+        { host: "antigravity", tool: "mcp_t3-code_t3_thread_launch", rule: "thread-launch", role: "unknown", lane: id },
+        { host: "antigravity", tool: "swarm", rule: "native-subagent", role: "unknown", lane: id },
+        { host: "antigravity", tool: "write_to_file", rule: "read-only-worker", role: "worker", lane: child },
+      ]);
+    });
+
     test("lineage database errors and missing database fall back to Worker", () => {
       fs.writeFileSync(database, "not a database");
       assert.match(antigravity(launch, env).reason, /Workers must not launch/);
@@ -1481,6 +1544,15 @@ describe("policy hook", () => {
       for (const command of shellWrites) assert.match(workerCall(child, shell(command)).reason, readOnlyDenial);
       for (const command of shellReads) assert.deepEqual(workerCall(child, shell(command)), { decision: "allow" }, command);
       assert.deepEqual(workerCall(writer, shell(shellWrites[0])), { decision: "allow" });
+    });
+
+    test("read-only Antigravity Workers cannot run unparseable shell commands", () => {
+      const readOnly = { ...env, T3CODE_THREAD_ID: child };
+      const run = (CommandLine) => antigravity({ name: "run_command", args: { CommandLine } }, readOnly);
+      const result = run("cat > f <<EOF\nit's\nEOF");
+      assert.equal(result.decision, "deny");
+      assert.match(result.reason, readOnlyDenial);
+      assert.deepEqual(run("git status"), { decision: "allow" });
     });
 
     test("T3-delegated Claude and Codex sessions can resolve tier without native subagent fields", () => {
@@ -1660,11 +1732,11 @@ describe("policy hook", () => {
   test("Antigravity PreToolUse adapter shares Bash classification without role metadata", () => {
     assert.ok(fs.statSync(HOOK).mode & 0o111, "the configured hook entry point must be executable");
     assert.deepEqual(antigravity({ name: "run_command", args: { CommandLine: "gh run watch 123" } }), {
-      decision: "deny", reason: "GitHub polling is disabled. Use watch_pull_request and the single-call status reads in orchestrate-harnesses' GitHub API budget section.",
+      decision: "deny", reason: "Blocking GitHub waits are disabled. Use watch_pull_request for waiting and single-call reads for status or logs (see orchestrate-harnesses' GitHub API budget section).",
     });
     assert.deepEqual(antigravity({ name: "run_command", args: { CommandLine: "git status --short" } }), { decision: "allow" });
     assert.deepEqual(antigravity({ name: "run_command", args: { CommandLine: "gh run watch --help" } }), {
-      decision: "deny", reason: "GitHub polling is disabled. Use watch_pull_request and the single-call status reads in orchestrate-harnesses' GitHub API budget section.",
+      decision: "deny", reason: "Blocking GitHub waits are disabled. Use watch_pull_request for waiting and single-call reads for status or logs (see orchestrate-harnesses' GitHub API budget section).",
     });
     for (const toolCall of [undefined, {}, { name: "other_tool", args: { CommandLine: "gh run watch 123" } },
       { name: "run_command", args: {} }, { name: "run_command", args: { CommandLine: 42 } }]) {
@@ -1674,7 +1746,7 @@ describe("policy hook", () => {
 
   test("polling is denied", () => {
     for (const command of [
-      "gh run watch 123", "gh run watch --help", "gh pr checks 1 --watch", "gh pr checks --watch=true",
+      "gh run watch 123", "gh run watch --help", "gh pr checks 1 --watch", "gh pr checks --watch=true", "gh pr checks 1 -w",
       "cd /tmp && gh run watch 123", "gh pr checks 1 --watch --interval 30",
       "while true; do gh run list; sleep 30; done",
       "until gh pr view 1; do sleep 10; done",
@@ -1689,43 +1761,59 @@ describe("policy hook", () => {
     }
   });
 
-  test("Claude Managers delegate CI logs and subagents can read them", () => {
-    for (const command of [
-      "gh run view 123 --log",
-      "gh run 'view' 123 --log",
-      'gh run "view" 123 --log',
-      "gh run view 123 --log | tail -50",
-      "logs=$(gh run view 123 --log)",
-      "echo 'gh run view 123 --log'", "echo gh run download 123",
-      "GH_PAGER=cat gh run view 123 --log | tail -50",
-      "GH_PAGER=$PAGER gh run view 123 --log",
-      "X=${Y} gh run download 1",
-      "X=$(echo $(date)) gh run download 1",
-      "env GH_PAGER=cat timeout 5 gh run view 123 --log",
-      "command gh run view 123 --log",
-      "gh run view 123 --job 456 --log-failed > failed.log",
-      "cd /tmp && gh run download 123",
-      "gh api repos/o/r/actions/jobs/456/logs",
-      "gh api '/repos/o/r/actions/runs/123/logs'",
-      "gh api repos/o/r/actions/runs/123/attempts/2/logs",
-      "gh api repos/{owner}/{repo}/actions/jobs/456/logs",
-      'gh api "repos/$repo/actions/jobs/$job_id/logs"',
-    ]) {
-      const event = { hook_event_name: "PreToolUse", session_id: "manager-ci-logs", tool_name: "Bash", tool_input: { command } };
-      invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: event.session_id,
-        prompt: "Manager work approval: https://example.test/approval" }));
-      const decision = invoke(JSON.stringify(event));
-      assert.equal(decision?.permissionDecision, "deny", command);
-      assert.match(decision.permissionDecisionReason, /Resume the Worker.*L1 Worker with the run URL/);
-      assert.equal(invoke(JSON.stringify({ ...event, agent_id: "worker-1", agent_type: "standard" })), null, command);
+  test("Claude Managers can read GitHub status and logs in one-shot calls that count", () => {
+    for (const [index, command] of [...githubReads, "gh run view 123 --log | tail -50"].entries()) {
+      assert.equal(browserCall(`manager-gh-${index}`, "Bash", { command }), null, command);
     }
-    invoke(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "named-manager",
-      prompt: "Manager work approval: https://example.test/approval" }));
-    const namedManager = invoke(JSON.stringify({
-      hook_event_name: "PreToolUse", session_id: "named-manager", tool_name: "Bash",
-      tool_input: { command: "gh run view 123 --log" }, agent_type: "standard",
-    }));
-    assert.equal(namedManager?.permissionDecision, "deny");
+    const session = "manager-gh-counted";
+    for (const command of githubReads.slice(0, 5)) assert.equal(browserCall(session, "Bash", { command }), null, command);
+    assert.match(browserCall(session, "Bash", { command: githubReads[5] }).permissionDecisionReason, /sixth counted work call/);
+    assert.equal(denialEntries().at(-1).rule, "manager-work-limit");
+  });
+
+  test("Claude Managers can redirect to /dev/null and use quoted angle brackets", () => {
+    const commands = [
+      "curl -s --max-time 5 http://127.0.0.1:3773/ | grep -o '<title>[^<]*' | head -1; tailscale serve status 2>/dev/null | head -5",
+      "systemctl status example >/dev/null",
+      "tailscale serve status &>/dev/null",
+      'grep "a>b" input.txt',
+      `printf '%s\\n' "$(grep 'a>b' input.txt)"`,
+    ];
+    for (const [index, command] of commands.entries()) {
+      assert.equal(browserCall(`manager-shell-${index}`, "Bash", { command }), null, command);
+    }
+    for (const command of ["echo x >/dev/null-extra", "echo x &>out.txt", 'echo "$(date >out.txt)"',
+      "gh run view 123 --log-failed > failed.log", "gh run download 123", "gh api -X POST repos/o/r"]) {
+      browserPrompt("manager-shell-writes", "Review only.");
+      assert.match(browserCall("manager-shell-writes", "Bash", { command }).permissionDecisionReason, /changes files or state/, command);
+    }
+  });
+
+  test("Claude Managers delegate shell commands when redirect parsing fails", () => {
+    const session = "manager-shell-parse";
+    for (const command of ["cat > f <<EOF\nit's\nEOF", `echo "unfinished > f`]) {
+      const result = browserCall(session, "Bash", { command });
+      assert.equal(result.permissionDecision, "deny", command);
+      assert.match(result.permissionDecisionReason, /changes files or state/, command);
+    }
+    assert.equal(browserCall(session, "Bash", { command: `grep "it's" f` }), null);
+    assert.equal(browserCall(session, "Bash", { command: "gh run view 123 --log-failed" }), null);
+  });
+
+  test("Claude Manager shell writes may redirect only to project memory or /dev/null", () => {
+    const memory = path.join(os.homedir(), ".claude/projects/p with spaces/memory/MEMORY.md");
+    const homeRelative = "~/" + shellQuote(path.relative(os.homedir(), memory));
+    const call = (command) => {
+      browserPrompt("manager-memory", "Update memory.");
+      return browserCall("manager-memory", "Bash", { command });
+    };
+    assert.equal(call(`printf note >> ${shellQuote(memory)} 2>/dev/null`), null);
+    assert.equal(call(`printf note >> ${homeRelative}`), null);
+    assert.match(call(`printf note >> ${shellQuote(memory)} > outside.md`).permissionDecisionReason, /changes files or state/);
+    assert.match(call(`touch outside.md >> ${shellQuote(memory)}`).permissionDecisionReason, /changes files or state/);
+    assert.match(call('printf note >> "$INDEX"').permissionDecisionReason, /changes files or state/);
+    const sibling = path.join(os.homedir(), ".claude/projects/p/memory-bak/MEMORY.md");
+    assert.match(call(`printf note >> ${shellQuote(sibling)}`).permissionDecisionReason, /changes files or state/);
   });
 
   test("sleep loops are denied even without gh", () => {
@@ -1881,11 +1969,11 @@ describe("policy hook", () => {
       assert.equal(JSON.parse(fs.readFileSync(stateFile("counted"), "utf8")).count, 1);
     });
 
-    test("enrolled Codex Managers need current approval for every shell call", () => {
+    test("enrolled Codex Managers need current approval for other shell calls", () => {
       enrol("manager");
       const nestedPatch = `bash -c ${shellQuote("apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: task.txt\n+work\n*** End Patch\nPATCH")}`;
-      const reason = "Enrolled Codex Managers can't run shell commands without " +
-        "`Manager work approval: <link>` at the start of the turn; send shell work to a Worker.";
+      const reason = "Enrolled Codex Managers need `Manager work approval: <link>` at the start " +
+        "of the turn for shell commands outside the one-shot GitHub reads; send other shell work to a Worker.";
       for (const [toolName, key] of [["Bash", "command"], ["exec_command", "command"], ["exec_command", "cmd"]]) {
         const call = (session, command, details) => tool(session, toolName, { [key]: command, workdir: directory }, details);
         prompt("manager");
@@ -1899,8 +1987,41 @@ describe("policy hook", () => {
         }
         prompt("manager", APPROVED);
         assert.equal(call("manager", "git status"), null);
-        assert.match(call("manager", "gh run watch 123").permissionDecisionReason, /GitHub polling is disabled/);
+        assert.match(call("manager", "gh run watch 123").permissionDecisionReason, /watch_pull_request for waiting/);
         assert.equal(call("manager", "git status", { turn_id: "turn-2" }).permissionDecisionReason, reason);
+      }
+    });
+
+    test("unenrolled top-level Codex sessions report the native ID and an unknown role", () => {
+      const name = "mcp__t3_code__watch_pull_request";
+      const target = { repository: "org/project", number: 1 };
+      const cwd = "/checkout/test-lane";
+      const unenrolled = tool("unenrolled-native", name, target, { cwd });
+      assert.match(unenrolled.permissionDecisionReason, /do not expose reliable standalone Manager\/Worker role metadata/);
+      assert.match(unenrolled.permissionDecisionReason, /ask the harness owner to enrol session unenrolled-native\.$/);
+      const child = tool("child-native", name, target, { cwd, agent_id: "child" });
+      assert.doesNotMatch(child.permissionDecisionReason, /enrol session/);
+      const entries = denialEntries();
+      assert.deepEqual(entries.map(({ lane, ...entry }) => entry), [
+        { host: "codex", tool: name, rule: "unknown-automation", role: "unknown" },
+        { host: "codex", tool: name, rule: "worker-automation", role: "worker" },
+      ]);
+      assert.equal(entries[0].lane, process.env.T3CODE_THREAD_ID?.trim() || "test-lane");
+    });
+
+    test("enrolled Codex Managers can use counted one-shot GitHub reads without approval", () => {
+      enrol("manager");
+      for (const command of githubReads) {
+        prompt("manager");
+        assert.equal(tool("manager", "exec_command", { cmd: command }), null, command);
+        assert.equal(JSON.parse(fs.readFileSync(stateFile("manager"), "utf8")).count, 1);
+      }
+      for (const command of ["gh pr checks 1 --watch", "gh run watch 123"]) {
+        assert.match(bash("manager", command).permissionDecisionReason, /watch_pull_request/);
+      }
+      for (const command of ["gh api -X DELETE repos/o/r", "gh api repos/o/r -f key=value",
+        "gh pr view 1 > out.txt", "gh pr view 1; touch out.txt", "gh run view $(touch out.txt)"]) {
+        assert.match(bash("manager", command).permissionDecisionReason, /Manager work approval/, command);
       }
     });
 
@@ -1923,15 +2044,15 @@ describe("policy hook", () => {
       }
     });
 
-    test("Codex Manager approval gates edits and shell access, but does not allow reading CI logs", () => {
+    test("Codex Manager approval gates edits and other shell work", () => {
       enrol("approved", "unapproved", "worker");
       prompt("unapproved");
-      assert.match(bash("unapproved", "touch task.txt").permissionDecisionReason, /without `Manager work approval:/);
+      assert.match(bash("unapproved", "touch task.txt").permissionDecisionReason, /need `Manager work approval:/);
       assert.equal(bash("outside", "touch task.txt"), null);
       prompt("approved", APPROVED);
       assert.equal(bash("approved", "touch task.txt"), null);
       assert.equal(patch("approved"), null);
-      assert.match(bash("approved", "gh run view 123 --log").permissionDecisionReason, /Delegate CI logs/);
+      assert.equal(bash("approved", "gh run view 123 --log"), null);
       assert.equal(bash("outside", "gh run view 123 --log"), null);
       assert.equal(bash("approved", "gh run view 123 --log", { agent_id: "child" }), null);
       assert.equal(patch("approved", { turn_id: "turn-2" }).permissionDecision, "deny");

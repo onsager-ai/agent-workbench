@@ -76,7 +76,7 @@ Once installed, the policy hook will:
 - block checking out, committing to or pushing a local `main` or `master` branch, so work happens on task branches;
 - ask before dispatching an L3 Worker (Opus by default);
 - block GitHub polling, `while` or `until` loops with `sleep`, and `for` loops with both `sleep` and `gh`;
-- make Claude Code Managers delegate CI log retrieval to Workers;
+- let Managers read failed CI logs once within the five-call limit and delegate longer investigations;
 - send the agent back when it ends a turn with a question written as prose, so it asks with the question tool.
 
 On Linux machines with a supported sensor, use `awb ops thermal now` before heavy local work and `awb ops thermal gate -- <command>` to run it. Use the installed `agent-workbench ops thermal` launcher for frequent calls without `npx`. To enable background logging on a machine with user systemd, run `awb ops thermal install` after setup.

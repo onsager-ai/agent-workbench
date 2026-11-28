@@ -10,10 +10,21 @@ const APPROVAL = "L3 Opus Worker needs the user's approval for this task (orches
 const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task branch, origin/main, " +
   "or git switch -c <task> origin/main.";
 const PROTECTED_BRANCHES = new Set(["main", "master"]);
-const POLLING = "GitHub polling is disabled. Use watch_pull_request and the single-call status reads " +
-  "in orchestrate-harnesses' GitHub API budget section.";
+const POLLING = "Blocking GitHub waits are disabled. Use watch_pull_request for waiting and single-call reads " +
+  "for status or logs (see orchestrate-harnesses' GitHub API budget section).";
 const SLEEP_LOOP = "Sleep loops are disabled. Use t3_background_wait or Monitor.";
-const CI_LOGS = "Delegate CI logs. Resume the Worker that owns the branch or dispatch an L1 Worker with the run URL.";
+const CI_DOWNLOAD = "Artifact downloads write files. Send this step to the branch Worker.";
+const RULE = {
+  protectedBranch: "protected-branch", polling: "github-polling", sleepLoop: "sleep-loop",
+  ciDownload: "ci-download", delegationModel: "delegation-model", delegationTier: "delegation-tier",
+  delegationIsolation: "delegation-isolation", dispatchApproval: "dispatch-approval", workerConfig: "worker-config",
+  threadLaunch: "thread-launch", schedule: "schedule", browserManager: "browser-manager",
+  managerWorkLimit: "manager-work-limit", managerEdit: "manager-edit", managerShellWrite: "manager-shell-write",
+  codexShellApproval: "codex-shell-approval", modelOverride: "model-override", inheritedModel: "inherited-model",
+  nativeSubagent: "native-subagent", managerTurnReset: "manager-turn-reset", managerTurnUpdate: "manager-turn-update",
+  readOnlyWorker: "read-only-worker", prWatchTarget: "pr-watch-target", workerAutomation: "worker-automation",
+  unknownAutomation: "unknown-automation", policyError: "policy-error",
+};
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
 const READ_ONLY_STAMP = "This Worker is read-only: no file edits, commits, pushes, PRs, or state changes.";
@@ -198,7 +209,8 @@ const WORDCHARS = new Set(
   "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" +
   "ßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞ" + "~-./*?=");
 
-function shlex(text, whitespaceSplit) {
+function shlex(text, whitespaceSplit, redirects = false) {
+  const punctuation = redirects ? PUNCTUATION + "<>" : PUNCTUATION;
   const chars = Array.from(text);
   const pushback = [];
   let position = 0;
@@ -209,8 +221,7 @@ function shlex(text, whitespaceSplit) {
     while ((character = read()) !== "" && character !== "\n");
     if (character === "\n") pushback.push(character);
   };
-  const assignmentExpansion = () => {
-    const open = read();
+  const shellExpansion = (open = read()) => {
     if (open !== "(" && open !== "{") {
       if (open) pushback.push(open);
       return "$";
@@ -238,6 +249,10 @@ function shlex(text, whitespaceSplit) {
     let quoted = false;
     let token = "";
     let eof = false;
+    let operator = false;
+    let leadingTilde = false;
+    let escaped = false;
+    let substitutionRedirect = false;
     for (;;) {
       const next = read();
       if (state === " ") {
@@ -251,10 +266,12 @@ function shlex(text, whitespaceSplit) {
           state = next;
         } else if (WORDCHARS.has(next)) {
           token = next;
+          leadingTilde = next === "~";
           state = "a";
-        } else if (PUNCTUATION.includes(next)) {
+        } else if (punctuation.includes(next)) {
           token = next;
           state = "c";
+          operator = true;
         } else if (next === "'" || next === '"') {
           state = next;
         } else if (whitespaceSplit) {
@@ -265,11 +282,21 @@ function shlex(text, whitespaceSplit) {
           break;
         }
       } else if (!whitespaceSplit && next === "$" && (state === "a" || state === '"') && ASSIGNMENT.test(token)) {
-        token += assignmentExpansion();
+        token += shellExpansion();
       } else if (state === "'" || state === '"') {
         quoted = true;
         if (!next) throw new Error("No closing quotation");
-        if (next === state) state = "a";
+        if (redirects && state === '"' && next === "$" && chars[position] === "(" && chars[position + 1] !== "(") {
+          const expansion = shellExpansion();
+          substitutionRedirect ||= hasOutputRedirect(shlex(expansion.slice(2, -1), true, true), false);
+          token += expansion;
+        } else if (redirects && state === '"' && next === "`") {
+          // Keep this form conservative if the substitution contains a redirect.
+          let inner = "";
+          for (let char = read(); char && char !== "`"; char = read()) inner += char;
+          substitutionRedirect ||= inner.includes(">");
+          token += "`" + inner + "`";
+        } else if (next === state) state = "a";
         else if (next === "\\" && state === '"') {
           escapedState = state;
           state = next;
@@ -277,6 +304,7 @@ function shlex(text, whitespaceSplit) {
       } else if (state === "\\") {
         if (!next) throw new Error("No escaped character");
         if ((escapedState === "'" || escapedState === '"') && next !== state && next !== escapedState) token += state;
+        escaped = true;
         token += next;
         state = escapedState;
       } else {
@@ -289,7 +317,7 @@ function shlex(text, whitespaceSplit) {
           state = " ";
           if (token || quoted) break;
         } else if (state === "c") {
-          if (PUNCTUATION.includes(next)) token += next;
+          if (punctuation.includes(next)) token += next;
           else {
             pushback.push(next);
             break;
@@ -299,7 +327,7 @@ function shlex(text, whitespaceSplit) {
         } else if (next === "\\") {
           escapedState = "a";
           state = next;
-        } else if (WORDCHARS.has(next) || (whitespaceSplit && !PUNCTUATION.includes(next))) {
+        } else if (WORDCHARS.has(next) || (whitespaceSplit && !punctuation.includes(next))) {
           token += next;
         } else {
           pushback.push(next);
@@ -309,7 +337,7 @@ function shlex(text, whitespaceSplit) {
       }
     }
     if (eof && !token && !quoted) return tokens;
-    tokens.push(token);
+    tokens.push(redirects ? { token, operator, leadingTilde, escaped, substitutionRedirect } : token);
     if (eof) return tokens;
   }
 }
@@ -320,22 +348,7 @@ const shellWords = (pattern) => new RegExp(`(?:^|${SHELL_WORD_SEPARATOR})${patte
 const LOOP_WORD = shellWords("(?:while|until)");
 const SLEEP_WORD = shellWords("sleep");
 const GH_WORD = shellWords("gh");
-const GH_RUN_VIEW = shellWords("gh\\s+run\\s+view");
 const GH_RUN_DOWNLOAD = shellWords("gh\\s+run\\s+download");
-
-function textShellPolicy(command, manager) {
-  // Scan the full text, including substitutions. Quoted examples and heredocs can also match.
-  if (manager) {
-    const text = command.replace(/["']/g, "");
-    const view = GH_RUN_VIEW.exec(text);
-    if ((view && /(?<![\w-])--log(?:-failed)?(?![\w-])/.test(text.slice(view.index + view[0].length))) ||
-        GH_RUN_DOWNLOAD.test(text) ||
-        /\bactions\/(?:jobs\/[^/\s]+|runs\/[^/\s]+(?:\/attempts\/[^/\s]+)?)\/logs\b/.test(text)) return CI_LOGS;
-  }
-  if (LOOP_WORD.test(command) && SLEEP_WORD.test(command)) return SLEEP_LOOP;
-  return null;
-}
-
 function commandWords(words) {
   let start = 0;
   while (start < words.length) {
@@ -376,7 +389,7 @@ function pollsGithub(command) {
     if (program !== "gh") continue;
     if (group === "run" && operation === "watch") return POLLING;
     if (group === "pr" && operation === "checks" &&
-        args.some((word) => word === "--watch" || word.startsWith("--watch="))) return POLLING;
+        args.some((word) => word === "-w" || word === "--watch" || word.startsWith("--watch="))) return POLLING;
   }
   if (SLEEP_WORD.test(command) && GH_WORD.test(command)) {
     for (const [start, end] of loops) {
@@ -696,17 +709,17 @@ function delegateTier(file, event, { model, providerInstanceId, driverKind }, re
 
 function checkDelegation(workers, event, input, { stampRole, requireTier = false }) {
   const target = dict(input.target);
-  if (!target.model) return { decision: "deny", reason: T3_MODEL };
+  if (!target.model) return { decision: "deny", reason: T3_MODEL, rule: RULE.delegationModel };
   const { name, tier, denial } = delegateTier(workers, event, target, requireTier);
-  if (denial) return { decision: "deny", reason: denial };
+  if (denial) return { decision: "deny", reason: denial, rule: denial === CONFIG_MISSING ? RULE.workerConfig : RULE.delegationTier };
   const readOnly = tier?.access === "read-only";
   const isolation = tier?.isolation ?? (readOnly ? ["shared"] : ["shared", "worktree"]);
   const requestedIsolation = input.isolation ?? "shared";
   if ((tier?.provider || tier?.isolation || tier?.access) && !isolation.includes(requestedIsolation)) {
-    return { decision: "deny", reason: `Worker ${name} does not allow ${requestedIsolation} isolation; use ${isolation.join(" or ")}.` };
+    return { decision: "deny", reason: `Worker ${name} does not allow ${requestedIsolation} isolation; use ${isolation.join(" or ")}.`, rule: RULE.delegationIsolation };
   }
-  const [decision, reason] = gate(name && dispatchApproval(workers, event, name), input.task);
-  if (decision) return { decision, reason };
+  const [decision, reason, rule] = gate(name && dispatchApproval(workers, event, name), input.task);
+  if (decision) return { decision, reason, rule };
   const extra = tier?.stamp ?? (readOnly ? READ_ONLY_STAMP : "");
   if (!stampRole && !extra) return {};
   const task = typeof input.task === "string" ? input.task : "";
@@ -790,9 +803,9 @@ function hasPrWatchTarget(input) {
 // until its brief records where the approval came from. Missing configuration still asks.
 function gate(approval, brief) {
   if (!approval) return [undefined, undefined];
-  if (approval === CONFIG_MISSING) return ["ask", approval];
+  if (approval === CONFIG_MISSING) return ["ask", approval, RULE.workerConfig];
   if (hasL3Approval(String(brief ?? ""))) return [undefined, undefined];
-  return ["deny", `${approval} ${APPROVAL_LINE}`];
+  return ["deny", `${approval} ${APPROVAL_LINE}`, RULE.dispatchApproval];
 }
 
 function workersArgument(argv) {
@@ -865,19 +878,19 @@ function previewDecision(tool, input, state, stateFile, workers, event) {
 
   const profiles = browserProfiles(workers, event);
   const urls = isProfileId(profile) && Object.hasOwn(profiles, profile) ? profiles[profile]?.urls : null;
-  if (!Array.isArray(urls)) return "This bot browser profile is not configured.";
+  if (!Array.isArray(urls)) return ["This bot browser profile is not configured.", "browser-profile"];
   if (!state.approved || !state.browser?.includes(profile)) {
-    return "This bot browser profile needs a Browser task grant in the current approved Manager turn.";
+    return ["This bot browser profile needs a Browser task grant in the current approved Manager turn.", "browser-grant"];
   }
-  if (tool === "preview_evaluate") return "Script evaluation is blocked in a bot browser session.";
+  if (tool === "preview_evaluate") return ["Script evaluation is blocked in a bot browser session.", "browser-evaluate"];
   if (open && (input.reuseExistingTab !== false || Object.hasOwn(input, "tabId") || Object.hasOwn(input, "target"))) {
-    return "Bot session opens require reuseExistingTab: false with no tabId or target.";
+    return ["Bot session opens require reuseExistingTab: false with no tabId or target.", "browser-tab"];
   }
   if ((tool === "preview_navigate" || (open && url !== undefined)) && !matchesBrowserUrl(url, urls)) {
-    return "The URL is outside this bot browser profile’s allowed HTTPS prefixes.";
+    return ["The URL is outside this bot browser profile’s allowed HTTPS prefixes.", "browser-url"];
   }
   if (open && !personal) {
-    if (state.botProfile && state.botProfile !== profileId) return "Use a fresh session to open a different bot browser profile.";
+    if (state.botProfile && state.botProfile !== profileId) return ["Use a fresh session to open a different bot browser profile.", "browser-profile-switch"];
     try {
       updateManagerState(stateFile, (current) => {
         if (current.turn !== state.turn || current.invalidBrowser || (current.botProfile && current.botProfile !== profile)) {
@@ -886,7 +899,7 @@ function previewDecision(tool, input, state, stateFile, workers, event) {
         return current.botProfile === profile ? current : { ...current, botProfile: profile };
       });
     } catch {
-      return "Could not record the bot browser profile for this session.";
+      return ["Could not record the bot browser profile for this session.", "browser-state"];
     }
   }
   return null;
@@ -930,13 +943,31 @@ function policyStateDirectory() {
 
 const isSessionId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value);
 
+function appendDenial(host, tool, rule, role, cwd) {
+  try {
+    const time = new Date().toISOString();
+    const lane = process.env.T3CODE_THREAD_ID?.trim() || path.basename(cwd || process.cwd());
+    const directory = path.join(policyStateDirectory(), "denials");
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const entry = { time, host, tool: typeof tool === "string" ? tool : "unknown", rule, role, lane };
+    fs.appendFileSync(path.join(directory, `${time.slice(0, 10)}.jsonl`), JSON.stringify(entry) + "\n", {
+      mode: 0o600,
+      flag: fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW,
+    });
+  } catch {
+    // A logging failure must never affect a tool decision.
+  }
+}
+
 function managerStatePath(event) {
   return isSessionId(event.session_id) ? path.join(policyStateDirectory(), "manager-turns", `${event.session_id}.json`) : null;
 }
 
+// Codex 0.172 includes these markers on UserPromptSubmit and PreToolUse for spawned agents.
+const topLevelCodex = (event) => isSessionId(event.session_id) && event.agent_id == null && event.agent_type == null;
+
 function enrolledCodexManager(event) {
-  // Codex 0.172 includes these markers on UserPromptSubmit and PreToolUse for spawned agents.
-  if (!isSessionId(event.session_id) || event.agent_id != null || event.agent_type != null) return false;
+  if (!topLevelCodex(event)) return false;
   try {
     const { sessions } = JSON.parse(fs.readFileSync(path.join(policyStateDirectory(), "codex-managers.json"), "utf8"));
     return Array.isArray(sessions) && sessions.every(isSessionId) && sessions.includes(event.session_id);
@@ -970,8 +1001,10 @@ async function t3Thread(thread) {
   }
 }
 
+const topLevelAntigravity = (row) => row?.lineage === "object" && row.relationshipType === "null";
+
 function antigravityManager(thread, row) {
-  if (row?.lineage !== "object" || row.relationshipType !== "null") return false;
+  if (!topLevelAntigravity(row)) return false;
   try {
     const { threads } = JSON.parse(fs.readFileSync(path.join(policyStateDirectory(), "antigravity-managers.json"), "utf8"));
     return Array.isArray(threads) && threads.every((id) => typeof id === "string" && id && id === id.trim()) &&
@@ -1096,34 +1129,92 @@ function isMemoryPatch(command, cwd) {
   return operation !== undefined;
 }
 
-function mutatingBash(command) {
-  // Exclude the common harmless redirections before checking remaining output redirects.
-  const redirects = command.replace(/(?:2>\s*\/dev\/null|>\s*\/dev\/null|>&2)/g, "");
-  if (/(?:^|[^<])>>?(?!=|&)(?:\s*[^\s;|&]+)/.test(redirects)) return true;
+function hasOutputRedirect(tokens, allowMemoryRedirect) {
+  return tokens.some(({ token, operator, substitutionRedirect }, index) => {
+    if (substitutionRedirect) return true;
+    if (!operator) return false;
+    const redirect = /(?:&>>?|<>|>>?[&|]?)/.exec(token);
+    if (!redirect) return false;
+    const target = tokens[index + 1];
+    if (redirect.index + redirect[0].length !== token.length || !target || target.operator) return true;
+    const output = target.token;
+    if (redirect[0] === ">&" && /^(?:[0-9]+-?|-)$/.test(output)) return false;
+    if (output === "/dev/null") return false;
+    if (!allowMemoryRedirect || !output || /[$`*?{}\[\]]/.test(output) || output.split("/").includes("..")) return true;
+    // Absolute and ~/ targets cannot be redirected by a preceding cd.
+    const file = target.leadingTilde && !target.escaped && output.startsWith("~/")
+      ? path.join(os.homedir(), output.slice(2)) : output;
+    return !path.isAbsolute(file) || !isMemoryEdit(file, process.cwd()) || !isMemoryEdit(resolvePath(file), process.cwd());
+  });
+}
+
+function readOnlyGithubApi(args) {
+  let method;
+  let hasFields = false;
+  for (let index = 0; index < args.length && args[index] !== "--"; index++) {
+    const word = args[index];
+    if (word === "-X" || word === "--method") method = args[++index] ?? "";
+    else if (word.startsWith("--method=")) method = word.slice(9);
+    else if (word.startsWith("-X") && word.length > 2) method = word.slice(2).replace(/^=/, "");
+    else if (/^(?:--(?:raw-)?field|-[fF])$/.test(word)) { hasFields = true; index++; }
+    else if (/^(?:--(?:raw-)?field=|-[fF])/.test(word)) hasFields = true;
+    else if (word === "--input" || word.startsWith("--input=")) return false;
+    else if (/^(?:--(?:header|cache|hostname|jq|template)|-[Hqt])$/.test(word)) index++;
+    else if (/^-[i]+[XfF]/.test(word)) return false;
+  }
+  return method === undefined ? !hasFields : method === "GET";
+}
+
+function isOneShotGithubRead(command) {
+  // Codex's shell exception accepts a single gh invocation with no shell expansions or operators.
+  if (/[\n\r$`\\<>;&|()*?\[\]{}]/.test(command) || !/^\s*gh\s/.test(command)) return false;
+  try {
+    const [, group, operation, ...args] = shlex(command, true);
+    if (group === "api") return readOnlyGithubApi([operation, ...args].filter((word) => word !== undefined));
+    if (args.some((word) => /^(?:--(?:watch|web)(?:=|$)|-w)/.test(word))) return false;
+    return (group === "pr" && ["view", "checks"].includes(operation)) ||
+      (group === "run" && ["view", "list"].includes(operation));
+  } catch {
+    return false;
+  }
+}
+
+function mutatingBash(command, allowMemoryRedirect = false) {
   let commands;
-  try { commands = shellCommands(command); } catch { return false; }
+  try {
+    if (hasOutputRedirect(shlex(command, true, true), allowMemoryRedirect)) return true;
+    commands = shellCommands(command);
+  } catch {
+    return true; // A parse failure cannot establish that the command is read-only.
+  }
   for (const words of commands) {
     const [argv] = gitCommand(words);
     if (argv && MUTATING_GIT.has(argv[0])) return true;
-    const [program, operation] = words;
+    const [program, operation, ...args] = commandWords(words[0] === "cd" && words[2] === "&&" ? words.slice(3) : words);
     if (["tee", "rm", "mv", "cp", "mkdir", "touch", "chmod"].includes(program) ||
         (program === "sed" && words.some((word) => word === "-i" || word.startsWith("-i"))) ||
         (["npm", "pnpm", "yarn"].includes(program) && ["install", "publish"].includes(operation)) ||
         (program === "pip" && operation === "install") ||
+        (program === "gh" && ((operation === "api" && !readOnlyGithubApi(args)) ||
+          (operation === "run" && args[0] === "download"))) ||
         (program === "ssh" && words.length > 2)) return true;
   }
   return false;
 }
 
 function classifyBash(command, event, manager) {
-  if (typeof command !== "string") return null;
-  let reason = textShellPolicy(command, manager);
   try {
-    reason = protectedBranchGit(command, event) ?? pollsGithub(command) ?? reason;
+    const branch = protectedBranchGit(command, event);
+    if (branch) return [branch, RULE.protectedBranch];
+    const polling = pollsGithub(command);
+    if (polling) return [polling, RULE.polling];
   } catch {
     // A tokenization error leaves the text-based decision in place.
   }
-  return reason;
+  // Scan the full text for waits and artifact downloads, including shell substitutions.
+  if (LOOP_WORD.test(command) && SLEEP_WORD.test(command)) return [`${SLEEP_LOOP} Use watch_pull_request for GitHub waits.`, RULE.sleepLoop];
+  if (manager && GH_RUN_DOWNLOAD.test(command.replace(/["']/g, ""))) return [CI_DOWNLOAD, RULE.ciDownload];
+  return [];
 }
 
 function emit(value) {
@@ -1171,18 +1262,35 @@ async function main() {
   const host = hostArgument(process.argv.slice(2));
   const codex = host === "codex";
   const agy = host === "antigravity";
-  const emitPreToolUse = (decision, reason) => emit(agy ? { decision, ...(reason ? { reason } : {}) } : {
-    hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision, permissionDecisionReason: reason },
-  });
+  let logTool;
+  let logCwd;
+  let role = "unknown";
+  let enrolmentHint;
+  const emitPreToolUse = (decision, reason, rule) => {
+    // Antigravity and Codex cannot present approval prompts for this hook.
+    if ((agy || codex) && decision === "ask") {
+      decision = "deny";
+      if (codex) reason += " Get the user's approval, then retry.";
+    }
+    if (decision === "deny") {
+      appendDenial(agy || codex ? host : "claude", logTool, rule, role, logCwd);
+      if (enrolmentHint) reason += ` ${enrolmentHint}`;
+    }
+    emit(agy ? { decision, ...(reason ? { reason } : {}) } : {
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision, permissionDecisionReason: reason },
+    });
+  };
   const emitUpdate = (input, overwrite) => emit(agy ? { decision: "allow", overwrite } : {
     hookSpecificOutput: { hookEventName: "PreToolUse", ...(codex ? { permissionDecision: "allow" } : {}), updatedInput: input },
   });
   let decision = null;
   let reason = null;
+  let rule;
   let agyRoleResolved = false;
   try {
     let event = JSON.parse(fs.readFileSync(0, "utf8"));
     if (!isDict(event)) return;
+    logCwd = typeof event.cwd === "string" ? event.cwd : undefined;
     let agyManager = false;
     let agyThread;
     let agyTurn;
@@ -1191,15 +1299,22 @@ async function main() {
       const toolCall = isDict(event.toolCall) ? event.toolCall : {};
       const { toolSummary: ignored, ...args } = isDict(toolCall.args) ? toolCall.args : {};
       const tool = typeof toolCall.name === "string" ? toolCall.name.replace(/^mcp_t3-code_/, "mcp__t3_code__") : undefined;
-      if (AGY_SUBAGENTS.has(tool)) {
-        emitPreToolUse("deny", "Antigravity's own subagent tools skip the Worker ladder; dispatch Workers with T3 delegate_task.");
-        return;
-      }
+      logTool = toolCall.name;
+      if (tool === "run_command" && typeof args.Cwd === "string") logCwd = args.Cwd;
       if (tool === "mcp__t3_code__delegate_task" && !isDict(args.target)) args.target = {};
       const thread = process.env.T3CODE_THREAD_ID?.trim();
       agyThread = await t3Thread(thread);
       agyManager = antigravityManager(thread, agyThread);
       agyRoleResolved = true;
+      if (!agyManager && topLevelAntigravity(agyThread)) {
+        enrolmentHint = "This top-level Antigravity thread is not enrolled as a Manager, so Worker rules apply. " +
+          `To use Manager rules, ask the harness owner to enrol thread ${thread}.`;
+      }
+      role = agyManager ? "manager" : agyThread?.relationship ? "worker" : "unknown";
+      if (AGY_SUBAGENTS.has(tool)) {
+        emitPreToolUse("deny", "Antigravity's own subagent tools skip the Worker ladder; dispatch Workers with T3 delegate_task.", RULE.nativeSubagent);
+        return;
+      }
       if (agyManager) {
         // Hash the prompt and thread separately; neither raw prompts nor paths from IDs go on disk.
         const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
@@ -1213,6 +1328,10 @@ async function main() {
     }
     const stateFile = agy ? agyStateFile : managerStatePath(event);
     const codexManager = codex && enrolledCodexManager(event);
+    if (codex && !codexManager && topLevelCodex(event)) {
+      enrolmentHint = "This top-level Codex session is not enrolled as a Manager. " +
+        `To use Manager rules, ask the harness owner to enrol session ${event.session_id}.`;
+    }
     if (event.hook_event_name === "UserPromptSubmit") {
       if (codexManager || (host === "claude" && event.agent_id == null)) {
         try {
@@ -1250,6 +1369,7 @@ async function main() {
     }
     if (event.hook_event_name != null && event.hook_event_name !== "PreToolUse") return;
     const tool = event.tool_name;
+    if (!agy) logTool = tool;
     const args = "tool_input" in event ? event.tool_input : {};
     const mainLoop = agy ? agyManager : codex ? codexManager : !event.agent_id;
     // An unenrolled session must not keep using state from its time as a Manager.
@@ -1260,11 +1380,12 @@ async function main() {
         managerState = updateManagerState(stateFile, (current) => current.turn === agyTurn
           ? current : resetManagerTurn(current, prompt, agyTurn, false));
       } catch {
-        emitPreToolUse("deny", "Could not reset the Manager turn state.");
+        emitPreToolUse("deny", "Could not reset the Manager turn state.", RULE.managerTurnReset);
         return;
       }
     }
     const workerContext = (agy && !agyManager) || managerState.worker || Boolean(event.agent_id) || (codex && event.agent_type != null);
+    if (!agy) role = workerContext ? "worker" : mainLoop ? "manager" : "unknown";
     // Never carry an approval or browser grant over to a different native Codex turn.
     const codexTurnMatches = () => !codexManager || Boolean(managerState.turn && managerState.turn === event.turn_id);
     const workApproved = () => managerState.approved && codexTurnMatches();
@@ -1273,13 +1394,11 @@ async function main() {
     const command = agy ? shellInput.CommandLine
       : codex && tool === "exec_command" ? shellInput.command ?? shellInput.cmd : shellInput.command;
     const shellCommand = typeof command === "string" ? command : "";
-    if (codexManager && isShell && !managerState.worker && !workApproved()) {
-      emit({ hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: "Enrolled Codex Managers can't run shell commands without " +
-          "`Manager work approval: <link>` at the start of the turn; send shell work to a Worker.",
-      } });
+    if (codexManager && isShell && !managerState.worker && !workApproved() && !isOneShotGithubRead(shellCommand)) {
+      const [shellReason, shellRule] = classifyBash(shellCommand, event, false);
+      if (shellReason) emitPreToolUse("deny", shellReason, shellRule);
+      else emitPreToolUse("deny", "Enrolled Codex Managers need `Manager work approval: <link>` at the start " +
+        "of the turn for shell commands outside the one-shot GitHub reads; send other shell work to a Worker.", RULE.codexShellApproval);
       return;
     }
     const isEdit = (agy ? AGY_EDITS : NATIVE_EDITS).has(tool);
@@ -1287,7 +1406,7 @@ async function main() {
     const shellWrite = (isShell || (codex && tool === "exec_command")) && mutatingBash(shellCommand);
     if ((isEdit || isPatch || shellWrite) &&
         await readOnlyWorker(workers, event, agy, agyManager, agyThread)) {
-      emitPreToolUse("deny", "Read-only Workers cannot edit files or run shell commands that change files or state.");
+      emitPreToolUse("deny", "Read-only Workers cannot edit files or run shell commands that change files or state.", RULE.readOnlyWorker);
       return;
     }
     const normalizedTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
@@ -1320,34 +1439,34 @@ async function main() {
         (input.environmentId === undefined || (typeof input.environmentId === "string" && input.environmentId.trim()));
       if (!pauseOnly && !((agyManager || (host === "claude" && event.agent_id == null)) && managerState.worker === false &&
           managerState.turn && !managerState.invalidBrowser && registeredScheduleAllowed(workers, event, input))) {
-        [decision, reason] = ["deny", SCHEDULE_TASK];
+        [decision, reason, rule] = ["deny", SCHEDULE_TASK, RULE.schedule];
       }
     } else if (isPrWatch && !hasPrWatchTarget(args)) {
-      [decision, reason] = ["deny", "Bind a PR watch to a repository and pull request, URL, or explicit threadId."];
-    } else if ((isThreadLaunch || isCreateThreads || configureModelSelection || (agy && isThreadConfigure)) && workerContext) [decision, reason] = ["deny", THREAD_LAUNCH];
+      [decision, reason, rule] = ["deny", "Bind a PR watch to a repository and pull request, URL, or explicit threadId.", RULE.prWatchTarget];
+    } else if ((isThreadLaunch || isCreateThreads || configureModelSelection || (agy && isThreadConfigure)) && workerContext) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
     else if ((isThreadLaunch || isCreateThreads || configureModelSelection) && codex && !codexManager) {
-      [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; top-level thread creation and model changes are denied here."];
+      [decision, reason, rule] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; top-level thread creation and model changes are denied here.", RULE.threadLaunch];
     } else if (isThreadLaunch) {
       const input = isDict(args) ? args : {};
       const selection = isDict(input.modelSelection) ? input.modelSelection : {};
       const model = selection.model;
       const validIds = [input.environmentId, input.projectId].every((value) => typeof value === "string" && value.trim());
       const approved = hasL3Approval(input.message) || hasL3Approval(input.prompt);
-      if (!validIds || !launchModelAllowed(workers, event, model, approved)) [decision, reason] = ["deny", THREAD_LAUNCH];
+      if (!validIds || !launchModelAllowed(workers, event, model, approved)) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
     } else if (configureModelSelection) {
       const selection = isDict(args.modelSelection) ? args.modelSelection : {};
-      if (!launchModelAllowed(workers, event, selection.model)) [decision, reason] = ["deny", THREAD_LAUNCH];
+      if (!launchModelAllowed(workers, event, selection.model)) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
     } else if (isCreateThreads) {
       const threads = isDict(args) && Array.isArray(args.threads) ? args.threads : [];
       if (!threads.length || threads.some((thread) => {
         const target = isDict(thread) && isDict(thread.target) ? thread.target : {};
         return ![target.environmentId, target.projectId].every((value) => typeof value === "string" && value.trim()) ||
           !launchModelAllowed(workers, event, target.model, hasL3Approval(thread?.prompt));
-      })) [decision, reason] = ["deny", THREAD_LAUNCH];
+      })) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
     } else if (workerContext && (isPrWatch || isLocalAutomation)) {
-      [decision, reason] = ["deny", "Workers cannot create automation or initiate new watches. Use the current Manager thread for follow-up work."];
+      [decision, reason, rule] = ["deny", "Workers cannot create automation or initiate new watches. Use the current Manager thread for follow-up work.", RULE.workerAutomation];
     } else if (codex && !codexManager && !event.agent_id && (isPrWatch || isLocalAutomation)) {
-      [decision, reason] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; ambiguous automation creation is denied here."];
+      [decision, reason, rule] = ["deny", "Codex hook events do not expose reliable standalone Manager/Worker role metadata; ambiguous automation creation is denied here.", RULE.unknownAutomation];
     }
     if (!decision && mainLoop && !managerState.worker && !workApproved() && typeof tool === "string" &&
         !isScheduleTask && !COUNT_EXEMPT.test(codex ? canonicalTool : tool) &&
@@ -1357,20 +1476,21 @@ async function main() {
           ? current : { ...current, count: current.count + 1 });
       } catch (error) {
         if (!previewTool && !agy) throw error;
-        [decision, reason] = ["deny", "Could not update the Manager turn state."];
+        [decision, reason, rule] = ["deny", "Could not update the Manager turn state.", RULE.managerTurnUpdate];
       }
       if (!decision && managerState.count > 5) {
         decision = "deny";
+        rule = RULE.managerWorkLimit;
         reason = managerGateReason(`The sixth counted work call (${tool})`, stateFile);
       }
     }
     if (previewTool) {
       const input = isDict(args) ? args : {};
       if (!decision) {
-        reason = browserWorker()
-          ? (agy ? BROWSER_MANAGER.replace("Claude Manager", "enrolled Antigravity Manager")
-            : codexManager ? BROWSER_MANAGER.replace("Claude Manager", "enrolled Codex Manager") : BROWSER_MANAGER)
-          : previewDecision(previewTool, input, managerState, stateFile, workers, event);
+        [reason, rule] = browserWorker()
+          ? [(agy ? BROWSER_MANAGER.replace("Claude Manager", "enrolled Antigravity Manager")
+            : codexManager ? BROWSER_MANAGER.replace("Claude Manager", "enrolled Codex Manager") : BROWSER_MANAGER), RULE.browserManager]
+          : previewDecision(previewTool, input, managerState, stateFile, workers, event) ?? [];
         if (reason) decision = "deny";
       }
       const profile = previewTool === "preview_open" && !decision && isProfileId(input.profileId)
@@ -1380,7 +1500,7 @@ async function main() {
     const enforceManager = mainLoop && !managerState.worker && !workApproved();
     if (enforceManager && !decision && codexManager && isPatch &&
         !isMemoryPatch(isDict(args) ? args.command : undefined, typeof event.cwd === "string" ? event.cwd : process.cwd())) {
-      [decision, reason] = ["deny", managerGateReason("apply_patch to a file", stateFile)];
+      [decision, reason, rule] = ["deny", managerGateReason("apply_patch to a file", stateFile), RULE.managerEdit];
     }
     if (enforceManager && !decision && isEdit) {
       // Image generation names its output but does not expose a TargetFile for the memory exception.
@@ -1388,11 +1508,14 @@ async function main() {
         : dict(args).file_path ?? dict(args).notebook_path;
       if (!isMemoryEdit(filePath, agy ? event.cwd || process.cwd() : process.cwd())) {
         decision = "deny";
+        rule = RULE.managerEdit;
         reason = managerGateReason(`${tool} to ${filePath || "a file"}`, stateFile);
       }
     }
-    if (enforceManager && !decision && isShell && shellWrite) {
+    if (enforceManager && !decision && isShell && shellWrite &&
+        (host !== "claude" || mutatingBash(shellCommand, true))) {
       decision = "deny";
+      rule = RULE.managerShellWrite;
       reason = managerGateReason("A Bash command that changes files or state", stateFile);
     }
     if (!decision && typeof tool === "string" && tool.endsWith("t3_thread_send")) {
@@ -1404,36 +1527,31 @@ async function main() {
     if (!decision && isDelegateTask) {
       const input = dict(args);
       const result = checkDelegation(workers, event, input, { stampRole: agy || mainLoop, requireTier: agy });
-      if (result.decision) ({ decision, reason } = result);
+      if (result.decision) ({ decision, reason, rule } = result);
       else if (result.task !== undefined) {
         emitUpdate({ ...input, task: result.task }, { task: result.task });
         return;
       }
-    } else if (tool === "spawn_agent") {
+    } else if (!decision && tool === "spawn_agent") {
       const subagentType = dict(args).agent_type;
       const approval = dispatchApproval(workers, event, subagentType) ?? (args.model === "opus" ? APPROVAL : null);
-      [decision, reason] = gate(approval, args.message);
-    } else if (tool === "Agent" || tool === "Task") {
+      [decision, reason, rule] = gate(approval, args.message);
+    } else if (!decision && (tool === "Agent" || tool === "Task")) {
       const subagentType = dict(args).subagent_type;
       const approval = dispatchApproval(workers, event, subagentType);
       if (args.model && !INHERITING_AGENT_TYPES.has(subagentType) && subagentType !== "fork") {
-        [decision, reason] = ["deny", MODEL_OVERRIDE];
-      } else if (approval || args.model === "opus") [decision, reason] = gate(approval ?? APPROVAL, args.prompt);
-      else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason] = ["deny", INHERITED_MODEL];
+        [decision, reason, rule] = ["deny", MODEL_OVERRIDE, RULE.modelOverride];
+      } else if (approval || args.model === "opus") [decision, reason, rule] = gate(approval ?? APPROVAL, args.prompt);
+      else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason, rule] = ["deny", INHERITED_MODEL, RULE.inheritedModel];
     } else if (!decision && isShell) {
-      reason = classifyBash(shellCommand, agy ? { cwd: dict(args).Cwd ?? event.cwd } : event, mainLoop);
+      [reason, rule] = classifyBash(shellCommand, agy ? { cwd: dict(args).Cwd ?? event.cwd } : event, mainLoop);
       if (reason) decision = "deny";
     }
   } catch {
-    if (agyRoleResolved) emitPreToolUse("deny", "Could not evaluate the Antigravity tool policy.");
+    if (agyRoleResolved) emitPreToolUse("deny", "Could not evaluate the Antigravity tool policy.", RULE.policyError);
     return;
   }
-  if (agy) emitPreToolUse(decision ? "deny" : "allow", reason);
-  else if (decision) {
-    // Codex fails open on "ask", so it gets a deny that tells the model to obtain approval first.
-    if (codex && decision === "ask") [decision, reason] = ["deny", `${reason} Get the user's approval, then retry.`];
-    emit({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision, permissionDecisionReason: reason } });
-  }
+  if (decision || agy) emitPreToolUse(decision ?? "allow", reason, rule);
 }
 
 main();

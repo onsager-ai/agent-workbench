@@ -12,7 +12,7 @@ Prefer native harness subagents for same-harness work. A T3 thread you launch is
 
 Thread list/read/search and environment link list tools are observation calls and do not use the Manager's five-call work allowance. This includes reading thread activity. Queue and pending-request list/read calls were already exempt and remain exempt; their existing supported actions keep their existing behavior. The allowance still applies to other tools, including calls with similar names from another server.
 
-- When a watched PR check fails, resume the Worker that owns the branch or dispatch an L1 Worker with the run URL. The Worker triages the failure; the Manager does not fetch or search CI logs.
+- When a watched PR check fails, you may read the failed log once with `gh run view --log-failed` within the five-call limit. For longer investigations, resume the Worker that owns the branch or dispatch an L1 Worker with the run URL.
 - Delegate diff review to an independent L1/L2 reviewer. Give it the PR and requirements; read its terse findings and the Worker report, not whole diffs. Before accepting, inspect only the specific hunks that change a contract: config schema, public docs, persisted formats, or hook policy. A Worker cannot accept its own work.
 - By default the Worker that owns the branch commits, pushes, opens the PR, and fixes CI. Brief it to iterate until required CI is green on the exact head, within the round's push allowance, and follow the [Worker report checklist and Outcome line](worker.md#report-checklist). The Manager makes one exact-head verification call and merges when authorized.
 - Batch independent Manager checks into one tool call; avoid exploratory one-liners.
