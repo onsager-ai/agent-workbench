@@ -32,7 +32,7 @@ const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the u
   "set nonblank environmentId and projectId and select an exact configured model. " +
   "For models listed in policy.manager_models, quote the user's approval in the launch text as `L3 approval: <link to the approval>`. " +
   "Model configuration calls require an explicit threadId and are limited to non-opt-in L1/L2, " +
-  "except that threads listed in policy.manager_threads may be configured with a model listed in policy.manager_models. " +
+  "except for policy.manager_model_pairs or targets in policy.manager_threads with a model in policy.manager_models. " +
   "Workers must not launch top-level threads or change thread models. Use a Worker or current-thread wakeup for follow-up work.";
 const SCHEDULE_TASK = "This schedule_task call does not meet the registered schedule rules. " +
   "Use the personal automation registry before activating automation. A Claude Manager or an enrolled Antigravity or Codex Manager " +
@@ -751,11 +751,14 @@ function launchModelAllowed(file, event, model, { approved = false, threadId, pr
       const tier = config.tiers[name];
       return tier && !tier.opt_in && matches(tier);
     }));
+    if (l1L2Allowed) return true;
+    if (threadId !== undefined && config.policy.manager_model_pairs?.some((pair) =>
+      pair.thread === threadId && pair.model === model)) return true;
     const managerThreads = config.policy.manager_threads;
     const listedTarget = Array.isArray(managerThreads) && managerThreads.includes(threadId);
     const codexConfigure = listedTarget && provider === "codex";
-    return l1L2Allowed || ((approved || listedTarget) && config.policy.manager_models?.some((id) =>
-      id === model || (codexConfigure && id.replace(/^codex\//, "") === model.replace(/^codex\//, ""))) === true);
+    return (approved || listedTarget) && config.policy.manager_models?.some((id) =>
+      id === model || (codexConfigure && id.replace(/^codex\//, "") === model.replace(/^codex\//, ""))) === true;
   } catch {
     return false;
   }

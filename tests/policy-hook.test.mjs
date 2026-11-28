@@ -2332,6 +2332,37 @@ describe("policy hook", () => {
       }
     });
 
+    test("a Manager model pair grants only the exact configure target and model", () => {
+      const model = "gemini-4-carbon";
+      const trial = "trial-thread";
+      const legacyModel = "example/legacy-manager";
+      const legacyTarget = "legacy-target";
+      const overlay = path.join(directory, "trial-model.yml");
+      fs.writeFileSync(overlay, JSON.stringify({ profile: "codex", policy: {
+        manager_model_pairs: [{ thread: trial, model }],
+        manager_models: [legacyModel], manager_threads: [legacyTarget],
+      } }));
+      fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
+      enrol("manager");
+      prompt("manager");
+      const configure = (threadId, model, session = "manager") => tool(session, "mcp__t3_code__t3_thread_configure", {
+        threadId, modelSelection: { instanceId: "example-provider", model },
+      });
+      assert.equal(configure(trial, model), null);
+      assert.equal(configure(trial, model, "outside").permissionDecision, "deny");
+      assert.equal(configure(legacyTarget, model).permissionDecision, "deny");
+      assert.equal(configure(trial, legacyModel).permissionDecision, "deny");
+      assert.equal(configure(trial, `codex/${model}`).permissionDecision, "deny");
+      assert.equal(configure(legacyTarget, legacyModel), null);
+
+      const ids = { environmentId: "env", projectId: "project" };
+      const approval = "L3 approval: https://example.test/approval";
+      const launch = { ...ids, modelSelection: { model }, message: approval, threadId: trial };
+      assert.equal(tool("manager", "mcp__t3_code__t3_thread_launch", launch).permissionDecision, "deny");
+      const create = { threads: [{ target: { ...ids, model, threadId: trial }, prompt: approval }] };
+      assert.equal(tool("manager", "mcp__t3_code__create_threads", create).permissionDecision, "deny");
+    });
+
     test("Codex direct delegation and schedules keep the shared tool rules", () => {
       enrol("direct-manager");
       prompt("direct-manager");
