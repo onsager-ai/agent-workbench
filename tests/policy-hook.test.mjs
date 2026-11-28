@@ -1524,6 +1524,64 @@ describe("policy hook", () => {
       assert.match(antigravity(edit(), env, { lastUserInput: "Review only." }).reason, /Manager work approval/);
     });
 
+    test("ACP file tools and native state changes require Manager approval and are denied to read-only Workers", () => {
+      const readOnly = { ...env, T3CODE_THREAD_ID: child };
+      const memory = path.join(os.homedir(), ".claude/projects/example/memory/notes.md");
+      const fileEdits = ["write_file", "edit_file", "create_file", "delete_file", "file_delete", "client_edit_file"].map((name) => ({
+        name, args: { Path: "/workspace/src/file.mjs", TargetFile: memory },
+      }));
+      const stateChanges = [
+        { name: "schedule", args: { DurationSeconds: 60, Prompt: "Continue the task" } },
+        { name: "manage_task", args: { Action: "send_input", TaskId: "task", Input: "continue" } },
+        { name: "manage_task", args: { Action: "kill", TaskId: "task" } },
+        { name: "manage_subagents", args: { Action: "kill", ConversationIds: ["agent"] } },
+        { name: "manage_subagents", args: { Action: "kill_all" } },
+      ];
+      for (const tool of [...fileEdits, ...stateChanges]) {
+        const unapproved = antigravity(tool, env, { lastUserInput: "Inspect the workspace." });
+        assert.equal(unapproved.decision, "deny", tool.name);
+        assert.match(unapproved.reason, /Manager work approval/, tool.name);
+        assert.deepEqual(antigravity(tool, env, { lastUserInput: approval }), { decision: "allow" }, tool.name);
+        const worker = antigravity(tool, readOnly, { lastUserInput: approval });
+        assert.equal(worker.decision, "deny", tool.name);
+        assert.match(worker.reason, readOnlyDenial, tool.name);
+      }
+    });
+
+    test("Antigravity management tools gate missing, unknown, differently cased, and ambiguous actions", () => {
+      const readOnly = { ...env, T3CODE_THREAD_ID: child };
+      const inspect = { lastUserInput: "Inspect the workspace." };
+      for (const name of ["manage_task", "manage_subagents"]) {
+        for (const args of [{}, { Action: "future_action" }, { Action: "LIST" }, { action: "KILL" },
+          { Action: "list", action: "kill" }]) {
+          const tool = { name, args };
+          const label = `${name} ${JSON.stringify(args)}`;
+          assert.match(antigravity(tool, env, inspect).reason, /Manager work approval/, label);
+          assert.match(antigravity(tool, readOnly, { lastUserInput: approval }).reason, readOnlyDenial, label);
+          assert.deepEqual(antigravity(tool, env, { lastUserInput: approval }), { decision: "allow" }, label);
+        }
+      }
+    });
+
+    test("ACP and CLI read tools remain available", () => {
+      const readOnly = { ...env, T3CODE_THREAD_ID: child };
+      for (const name of ["read_file", "list_directory", "search_directory", "find_file", "view_file", "list_dir",
+        "find_by_name", "grep_search", "read_url_content"]) {
+        const tool = { name, args: {} };
+        assert.deepEqual(antigravity(tool, env, { lastUserInput: `Inspect with ${name}.` }), { decision: "allow" }, name);
+        assert.deepEqual(antigravity(tool, readOnly), { decision: "allow" }, name);
+      }
+      const prompt = { lastUserInput: "Check task progress." };
+      const read = { name: "view_file", args: {} };
+      for (let i = 0; i < 5; i++) assert.deepEqual(antigravity(read, env, prompt), { decision: "allow" });
+      for (const tool of [{ name: "manage_task", args: { Action: "list" } },
+        { name: "manage_task", args: { Action: "status", TaskId: "task" } }, { name: "manage_subagents", args: { Action: "list" } }]) {
+        assert.deepEqual(antigravity(tool, env, prompt), { decision: "allow" }, tool.name);
+        assert.deepEqual(antigravity(tool, readOnly), { decision: "allow" }, tool.name);
+      }
+      assert.match(antigravity(read, env, prompt).reason, /sixth counted work call/);
+    });
+
     test("image output requires approval and has no memory-path exception", () => {
       const image = { name: "generate_image", args: { ImageName: "example" } };
       assert.match(antigravity(image, env).reason, /Manager work approval/);
@@ -1720,8 +1778,11 @@ describe("policy hook", () => {
       assert.equal(result.decision, "deny", name);
       assert.match(result.reason, /skip the Worker ladder; dispatch Workers with T3 delegate_task/);
     }
-    for (const name of ["manage_subagents", "mcp_t3-code_pull_request_read"]) {
-      assert.deepEqual(antigravity({ name, args: { toolSummary: "Checking status" } }), { decision: "allow" });
+    for (const tool of [
+      { name: "manage_subagents", args: { Action: "list", toolSummary: "Listing subagents" } },
+      { name: "mcp_t3-code_pull_request_read", args: { toolSummary: "Checking status" } },
+    ]) {
+      assert.deepEqual(antigravity(tool), { decision: "allow" });
     }
   });
 

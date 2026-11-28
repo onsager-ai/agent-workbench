@@ -39,7 +39,10 @@ const SCHEDULE_TASK = "New schedule_task calls are unavailable because the curre
 const BROWSER_TOOL = /^mcp__t3_code(?:_direct)?__(preview_.+|t3_preview_.+)$/;
 const BROWSER_MANAGER = "Browser tools other than status require a Claude Manager main loop with valid turn state.";
 const NATIVE_EDITS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
-const AGY_EDITS = new Set(["write_to_file", "replace_file_content", "multi_replace_file_content", "generate_image"]);
+const AGY_TARGET_FILE_EDITS = new Set(["write_to_file", "replace_file_content", "multi_replace_file_content"]);
+const AGY_EDITS = new Set([
+  ...AGY_TARGET_FILE_EDITS, "generate_image", "write_file", "edit_file", "create_file", "delete_file", "file_delete", "client_edit_file",
+]);
 const AGY_SUBAGENTS = new Set(["invoke_subagent", "define_subagent", "swarm", "run_workflow"]);
 const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
 const OBSERVATION_COUNT_EXEMPT = /^mcp__t3[-_]code__(?:t3_thread_list|t3_thread_read|t3_thread_search|t3_environment_links)$/;
@@ -1419,9 +1422,16 @@ async function main() {
       return;
     }
     const isEdit = (agy ? AGY_EDITS : NATIVE_EDITS).has(tool);
+    const agyManagementTool = agy && (tool === "manage_task" || tool === "manage_subagents");
+    const agyActions = agyManagementTool ? [args.Action, args.action].filter((action) => action !== undefined) : [];
+    const [agyAction] = agyActions;
+    const agyManagementRead = agyActions.length === 1 &&
+      (agyAction === "list" || (tool === "manage_task" && agyAction === "status"));
+    const agyManagementWrite = agyManagementTool && !agyManagementRead;
+    const agyStateWrite = agyManagementWrite || (agy && tool === "schedule");
     const isPatch = codex && tool === "apply_patch";
     const shellWrite = (isShell || (codex && tool === "exec_command")) && mutatingBash(shellCommand);
-    if ((isEdit || isPatch || shellWrite) &&
+    if ((isEdit || agyStateWrite || isPatch || shellWrite) &&
         await readOnlyWorker(workers, event, agy, agyManager, agyThread)) {
       emitPreToolUse("deny", "Read-only Workers cannot edit files or run shell commands that change files or state.", RULE.readOnlyWorker);
       return;
@@ -1487,7 +1497,7 @@ async function main() {
     }
     if (!decision && mainLoop && !managerState.worker && !workApproved() && typeof tool === "string" &&
         !isScheduleTask && !COUNT_EXEMPT.test(codex ? canonicalTool : tool) &&
-        !OBSERVATION_COUNT_EXEMPT.test(tool) && !isLocalWakeup) {
+        !OBSERVATION_COUNT_EXEMPT.test(tool) && !isLocalWakeup && (!agyManagementTool || agyManagementWrite)) {
       try {
         managerState = updateManagerState(stateFile, (current) => current.turn !== managerState.turn
           ? current : { ...current, count: current.count + 1 });
@@ -1519,14 +1529,14 @@ async function main() {
         !isMemoryPatch(isDict(args) ? args.command : undefined, typeof event.cwd === "string" ? event.cwd : process.cwd())) {
       [decision, reason, rule] = ["deny", managerGateReason("apply_patch to a file", stateFile), RULE.managerEdit];
     }
-    if (enforceManager && !decision && isEdit) {
-      // Image generation names its output but does not expose a TargetFile for the memory exception.
-      const filePath = agy ? (tool === "generate_image" ? undefined : dict(args).TargetFile)
+    if (enforceManager && !decision && (isEdit || agyStateWrite)) {
+      // Only the legacy Antigravity editors document TargetFile as the destination.
+      const filePath = agy ? (AGY_TARGET_FILE_EDITS.has(tool) ? args.TargetFile : undefined)
         : dict(args).file_path ?? dict(args).notebook_path;
       if (!isMemoryEdit(filePath, agy ? event.cwd || process.cwd() : process.cwd())) {
         decision = "deny";
         rule = RULE.managerEdit;
-        reason = managerGateReason(`${tool} to ${filePath || "a file"}`, stateFile);
+        reason = managerGateReason(agyStateWrite ? tool : `${tool} to ${filePath || "a file"}`, stateFile);
       }
     }
     if (enforceManager && !decision && isShell && shellWrite &&
