@@ -100,9 +100,15 @@ Set `policy.manager_models` in your `workers.yml` override to a list of exact, n
 
 For an exception limited to one target and model, set `policy.manager_model_pairs`, for example `[{thread: example-t3-thread, model: example/trial-model}]`. Each entry matches the exact `threadId` and `modelSelection.model` of a Manager configure call. To keep the exception scoped to that pair, leave its model and target out of the separate `manager_models` and `manager_threads` lists.
 
+### Chief PM inbox
+
+Set `policy.chief_pm: {environment: example-env, thread: example-thread}` in the base private `workers.yml` and rerun `agent-workbench install`. A Manager's `t3_thread_send` to that exact T3 environment and thread requires a single final `WB_MSG` footer with `kind=decision-request`, `kind=blocked`, or `kind=alert`. A `kind=result` needs `re` to match a Chief PM request in that Manager's latest 100 user messages, using the T3-recorded local or linked sender. Scheduled turns use the same rule. Send routine lane status and heartbeats to Ostrom.
+
+The hook covers the matched T3 send tools, including the Codex direct alias once its new hook is trusted. It does not cover human messages, attachment sends, or changes to already queued messages.
+
 ### Registered T3 schedules
 
-For an automation already listed in the private registry, put its `name`, T3 `thread` ID, and exact `schedule` in `policy.schedules` in your `workers.yml` override, then rerun `agent-workbench install`. No schedules are allowlisted by default, and the hook does not read the registry. A Claude Manager main loop or an enrolled Antigravity or Codex Manager can create or re-enable schedules only from that T3 thread and within a current Manager turn. Codex uses the T3 thread mapped to its native session and denies the call if there is no unique top-level match. Codex can create or re-enable `fixed_time` and `once` schedules only. Workers cannot create or re-enable schedules.
+For an automation already listed in the private registry, put its `name`, T3 `thread` ID, and exact `schedule` in `policy.schedules` in your `workers.yml` override, then rerun `agent-workbench install`. No schedules are allowlisted by default, and the hook does not read the registry. A Claude Manager main loop or an enrolled Antigravity or Codex Manager can create or re-enable schedules only from that T3 thread and within a current Manager turn. Codex uses the T3 thread mapped to its native session and denies the call if there is no unique top-level match. Codex can create `fixed_time` and `once` schedules. Workers cannot create or re-enable schedules.
 
 To create a schedule, use the entry's `name` as `title`, supply a nonblank `prompt`, and set `bindToCurrentThread: true` to run on the thread's current model. Match the configured `schedule` object exactly:
 
@@ -113,6 +119,8 @@ To create a schedule, use the entry's `name` as `title`, supply a nonblank `prom
 An optional `fresh_session` boolean defaults to `false`. If a create supplies `freshSession`, it must match that value. To let the same Manager re-enable a paused schedule, set the entry’s optional `task_id` to its T3 schedule ID and call with `scheduledTaskId` and `enabled: true`. The update may also include `environmentId` and a matching `freshSession`. Pause-only updates to identified schedules are unchanged.
 
 In a current Manager turn, the bound Manager can update an existing registered `interval` task's prompt with exactly `scheduledTaskId` and a nonblank `prompt`. Use the registered `task_id` and call from the bound thread in the local T3 environment. T3 keeps the stored interval, enabled state, and fresh-session setting.
+
+To let an enrolled Codex Manager re-enable an existing interval, set `allow_interval_enable: true` on its registered entry after approval. Pass only the matching `scheduledTaskId` and `enabled: true` from the bound thread in the local environment. This update keeps the stored prompt and cadence.
 
 ### Hook denial log
 

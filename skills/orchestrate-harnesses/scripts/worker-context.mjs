@@ -67,8 +67,7 @@ export function delegateTier(file, event, { model, providerInstanceId, driverKin
 }
 
 
-export async function t3Thread(id, { byCodexSession = false } = {}) {
-  if (!id) return undefined;
+async function readT3Projection(read) {
   try {
     const home = process.env.T3CODE_HOME || path.join(os.homedir(), ".t3");
     const file = path.join(home, "userdata", "statev2.sqlite");
@@ -76,7 +75,18 @@ export async function t3Thread(id, { byCodexSession = false } = {}) {
     const { DatabaseSync } = await import("node:sqlite");
     const db = new DatabaseSync(file, { readOnly: true });
     try {
-      return db.prepare(`
+      return read(db);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+export async function t3Thread(id, { byCodexSession = false } = {}) {
+  if (!id) return undefined;
+  return readT3Projection((db) => db.prepare(`
         SELECT thread_id AS threadId,
                json_type(payload_json, '$.lineage') AS lineage,
                json_type(payload_json, '$.lineage.relationshipToParent') AS relationshipType,
@@ -92,13 +102,23 @@ export async function t3Thread(id, { byCodexSession = false } = {}) {
           HAVING count(DISTINCT thread_id) = 1
         )` : "?"}
         LIMIT 1
-      `).get(id);
-    } finally {
-      db.close();
-    }
-  } catch {
-    return undefined;
-  }
+      `).get(id));
+}
+
+export function recentT3MessagesFrom(thread, environment, sender) {
+  // Scope to the recipient's indexed recent inbox before inspecting linked-sender metadata.
+  return readT3Projection((db) => db.prepare(`
+    SELECT substr(json_extract(payload_json, '$.text'), -4096) AS text
+    FROM (
+      SELECT payload_json FROM orchestration_v2_projection_messages
+      WHERE thread_id = ? AND role = 'user'
+      ORDER BY updated_at DESC, message_id DESC LIMIT 100
+    )
+    WHERE (json_extract(payload_json, '$.linkedSender.environmentId') = ?
+      AND json_extract(payload_json, '$.linkedSender.threadId') = ?)
+      OR (? = ? AND json_type(payload_json, '$.linkedSender') IS NULL
+        AND json_extract(payload_json, '$.senderThreadId') = ?)
+  `).all(thread, sender.environment, sender.thread, environment, sender.environment, sender.thread));
 }
 
 export const topLevelT3Thread = (row) => row?.lineage === "object" && row.relationshipType === "null";

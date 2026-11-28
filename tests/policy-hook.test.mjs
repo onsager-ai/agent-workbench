@@ -91,6 +91,77 @@ describe("policy hook", () => {
     tool_input: { threadId: "peer", mode: "auto", message },
   }), env);
 
+  function configureChief(chief) {
+    const overlay = path.join(directory, "chief-workers.yml");
+    fs.writeFileSync(overlay, JSON.stringify({ policy: { chief_pm: chief } }));
+    bundle = workerBundle(WORKERS, [overlay]);
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+  }
+
+  test("the Chief inbox requires one final footer and leaves other destinations alone", () => {
+    const env = t3Env("manager-thread");
+    const call = (message, input = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: "manager-session", tool_name: "mcp__t3-code__t3_thread_send",
+      tool_input: { threadId: "chief-thread", mode: "queue", message, ...input },
+    }), env);
+    const status = "Routine status.\n\n-- WB_MSG kind=status";
+    assert.match(call(status).updatedInput.message, /kind=status/);
+    configureChief({ environment: "env-1", thread: "chief-thread" });
+    for (const kind of ["decision-request", "blocked", "alert"]) {
+      const result = call(`Important item.\n\n-- WB_MSG kind=${kind}`);
+      assert.equal(result.updatedInput.mode, "queue");
+      assert.match(result.updatedInput.message, new RegExp(`kind=${kind}`));
+    }
+    for (const message of [status, "Digest without a footer.", "Digest.\n-- WB_MSG kind=decision",
+      "Ambiguous.\n-- WB_MSG kind=alert kind=status", "Digest.\n-- WB_MSG kind=alert\nFurther status.",
+      "Digest.\n-- WB_MSG kind=alert\n-- WB_MSG kind=status", "-- WB_MSG kind=alert"]) {
+      assert.match(call(message).permissionDecisionReason, /in Ostrom or your own thread/, message);
+    }
+    assert.match(call(status, { threadId: "another-thread" }).updatedInput.message, /kind=status/);
+    assert.match(call(status, { environmentId: "another-env" }).updatedInput.message, /kind=status/);
+  });
+
+  test("a Chief result needs the exact request ID and T3 sender and recipient evidence", () => {
+    const recipient = "manager-thread";
+    const chief = { environment: "chief-env", thread: "chief-thread" };
+    const env = { ...t3Env(recipient), NODE_OPTIONS: "--disable-warning=ExperimentalWarning" };
+    const db = new DatabaseSync(path.join(env.T3CODE_HOME, "userdata/statev2.sqlite"));
+    const incoming = (id, kind = "request") => `Please verify this.\n\n-- WB_MSG kind=${kind} id=${id}`;
+    try {
+      db.exec(`CREATE TABLE orchestration_v2_projection_messages (
+        thread_id TEXT, role TEXT, updated_at TEXT, message_id TEXT, payload_json TEXT NOT NULL
+      )`);
+      const insert = db.prepare("INSERT INTO orchestration_v2_projection_messages VALUES (?, 'user', '2026-01-01', ?, ?)");
+      const add = (id, sender, thread = recipient, kind) => insert.run(thread, id, JSON.stringify({
+        text: incoming(id, kind), ...sender,
+      }));
+      const linkedSender = { environmentId: chief.environment, threadId: chief.thread };
+      add("request:1", { linkedSender });
+      add("request:2", { linkedSender: { ...linkedSender, environmentId: "other-env" } });
+      add("request:3", { linkedSender: { ...linkedSender, threadId: "other-thread" } });
+      add("request:4", { linkedSender }, "wrong-recipient");
+      insert.run(recipient, "request:5", JSON.stringify({
+        text: `${incoming("request:5")} from=${chief.environment}/${chief.thread}`,
+      }));
+      add("request:6", { linkedSender }, recipient, "status");
+      add("request:7", { senderThreadId: chief.thread });
+    } finally {
+      db.close();
+    }
+    const call = (re, input = {}) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: "manager-session", tool_name: "mcp__t3-code__t3_thread_send",
+      tool_input: { threadId: chief.thread, environmentId: chief.environment,
+        message: `Verified.\n\n-- WB_MSG kind=result re=${re}`, ...input },
+    }), env);
+    configureChief(chief);
+    assert.match(call("request:1").updatedInput.message, /kind=result .* re=request:1$/);
+    for (const id of ["none", "request:2", "request:3", "request:4", "request:5", "request:6", "request:7", "request:10"]) {
+      assert.equal(call(id).permissionDecision, "deny", id);
+    }
+    configureChief({ ...chief, environment: "env-1" });
+    assert.match(call("request:7", { environmentId: undefined }).updatedInput.message, /re=request:7$/);
+  });
+
   const BOT = "bot-github";
   const BOT_URL = "https://example.test/org/project/settings";
   const APPROVED = "Manager work approval: https://example.test/approval";
@@ -1750,6 +1821,20 @@ describe("policy hook", () => {
       assert.deepEqual(antigravity(read, env, { lastUserInput: "Review the next file." }), { decision: "allow" });
     });
 
+    test("Antigravity Manager sends to Chief retain queue mode and enforce the inbox", () => {
+      configureChief({ environment: "chief-env", thread: "chief-thread" });
+      fs.writeFileSync(path.join(env.T3CODE_HOME, "userdata/environment-id"), "local-env\n");
+      const sendToChief = (kind) => antigravity(call("t3_thread_send", {
+        environmentId: "chief-env", threadId: "chief-thread", mode: "queue",
+        message: `Lane update.\n\n-- WB_MSG kind=${kind}`,
+      }), env);
+      assert.equal(sendToChief("status").decision, "deny");
+      const alert = sendToChief("alert");
+      assert.equal(alert.decision, "allow");
+      assert.deepEqual(Object.keys(alert.overwrite), ["message"]);
+      assert.match(alert.overwrite.message, /kind=alert/);
+    });
+
     test("Workers cannot configure threads, start automation, or use a browser except status", () => {
       const worker = { ...env, T3CODE_THREAD_ID: child };
       for (const tool of [call("t3_thread_configure", { modelSelection: { model: "gpt-6-luna" } }),
@@ -2486,6 +2571,7 @@ describe("policy hook", () => {
       const reenable = { scheduledTaskId: "task-1", enabled: true };
       const fixedReenable = { ...reenable, scheduledTaskId: "task-2" };
       const intervalReenable = { ...reenable, scheduledTaskId: "task-3" };
+      const optedInReenable = { ...reenable, scheduledTaskId: "task-4" };
       const intervalPromptUpdate = { scheduledTaskId: "task-3", prompt: "Review the current health report." };
       const overlay = path.join(directory, "schedule-workers.yml");
       fs.writeFileSync(overlay, JSON.stringify({ policy: { schedules: [
@@ -2494,6 +2580,8 @@ describe("policy hook", () => {
         { name: fixedInput.title, thread, schedule: fixedInput.schedule, task_id: fixedReenable.scheduledTaskId },
         { name: intervalInput.title, thread, schedule: intervalInput.schedule, task_id: intervalReenable.scheduledTaskId,
           fresh_session: true },
+        { name: "Approved existing interval", thread, schedule: intervalInput.schedule, task_id: optedInReenable.scheduledTaskId,
+          fresh_session: true, allow_interval_enable: true },
       ] } }));
       fs.writeFileSync(workers, JSON.stringify(workerBundle(WORKERS, [overlay])));
 
@@ -2514,13 +2602,18 @@ describe("policy hook", () => {
           assert.equal(tool(session, name, fixedReenable), null);
           assert.equal(tool(session, name, intervalInput)?.permissionDecision, "deny");
           assert.equal(tool(session, name, intervalReenable)?.permissionDecision, "deny");
+          assert.equal(tool(session, name, optedInReenable), null);
+          for (const extra of [{ freshSession: true }, { prompt: "Edit and enable" }, { environmentId: "remote" },
+            { schedule: intervalInput.schedule }]) {
+            assert.equal(tool(session, name, { ...optedInReenable, ...extra })?.permissionDecision, "deny");
+          }
           assert.equal(tool(session, name, intervalPromptUpdate), null);
           assert.equal(tool(session, name, { ...intervalPromptUpdate, freshSession: true })?.permissionDecision, "deny");
         }
         assert.equal(JSON.parse(fs.readFileSync(stateFile(session), "utf8")).count, 0);
       };
       const denied = (session, details) => {
-        for (const payload of [input, reenable, intervalPromptUpdate]) {
+        for (const payload of [input, reenable, intervalPromptUpdate, optedInReenable]) {
           const decision = tool(session, tools[0], payload, details);
           assert.equal(decision?.permissionDecision, "deny", session);
           assert.match(decision.permissionDecisionReason, /policy\.schedules/);
@@ -2593,6 +2686,25 @@ describe("policy hook", () => {
         assert.equal(result.permissionDecision, "allow");
         assert.match(result.updatedInput.message, /^Hi\.\n\n-- WB_MSG from=env-1\/.* kind=request sent=\d{4}-\d\d-\d\dT\d\d:\d\dZ id=74859825:\d+ re=none$/);
       }
+    });
+
+    test("an enrolled Codex Manager's fresh scheduled run uses the same Chief inbox guard", () => {
+      const thread = "scheduled-thread";
+      const session = "scheduled-native-session";
+      configureChief({ environment: "chief-env", thread: "chief-thread" });
+      mapCodexSessions(thread, { relationshipToParent: null }, [session]);
+      writeEnrolment({ threads: [thread] });
+      prompt(session, "Run the registered Infra status check.");
+      for (const sendTool of ["mcp__t3_code__t3_thread_send", "mcp__t3_code_direct__t3_thread_send", "t3_thread_send"]) {
+        const input = { environmentId: "chief-env", threadId: "chief-thread", mode: "queue" };
+        const status = { ...input, message: "Scheduled heartbeat.\n\n-- WB_MSG kind=status" };
+        assert.match(tool(session, sendTool, status).permissionDecisionReason, /Ostrom/);
+        assert.equal(tool("unmapped-session", sendTool, status), null);
+        assert.equal(tool(session, sendTool, { ...input, message: "Service down.\n\n-- WB_MSG kind=alert" }), null);
+      }
+      fs.writeFileSync(path.join(t3Home(), "userdata/environment-id"), "chief-env\n");
+      assert.match(tool(session, "mcp__t3_code__t3_thread_send", { threadId: "chief-thread",
+        message: "Scheduled heartbeat.\n\n-- WB_MSG kind=status" }).permissionDecisionReason, /Ostrom/);
     });
 
     test("delegate_task requires a model under the sanitized name", () => {
