@@ -38,7 +38,7 @@ Publish changes that affect another Manager's decisions: user requirements and s
 <One plain sentence saying what you need, found or decided.>
 <Details. For a decision, name the user source.>
 
--- WB_MSG from=<environmentId>/<threadId> kind=request|result|decision|status|alert sent=<YYYY-MM-DDTHH:MMZ> id=<last8>:<n> re=<id-or-none>
+-- WB_MSG from=<environmentId>/<threadId> kind=request|result|decision|decision-request|blocked|status|alert sent=<YYYY-MM-DDTHH:MMZ> id=<last8>:<n> re=<id-or-none>
 ~~~
 
 Put the footer last, after a blank line, so T3 shows the readable text first.
@@ -81,7 +81,9 @@ Known limits: there are no read receipts, and the send result (steered, started 
 
 Send harness issues to the harness owner named in personal configuration (peers or team policy): wrong denials with the exact denial text, unclear rules, missing routes, and harness-caused stuck turns. If no harness owner is named, send them to the Chief PM or the user.
 
-When a Chief PM Manager is registered, message it only for a decision you need from it or the owner, a blocker you can't clear, a lane alert, or the result of a request it made. Don't send it plain status or information; it reads your lane status from your thread ([lane status](#lane-status-and-alerts)). Put one ask in each message, with your recommendation.
+When a Chief PM Manager is registered, use exactly one final `WB_MSG` footer for sends to that inbox. Use `kind=decision-request` for one decision you need from Chief PM or the owner and include your recommendation. Use `kind=blocked` for a blocker you cannot clear and `kind=alert` for a lane alert. Use `kind=result` with the request's exact `re` ID only when answering a request Chief PM sent to your thread. The hook checks the sender recorded by T3 in the recipient's recent local inbox, up to the latest 100 user messages. If the request cannot be verified, record the result in your own thread.
+
+Publish routine lane status and heartbeats in Ostrom. Keep your own thread current for handover. Apply the same routing on scheduled Manager turns.
 
 Decide calls inside your own lane yourself when they spend no new money and touch none of the owner's reserved items: spend and caps, public posts, credentials and permissions, deletes, Caddy, Cloudflare or tailnet changes, product direction, and customer-facing releases. Note each such decision in your next status. No answer by a deadline is never approval; keep waiting, or ask again once.
 
@@ -89,17 +91,17 @@ Keep your own turns to deciding, briefing, merging and reporting. Hand any engin
 
 ### Owner decisions
 
-When a Chief PM Manager is registered, send a question that needs the owner's decision to it as `kind=request`, with `Owner decision:` on the first line, the options and your recommendation. The Chief PM removes duplicates, asks the owner once and sends the answer to every affected Manager. Do not ask the owner directly, except:
+When a Chief PM Manager is registered, send a question that needs the owner's decision to it as `kind=decision-request`, with `Owner decision:` on the first line, the options and your recommendation. The Chief PM removes duplicates, asks the owner once and sends the answer to every affected Manager. Do not ask the owner directly, except:
 
 - the owner is already talking with you in your own thread;
 - the decision is urgent and the Chief PM has not answered within 2 hours, or the send fails;
 - you need a secret, which goes through `request_secret` in the thread that uses it.
 
-After an exception, send the Chief PM the answer as `kind=decision` with its source link. A `kind=decision` from the Chief PM that quotes an owner answer and links its source item is the owner's answer; verify it in that thread's activity view, because answers to question dialogs do not appear in the messages view. When you relay any owner answer, quote it and link its source.
+After an exception, record the answer with its source link in your own thread. A `kind=decision` from the Chief PM that quotes an owner answer and links its source item is the owner's answer; verify it in that thread's activity view, because answers to question dialogs do not appear in the messages view. When you relay any owner answer, quote it and link its source.
 
 ### Lane status and alerts
 
-When a Chief PM Manager is registered, each Manager keeps its lane status current in its own thread, and the Chief PM reads it there at check-in, along with the /manage snapshot or lane health where a lane has one. Post the status as your own reply text, one block per lane, each ending with a footer line `-- WB_MSG kind=status sent=<YYYY-MM-DDTHH:MMZ>`, in this form, with every field present:
+When a Chief PM Manager is registered, each Manager keeps its lane status current in Ostrom and keeps a handover record in its own thread. Record one block per lane, each ending with a footer line `-- WB_MSG kind=status sent=<YYYY-MM-DDTHH:MMZ>`, in this form, with every field present:
 
 ~~~text
 Lane: <project> · <scope>

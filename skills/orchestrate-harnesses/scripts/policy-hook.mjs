@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { CONFIG_MISSING, delegateTier, resolvePath, selectWorkerProfile, t3Thread, topLevelT3Thread, t3WorkerTier } from "./worker-context.mjs";
+import { CONFIG_MISSING, delegateTier, recentT3MessagesFrom, resolvePath, selectWorkerProfile, t3Thread, topLevelT3Thread, t3WorkerTier } from "./worker-context.mjs";
 
 const APPROVAL = "L3 Opus Worker needs the user's approval for this task (orchestrate-harnesses Worker ladder).";
 const PROTECTED_BRANCH_REASON = "The local main branch is protected. Use a task branch, origin/main, " +
@@ -28,6 +28,7 @@ const RULE = {
   nativeSubagent: "native-subagent", managerTurnReset: "manager-turn-reset", managerTurnUpdate: "manager-turn-update",
   readOnlyWorker: "read-only-worker", prWatchTarget: "pr-watch-target", workerAutomation: "worker-automation",
   unknownAutomation: "unknown-automation", oneShotJob: "one-shot-job", oneShotState: "one-shot-state", policyError: "policy-error",
+  chiefInbox: "chief-inbox",
 };
 const T3_MODEL = "Set target.model (and effort in target.options) for the Worker tier you chose " +
   "before dispatching with delegate_task.";
@@ -41,7 +42,8 @@ const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the u
 const SCHEDULE_TASK = "This schedule_task call does not meet the registered schedule rules. " +
   "Use the personal automation registry before activating automation. A Claude Manager or an enrolled Antigravity or Codex Manager " +
   "can create or re-enable a schedule that matches an entry in policy.schedules for the current T3 thread. " +
-  "Codex creates and re-enables fixed_time and once only. A registered interval prompt update takes only scheduledTaskId and prompt. " +
+  "Codex can create fixed_time and once schedules. A registered interval prompt update takes only scheduledTaskId and prompt. " +
+  "To re-enable a Codex interval, opt in with allow_interval_enable and pass only scheduledTaskId and enabled: true. " +
   "Identified schedules can be paused.";
 const BROWSER_TOOL = /^mcp__t3_code(?:_direct)?__(preview_.+|t3_preview_.+)$/;
 const BROWSER_MANAGER = "Browser tools other than status require a Claude Manager main loop with valid turn state.";
@@ -71,7 +73,7 @@ const stopReason = (codex) => `If this asks the user something, re-ask it with $
   "Do not explain or acknowledge this check.";
 const TRANSCRIPT_TAIL_BYTES = 256 * 1024;
 const FOOTER = /(?<![^\n])-- WB_MSG\b[^\n]*/g;
-const FOOTER_FIELD = /\b(kind|re)=(\S+)/g;
+const FOOTER_FIELD = /\s(kind|id|re)=(\S+)/g;
 
 const isDict = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -89,7 +91,7 @@ function t3Identity() {
   } catch {
     return null;
   }
-  return environment && thread ? [environment, thread] : null;
+  return environment ? [environment, thread] : null;
 }
 
 function sleep(milliseconds) {
@@ -200,7 +202,7 @@ function stampFooter(args, stateDir) {
   if (typeof message !== "string") return null;
   const matches = [...message.matchAll(FOOTER)];
   const identity = t3Identity();
-  if (!matches.length || identity === null || stateDir === null) return null;
+  if (!matches.length || !identity?.[1] || stateDir === null) return null;
   const last = matches[matches.length - 1];
   const fields = {};
   for (const [, key, value] of last[0].matchAll(FOOTER_FIELD)) fields[key] = value;
@@ -209,6 +211,35 @@ function stampFooter(args, stateDir) {
   const footer = `-- WB_MSG from=${environment}/${thread} kind=${fields.kind ?? "decision"} sent=${sent} ` +
     `id=${thread.slice(-8)}:${nextSequence(stateDir, thread)} re=${fields.re ?? "none"}`;
   return { ...args, message: message.slice(0, last.index) + footer + message.slice(last.index + last[0].length) };
+}
+
+function finalFooter(message) {
+  if (typeof message !== "string") return undefined;
+  const [footer, extra] = [...message.matchAll(FOOTER)];
+  if (!footer || extra || !message.slice(0, footer.index).trim() ||
+      message.slice(footer.index + footer[0].length).trim()) return undefined;
+  const entries = [...footer[0].matchAll(FOOTER_FIELD)].map(([, key, value]) => [key, value]);
+  const fields = Object.fromEntries(entries);
+  if (entries.length === Object.keys(fields).length) return fields;
+}
+
+async function chiefInboxBlocks(workers, input) {
+  if (!workers || typeof input?.threadId !== "string") return false;
+  let chief;
+  try { chief = JSON.parse(fs.readFileSync(workers, "utf8")).base.policy.chief_pm; } catch { return false; }
+  if (!chief || input.threadId.trim() !== chief.thread) return false;
+  const identity = t3Identity();
+  const targetEnvironment = (typeof input.environmentId === "string" && input.environmentId.trim()) || identity?.[0];
+  if (targetEnvironment !== chief.environment) return false;
+  const footer = finalFooter(input.message);
+  if (["decision-request", "blocked", "alert"].includes(footer?.kind)) return false;
+  if (footer?.kind !== "result" || !footer.re || footer.re === "none" || !identity?.[1]) return true;
+  const [environment, thread] = identity;
+  const requests = await recentT3MessagesFrom(thread, environment, chief);
+  return !requests?.some(({ text }) => {
+    const request = finalFooter(text);
+    return ["request", "decision-request"].includes(request?.kind) && request.id === footer.re;
+  });
 }
 
 // Port of Python shlex (posix mode, punctuation_chars=";|&()\n", whitespace " \t\r", commenters "#").
@@ -717,6 +748,7 @@ function registeredScheduleAllowed(file, event, input, { thread, codex }) {
   const update = Object.hasOwn(input, "scheduledTaskId");
   const promptOnly = update && Object.hasOwn(input, "prompt") && Object.keys(input).length === 2 &&
     typeof input.prompt === "string" && Boolean(input.prompt.trim());
+  const enableOnly = update && input.enabled === true && Object.keys(input).length === 2;
   if (update) {
     if (typeof input.scheduledTaskId !== "string" || !input.scheduledTaskId.trim()) return false;
     if (!promptOnly && (input.enabled !== true ||
@@ -733,6 +765,8 @@ function registeredScheduleAllowed(file, event, input, { thread, codex }) {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
     if (promptOnly) return config.policy.schedules?.some((entry) => entry.thread === thread &&
       entry.schedule?.type === "interval" && entry.task_id === input.scheduledTaskId) ?? false;
+    if (enableOnly && config.policy.schedules?.some((entry) => entry.thread === thread &&
+        entry.schedule?.type === "interval" && entry.task_id === input.scheduledTaskId && entry.allow_interval_enable === true)) return true;
     return config.policy.schedules?.some((entry) => entry.thread === thread &&
       (!codex || ["fixed_time", "once"].includes(entry.schedule?.type)) &&
       (!hasFreshSession || input.freshSession === (entry.fresh_session ?? false)) &&
@@ -1645,6 +1679,12 @@ async function main() {
       reason = managerGateReason("A Bash command that changes files or state", stateFile);
     }
     if (!decision && typeof tool === "string" && tool.endsWith("t3_thread_send")) {
+      if (mainLoop && !workerContext && /^(?:mcp__t3_code(?:_direct)?__)?t3_thread_send$/.test(normalizedTool) &&
+          await chiefInboxBlocks(workers, args)) {
+        emitPreToolUse("deny", "Chief PM requires a final WB_MSG footer with kind=decision-request, kind=blocked, kind=alert, " +
+          "or kind=result replying to a verified Chief PM request. Record routine status and heartbeats in Ostrom or your own thread.", RULE.chiefInbox);
+        return;
+      }
       const stamped = stampFooter(args, workers ? path.dirname(workers) : null);
       if (stamped) emitUpdate(stamped, { message: stamped.message });
       else if (agy) emitPreToolUse("allow");

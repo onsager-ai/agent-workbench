@@ -44,7 +44,7 @@ const CLAUDE_HOOK_MATCHERS = {
 const claudeHookKey = (event, matcher) => matcher === undefined ? event : `${event}:${matcher}`;
 const CODEX_HOOK_MATCHERS = ["Agent|spawn_agent", "Bash", "mcp__t3_code__delegate_task", "mcp__t3_code__t3_thread_send", "mcp__t3_code__t3_thread_launch", "mcp__t3_code__t3_thread_configure", "mcp__t3_code__schedule_task", "mcp__t3_code__create_threads", "mcp__t3_code__watch_pull_request", "mcp__t3_code__preview_.*", "mcp__t3_code__t3_preview_.*", "mcp__t3_code_direct__(preview_|t3_preview_).*", "^apply_patch$",
   "^mcp__t3_code_direct__(delegate_task|t3_thread_launch|t3_thread_configure|create_threads|schedule_task)$",
-  "^mcp__t3_code_direct__watch_pull_request$", "^exec_command$"];
+  "^mcp__t3_code_direct__watch_pull_request$", "^exec_command$", "^mcp__t3_code_direct__t3_thread_send$"];
 const CODEX_POLICY_EVENTS = ["PreToolUse", "Stop", "UserPromptSubmit"];
 // Existing ownership records have no event field: a matcher identifies PreToolUse, otherwise Stop.
 const codexPolicyEvent = (entry) => entry.event ?? (has(entry, "matcher") ? "PreToolUse" : "Stop");
@@ -195,7 +195,14 @@ function validateWorkerShape(config, { profile = false } = {}) {
   }
   if (has(config, "policy")) {
     keys(config.policy, ["max_auto_rework", "context", "stop_classifier", "browser", "schedules", "manager_models",
-      "manager_threads", "manager_model_pairs", "one_shot_jobs"], "policy");
+      "manager_threads", "manager_model_pairs", "one_shot_jobs", "chief_pm"], "policy");
+    if (has(config.policy, "chief_pm")) {
+      const chief = config.policy.chief_pm;
+      keys(chief, ["environment", "thread"], "policy.chief_pm");
+      if (![chief.environment, chief.thread].every((id) => typeof id === "string" && /^\S+$/.test(id))) {
+        throw new Conflict("policy.chief_pm requires exact nonblank environment and thread IDs");
+      }
+    }
     if (has(config.policy, "one_shot_jobs")) {
       const { one_shot_jobs } = config.policy;
       if (!Array.isArray(one_shot_jobs)) {
@@ -261,7 +268,7 @@ function validateWorkerShape(config, { profile = false } = {}) {
       if (!Array.isArray(schedules)) throw new Conflict("policy.schedules must be a list; correct it in workers.yml");
       for (const [index, entry] of schedules.entries()) {
         const where = `policy.schedules[${index}]`;
-        keys(entry, ["name", "thread", "schedule", "task_id", "fresh_session"], where);
+        keys(entry, ["name", "thread", "schedule", "task_id", "fresh_session", "allow_interval_enable"], where);
         const stringKeys = has(entry, "task_id") ? ["name", "thread", "task_id"] : ["name", "thread"];
         for (const key of stringKeys) {
           if (typeof entry[key] !== "string" || !entry[key].trim()) {
@@ -272,6 +279,10 @@ function validateWorkerShape(config, { profile = false } = {}) {
           throw new Conflict(`${where}.fresh_session must be a boolean; correct it in workers.yml`);
         }
         const { schedule } = entry;
+        if (has(entry, "allow_interval_enable") && (typeof entry.allow_interval_enable !== "boolean" ||
+            schedule?.type !== "interval" || !has(entry, "task_id"))) {
+          throw new Conflict(`${where}.allow_interval_enable must be a boolean on an existing interval with a task_id`);
+        }
         if (schedule?.type === "interval") {
           keys(schedule, ["type", "everyMs"], `${where}.schedule`);
           if (!Number.isSafeInteger(schedule.everyMs) || schedule.everyMs < 60000) {
@@ -448,6 +459,9 @@ export function workerBundle(distributed, overlays = [], home = null) {
       validateWorkerShape(profile, { profile: true });
       if (profile.policy && has(profile.policy, "one_shot_jobs")) {
         throw new Conflict("policy.one_shot_jobs belongs in the base policy; move it out of the profile in workers.yml");
+      }
+      if (profile.policy && has(profile.policy, "chief_pm")) {
+        throw new Conflict("policy.chief_pm belongs in the base policy; move it out of the profile in workers.yml");
       }
     }
     return config;
