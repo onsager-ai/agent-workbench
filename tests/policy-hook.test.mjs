@@ -1621,6 +1621,15 @@ describe("policy hook", () => {
       assert.match(antigravity(run(goalCommand), { ...env, T3CODE_THREAD_ID: child }).reason, readOnlyDenial);
     });
 
+    test("an enrolled Antigravity Manager can put a standalone attachment", () => {
+      const CommandLine = "agent-workbench attachment put 'upload notes.bin'";
+      const run = (args, hookEnv = env) => antigravity({ name: "run_command", args: { CommandLine, ...args } }, hookEnv,
+        { lastUserInput: "Upload the authorized file." });
+      assert.deepEqual(run({}), { decision: "allow" });
+      assert.match(run({ Blocking: false }).reason, /foreground/);
+      assert.match(run({}, { ...env, T3CODE_THREAD_ID: writer }).reason, /current Manager turn/);
+    });
+
     test("ACP file tools and native state changes require Manager approval and are denied to read-only Workers", () => {
       const readOnly = { ...env, T3CODE_THREAD_ID: child };
       const memory = path.join(os.homedir(), ".claude/projects/example/memory/notes.md");
@@ -1941,6 +1950,17 @@ describe("policy hook", () => {
     const call = (command) => browserCall("goal-counted", "Bash", { command });
     for (let index = 0; index < 5; index++) assert.equal(call(goalCommand), null);
     assert.match(call(goalCommand).permissionDecisionReason, /sixth counted work call/);
+  });
+
+  test("a Claude Manager can put an attachment in a current turn", () => {
+    const session = "attachment-claude";
+    const command = "agent-workbench attachment put 'a file.bin'";
+    assert.match(browserCall(session, "Bash", { command }).permissionDecisionReason, /current Manager turn/);
+    browserPrompt(session, "Upload the authorized file.");
+    assert.equal(browserCall(session, "Bash", { command }), null);
+    assert.match(browserCall(session, "Bash", { command }, { agent_id: "worker" }).permissionDecisionReason, /current Manager turn/);
+    assert.match(browserCall(session, "Bash", { command: "/usr/bin/agent-workbench attachment put file" }).permissionDecisionReason,
+      /standalone/);
   });
 
   test("Claude Managers can redirect to /dev/null and use quoted angle brackets", () => {
@@ -2294,6 +2314,25 @@ describe("policy hook", () => {
       }
       for (let index = 0; index < 5; index++) assert.equal(bash("manager", goalCommand), null);
       assert.match(bash("manager", goalCommand).permissionDecisionReason, /sixth counted work call/);
+    });
+
+    test("an enrolled Codex Manager can put one file as a counted standalone command", () => {
+      enrol("manager", "worker");
+      prompt("manager", "Upload the authorized file.");
+      prompt("worker", "Role: Worker\nHandle other work.");
+      const command = "agent-workbench attachment put 'a file.bin'";
+      const call = (session, cmd = command, toolInput = {}, details) => tool(session, "exec_command", { cmd, ...toolInput }, details);
+      for (const session of ["worker", "outside"]) assert.match(call(session).permissionDecisionReason, /current Manager turn/);
+      for (const invalid of [
+        "agent-workbench attachment fetch a.bin", "agent-workbench attachment put", `${command} extra`, `${command} >out`,
+        `${command} && pwd`, `${command} | cat`, `${command} $(pwd)`, `${command} &`, `${command}\npwd`,
+        `bash -lc ${shellQuote(command)}`, `HOME=/tmp ${command}`,
+      ]) assert.match(call("manager", invalid).permissionDecisionReason, /standalone/, invalid);
+      assert.match(call("manager", command, { run_in_background: true }).permissionDecisionReason, /foreground/);
+      assert.match(call("manager", command, {}, { turn_id: "stale-turn" }).permissionDecisionReason, /current Manager turn/);
+      assert.equal(call("manager", command.replace("agent-workbench", "awb")), null);
+      for (let index = 0; index < 4; index++) assert.equal(call("manager"), null);
+      assert.match(call("manager").permissionDecisionReason, /sixth counted work call/);
     });
 
     test("unenrolled top-level Codex sessions report the native ID and an unknown role", () => {
