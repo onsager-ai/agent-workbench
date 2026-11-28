@@ -497,6 +497,26 @@ describe("policy hook", () => {
     for (let i = 0; i < 7; i++) assert.equal(call("Read"), null);
   });
 
+  test("Manager delegation lifecycle calls do not use the five-call work allowance", () => {
+    const env = { AGENT_WORKBENCH_STATE_HOME: path.join(directory, "lifecycle-state") };
+    const prompt = () => invoke(JSON.stringify({
+      hook_event_name: "UserPromptSubmit", session_id: "manager-lifecycle", prompt: "Continue.",
+    }), env);
+    const call = (tool_name) => invoke(JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: "manager-lifecycle", tool_name, tool_input: {},
+    }), env);
+
+    prompt();
+    for (let index = 0; index < 5; index++) assert.equal(call("Read"), null);
+    for (const tool of [
+      "mcp__t3-code__orchestrator_capabilities", "mcp__t3-code__task_status",
+      "mcp__t3-code__task_cancel", "mcp__t3-code__t3_thread_wait", "SendMessage", "TaskStop",
+    ]) assert.equal(call(tool), null, tool);
+    const sixth = call("Read");
+    assert.equal(sixth.permissionDecision, "deny");
+    assert.match(sixth.permissionDecisionReason, /sixth counted work call \(Read\)/);
+  });
+
   test("manager observation reads do not use the five-call work allowance", () => {
     const env = { AGENT_WORKBENCH_STATE_HOME: path.join(directory, "observation-state") };
     const prompt = (session_id) => invoke(JSON.stringify({
@@ -1818,6 +1838,26 @@ describe("policy hook", () => {
       assert.deepEqual(JSON.parse(fs.readFileSync(stateFile("manager"), "utf8")), {
         worker: false, approved: true, count: 0, turn: "turn-1",
       });
+    });
+
+    test("enrolled Codex Managers exempt delegation lifecycle calls from the work count", () => {
+      enrol("lifecycle");
+      prompt("lifecycle");
+      const lifecycleTools = [
+        "mcp__t3_code__orchestrator_capabilities",
+        "mcp__t3_code__task_status",
+        "mcp__t3_code__task_cancel",
+        "mcp__t3_code__t3_thread_wait",
+        "SendMessage",
+        "TaskStop",
+      ];
+      for (let i = 1; i <= 5; i++) assert.equal(tool("lifecycle", "Read"), null);
+      assert.equal(JSON.parse(fs.readFileSync(stateFile("lifecycle"), "utf8")).count, 5);
+      for (const tool_name of lifecycleTools) {
+        assert.equal(tool("lifecycle", tool_name), null, tool_name);
+        assert.equal(JSON.parse(fs.readFileSync(stateFile("lifecycle"), "utf8")).count, 5, tool_name);
+      }
+      assert.match(tool("lifecycle", "Read").permissionDecisionReason, /sixth counted work call/);
     });
 
     test("enrolled Codex Managers count apply_patch even when the patch is denied", () => {
