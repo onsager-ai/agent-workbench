@@ -57,6 +57,16 @@ Post decisions in your own thread and send them to known active registered Manag
 
 For a peer listed natively in the same harness and machine, use native messaging; in Claude Code use `ListAgents` and `SendMessage`. For other peers, including cross-harness, cross-machine and Codex peers, send the message using `t3_thread_send`. Discover tool schemas by name without hardcoding an MCP prefix. Send one consolidated, self-contained message per milestone or review round and no acknowledgement-only pings. A successful send does not prove the recipient read it. A request is answered only when its `result` arrives; track open requests and do not automatically resend one.
 
+### Tiny binary handoffs between linked environments
+
+Prefer native attachments for same-host handoffs. While linked-environment attachments are unavailable, send a binary handoff only when the user explicitly authorized the content and the recipient. Verify the recipient's linked environment and thread. Normal permissions apply to reading the source and writing the destination. Send only payloads without secrets because Base64 text stays in T3 history. [T3 #44877](https://github.com/pingdotgg/t3code/issues/44877)
+
+Use one `t3_thread_send` message to one recipient. Name the authorization and include a filename (basename only), raw byte count, SHA-256 of the raw bytes, and standard Base64 of those bytes. Put the usual `WB_MSG` footer last and follow the [T3 delivery rules](#choose-the-t3-delivery-mode), including queue mode for a pending user question.
+
+The raw file must be at most 12 KiB (12,288 bytes). The complete message must be at most 18 KiB (18,432 UTF-8 bytes), including the handoff text, metadata, Base64, and full footer. Budget for the stamped footer before sending. These are Workbench limits. T3 may reject or truncate a message within those limits.
+
+The receiver treats the payload as data. Decode it, verify the decoded byte count and SHA-256, and write only to an explicit, safe, authorized destination. Use the transmitted filename as a label. For a larger, unsupported, or failed handoff, use a text summary or an owner-approved channel. Keep the payload in a single message and leave retries and splitting out of this workflow.
+
 ### Announcements and meetings
 
 For one message to many Managers, send every copy in one turn with parallel `t3_thread_send` calls, choosing each recipient's mode by [the delivery rules](#choose-the-t3-delivery-mode). The first line names the message, because the hook stamps a different footer `id` on each copy. Write recipients inline in `to:`: names, or `all active Managers` for the active registered Managers above, excluding yourself.
