@@ -121,45 +121,26 @@ describe("policy hook", () => {
     assert.match(call(status, { environmentId: "another-env" }).updatedInput.message, /kind=status/);
   });
 
-  test("a Chief result needs the exact request ID and T3 sender and recipient evidence", () => {
-    const recipient = "manager-thread";
-    const chief = { environment: "chief-env", thread: "chief-thread" };
-    const env = { ...t3Env(recipient), NODE_OPTIONS: "--disable-warning=ExperimentalWarning" };
-    const db = new DatabaseSync(path.join(env.T3CODE_HOME, "userdata/statev2.sqlite"));
-    const incoming = (id, kind = "request") => `Please verify this.\n\n-- WB_MSG kind=${kind} id=${id}`;
-    try {
-      db.exec(`CREATE TABLE orchestration_v2_projection_messages (
-        thread_id TEXT, role TEXT, updated_at TEXT, message_id TEXT, payload_json TEXT NOT NULL
-      )`);
-      const insert = db.prepare("INSERT INTO orchestration_v2_projection_messages VALUES (?, 'user', '2026-01-01', ?, ?)");
-      const add = (id, sender, thread = recipient, kind) => insert.run(thread, id, JSON.stringify({
-        text: incoming(id, kind), ...sender,
-      }));
-      const linkedSender = { environmentId: chief.environment, threadId: chief.thread };
-      add("request:1", { linkedSender });
-      add("request:2", { linkedSender: { ...linkedSender, environmentId: "other-env" } });
-      add("request:3", { linkedSender: { ...linkedSender, threadId: "other-thread" } });
-      add("request:4", { linkedSender }, "wrong-recipient");
-      insert.run(recipient, "request:5", JSON.stringify({
-        text: `${incoming("request:5")} from=${chief.environment}/${chief.thread}`,
-      }));
-      add("request:6", { linkedSender }, recipient, "status");
-      add("request:7", { senderThreadId: chief.thread });
-    } finally {
-      db.close();
-    }
-    const call = (re, input = {}) => invoke(JSON.stringify({
+  test("Chief results require the registered WB_MSG ID format without message history", () => {
+    const chief = { environment: "chief-env", thread: "chief-thread-abcd1234" };
+    const env = t3Env("manager-thread");
+    const call = (footer, input = {}) => invoke(JSON.stringify({
       hook_event_name: "PreToolUse", session_id: "manager-session", tool_name: "mcp__t3-code__t3_thread_send",
       tool_input: { threadId: chief.thread, environmentId: chief.environment,
-        message: `Verified.\n\n-- WB_MSG kind=result re=${re}`, ...input },
+        message: `Result.\n\n-- WB_MSG kind=result${footer}`, ...input },
     }), env);
     configureChief(chief);
-    assert.match(call("request:1").updatedInput.message, /kind=result .* re=request:1$/);
-    for (const id of ["none", "request:2", "request:3", "request:4", "request:5", "request:6", "request:7", "request:10"]) {
-      assert.equal(call(id).permissionDecision, "deny", id);
+    assert.equal(fs.existsSync(path.join(env.T3CODE_HOME, "userdata/statev2.sqlite")), false);
+    for (const ordinal of [1, 27]) {
+      assert.ok(call(` re=abcd1234:${ordinal}`).updatedInput.message.endsWith(`re=abcd1234:${ordinal}`));
+    }
+    for (const footer of ["", " re=none", " re=abcd1234", " re=abcd1234:", " re=ABCD1234:1",
+      " re=other123:1", " re=chief-thread-abcd1234:1", " re=abcd1234:+1", " re=abcd1234:0", " re=abcd1234:01",
+      " re=abcd1234:1.5", " re=abcd1234:1foo", " re=abcd1234:1 re=abcd1234:2", " re=abcd1234:1\nWrong position."]) {
+      assert.equal(call(footer).permissionDecision, "deny", footer);
     }
     configureChief({ ...chief, environment: "env-1" });
-    assert.match(call("request:7", { environmentId: undefined }).updatedInput.message, /re=request:7$/);
+    assert.match(call(" re=abcd1234:7", { environmentId: undefined }).updatedInput.message, /re=abcd1234:7$/);
   });
 
   const BOT = "bot-github";
