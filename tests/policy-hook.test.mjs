@@ -111,6 +111,23 @@ describe("policy hook", () => {
   }));
   const preview = (session, tool, input, extras) => browserCall(session, `mcp__t3-code__preview_${tool}`, input, extras);
 
+  const readOnlyDenial = /Read-only Workers cannot edit files/;
+  const shellReads = ["git status --short", "git show HEAD", "git log -1", "cat notes.md", "grep text notes.md", "gh pr view 1"];
+  const shellWrites = ["touch notes.md", "git commit -m change", "echo change > notes.md"];
+
+  test("Claude uses the active profile's native agent type for Worker edit and shell policy", () => {
+    bundle = workerBundle(WORKERS, [NEUTRAL_OVERRIDE]);
+    bundle.profiles.neutral.tiers.fast.access = "read-only";
+    fs.writeFileSync(workers, JSON.stringify(bundle));
+    const call = (tool, input, agent_type) => browserCall("child-session", tool, input, { agent_id: "child", agent_type });
+    for (const tool of ["Edit", "Write", "NotebookEdit", "MultiEdit"]) {
+      assert.match(call(tool, { file_path: "notes.md" }, "fast").permissionDecisionReason, readOnlyDenial);
+      for (const type of ["standard", "unknown", undefined]) assert.equal(call(tool, { file_path: "notes.md" }, type), null);
+    }
+    for (const command of shellWrites) assert.match(call("Bash", { command }, "fast").permissionDecisionReason, readOnlyDenial);
+    for (const command of shellReads) assert.equal(call("Bash", { command }, "fast"), null, command);
+  });
+
   test("browser profile configuration is optional and validates profile IDs and URLs", () => {
     assert.equal(bundle.base.policy.browser, undefined);
     configureBrowser();
@@ -1332,6 +1349,10 @@ describe("policy hook", () => {
   describe("Antigravity T3 roles", () => {
     const manager = "thread-top-level";
     const child = "thread:delegated-task:child";
+    const writer = "thread:delegated-task:writer";
+    const provider = "example-provider";
+    const readerModel = "catalog/reader";
+    const writerModel = "catalog/writer";
     const approval = "Manager work approval: https://example.com/approval";
     const edit = (name = "write_to_file", TargetFile = "/workspace/src/file.mjs") => ({ name, args: { TargetFile } });
     const call = (name, args = {}) => ({ name: `mcp_t3-code_${name}`, args });
@@ -1352,14 +1373,23 @@ describe("policy hook", () => {
       const db = new DatabaseSync(database);
       db.exec("CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL)");
       const insert = db.prepare("INSERT INTO orchestration_v2_projection_threads VALUES (?, ?)");
-      const topLevel = JSON.stringify({ lineage: { relationshipToParent: null, parentThreadId: null } });
+      bundle.base.tiers.reader = { provider, model: readerModel, access: "read-only" };
+      bundle.base.tiers.writer = { provider, model: writerModel };
+      fs.writeFileSync(workers, JSON.stringify(bundle));
+      const topLevel = JSON.stringify({ lineage: { relationshipToParent: null, parentThreadId: null },
+        providerInstanceId: provider, modelSelection: { model: writerModel } });
       insert.run(manager, topLevel);
       insert.run("thread-unenrolled", topLevel);
       insert.run("thread-no-lineage", "{}");
       insert.run("thread-no-relationship", '{"lineage":{}}');
       insert.run("thread-null-lineage", '{"lineage":null}');
-      for (const [id, relationshipToParent] of [[child, "subagent"], ["thread-other-relation", "other"]]) {
-        insert.run(id, JSON.stringify({ lineage: { relationshipToParent, parentThreadId: manager } }));
+      for (const [id, relationshipToParent, model, providerInstanceId] of [
+        [child, "subagent", readerModel, provider], [writer, "subagent", writerModel, provider],
+        ["thread-wrong-provider", "subagent", writerModel, "another-provider"],
+        ["thread-other-relation", "other", writerModel, provider],
+      ]) {
+        insert.run(id, JSON.stringify({ lineage: { relationshipToParent, parentThreadId: manager },
+          providerInstanceId, modelSelection: { model } }));
       }
       db.close();
     });
@@ -1384,8 +1414,10 @@ describe("policy hook", () => {
     test("lineage database errors and missing database fall back to Worker", () => {
       fs.writeFileSync(database, "not a database");
       assert.match(antigravity(launch, env).reason, /Workers must not launch/);
+      assert.match(antigravity(edit(), env).reason, readOnlyDenial);
       fs.unlinkSync(database);
       assert.match(antigravity(launch, env).reason, /Workers must not launch/);
+      assert.match(antigravity(edit(), env).reason, readOnlyDenial);
       assert.equal(fs.existsSync(database), false);
     });
 
@@ -1406,7 +1438,35 @@ describe("policy hook", () => {
       const image = { name: "generate_image", args: { ImageName: "example" } };
       assert.match(antigravity(image, env).reason, /Manager work approval/);
       assert.deepEqual(antigravity(image, env, { lastUserInput: approval }), { decision: "allow" });
-      assert.deepEqual(antigravity(image, { ...env, T3CODE_THREAD_ID: child }), { decision: "allow" });
+      assert.match(antigravity(image, { ...env, T3CODE_THREAD_ID: child }).reason, readOnlyDenial);
+    });
+
+    test("Antigravity resolves Worker access and blocks edits when identity cannot be resolved", () => {
+      const workerCall = (thread, tool) => antigravity(tool, { ...env, T3CODE_THREAD_ID: thread }, { lastUserInput: approval });
+      for (const name of ["write_to_file", "replace_file_content", "multi_replace_file_content", "generate_image"]) {
+        assert.match(workerCall(child, edit(name)).reason, readOnlyDenial);
+        assert.deepEqual(workerCall(writer, edit(name)), { decision: "allow" });
+        for (const unknown of ["", "thread-no-row", "thread-other-relation", "thread-wrong-provider", "thread-unenrolled"]) {
+          assert.match(workerCall(unknown, edit(name)).reason, readOnlyDenial, unknown);
+        }
+      }
+      const shell = (command) => ({ name: "run_command", args: { CommandLine: command } });
+      for (const command of shellWrites) assert.match(workerCall(child, shell(command)).reason, readOnlyDenial);
+      for (const command of shellReads) assert.deepEqual(workerCall(child, shell(command)), { decision: "allow" }, command);
+      assert.deepEqual(workerCall(writer, shell(shellWrites[0])), { decision: "allow" });
+    });
+
+    test("T3-delegated Claude and Codex sessions can resolve tier without native subagent fields", () => {
+      const hookEnv = { ...process.env, ...env, AGENT_WORKBENCH_STATE_HOME: path.join(directory, "state") };
+      const session_id = "t3-child";
+      for (const [host, tool_name] of [["claude", "Edit"], ["codex", "apply_patch"]]) {
+        const args = ["--host", host, "--workers", workers];
+        const event = JSON.stringify({ hook_event_name: "PreToolUse", tool_name, session_id });
+        const call = (thread, payload = event) => run(payload, { env: { ...hookEnv, T3CODE_THREAD_ID: thread }, args });
+        call(writer, JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id, prompt: "Role: Worker\nEdit the file." }));
+        assert.equal(call(writer).stdout, "");
+        assert.match(JSON.parse(call(child).stdout).hookSpecificOutput.permissionDecisionReason, readOnlyDenial);
+      }
     });
 
     test("a routine resolved Worker call allows without creating Manager state", () => {
@@ -1703,6 +1763,23 @@ describe("policy hook", () => {
     const patch = (session, details) => tool(session, "apply_patch", {
       command: "*** Begin Patch\n*** Add File: task.txt\n+work\n*** End Patch",
     }, details);
+
+    test("Codex uses the configured native subagent profile for edit and shell policy", () => {
+      bundle.base.tiers.reader = { harness: "codex", model: "example-reader", access: "read-only" };
+      bundle.base.tiers.writer = { harness: "codex", model: "example-writer", access: "write" };
+      fs.writeFileSync(workers, JSON.stringify(bundle));
+      const reader = { agent_id: "child", agent_type: "reader" };
+      assert.match(patch("native-child", reader).permissionDecisionReason, readOnlyDenial);
+      for (const agent_type of ["writer", "unknown", undefined]) {
+        assert.equal(patch("native-child", { agent_id: "child", agent_type }), null);
+      }
+      for (const name of ["Bash", "exec_command"]) {
+        for (const command of shellWrites) {
+          assert.match(tool("native-child", name, { command }, reader).permissionDecisionReason, readOnlyDenial);
+        }
+        for (const command of shellReads) assert.equal(tool("native-child", name, { command }, reader), null, command);
+      }
+    });
 
     test("only listed top-level Codex sessions write Manager turn state", () => {
       for (const invalid of [undefined, "{broken", "null", '{"sessions":"manager"}', '{"sessions":["manager",42]}']) {

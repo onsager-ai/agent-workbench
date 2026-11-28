@@ -24,7 +24,7 @@ Worker configuration is YAML loaded with the vendored `yaml` package without `np
 
 A tier with `provider` uses T3 `delegate_task` only. Set `target.providerInstanceId` to the tier's `provider`, `target.model` to its exact `model`, and `target.options` to its `options` map. `harness` is optional for these tiers and does not select their route. No native agent or CLI route is generated. Provider tiers are not valid for top-level thread launch or model configuration. The hook checks the provider and exact model, not whether `target.options` matches the tier. Supply the provider instance ID explicitly; `driverKind` alone does not select a tier. Other providers keep the existing lookup.
 
-`access` defaults to `write`. The `isolation` list defaults to `[shared, worktree]` for write tiers and `[shared]` for read-only tiers. A read-only tier cannot list `worktree`. Shared is the default when a dispatch omits `isolation`. `stamp`, if set, must be nonblank and adds text to the Worker brief; read-only tiers get a default no-changes line if `stamp` is unset. Some child hooks only see shell calls; use those providers on read-only tiers, and do not treat the stamp as a sandbox.
+`access` defaults to `write`. The `isolation` list defaults to `[shared, worktree]` for write tiers and `[shared]` for read-only tiers. A read-only tier cannot list `worktree`. Shared is the default when a dispatch omits `isolation`. `stamp`, if set, must be nonblank and adds text to the Worker brief; read-only tiers get a default no-changes line if `stamp` is unset.
 
 Optional `routing` maps job kinds to lists of tier names in fallback order. Managers follow the effective order printed by `agent-workbench workers`. The hook does not enforce this order, and existing ladder approval and opt-in rules still apply.
 
@@ -78,6 +78,20 @@ A corrupt WB_MSG send-counter file causes Antigravity to deny a `t3_thread_send`
 To register it in one workspace, run `agent-workbench install --antigravity --workspace PATH` and select the hook in Antigravity before activation. The same command upgrades unchanged, previously owned shell-only and role-independent registrations. If the registration is missing `--workers` or its `workers.json` cannot be read, T3 delegation is denied; rerun the workspace install command. Plain install and update do not register or upgrade workspace hooks. Remove the workspace registration with `agent-workbench uninstall --antigravity --workspace PATH`.
 
 
+### Read-only Worker hooks
+
+The `PreToolUse` hook denies the native edit tools listed below and shell calls recognized by the same write classifier used for unapproved Managers. Ordinary reads such as `git status`, `git show`, `git log`, `cat`, `grep`, and `gh pr view` remain available under the existing shell rules. Manager work approval and the Manager's memory exception do not grant write access to a read-only Worker.
+
+| Harness | Tier identity | Native edits covered |
+| --- | --- | --- |
+| Claude | The hook's `agent_type` names a configured native tier in the active profile. Workbench-generated agent definitions use that tier name. | `Edit`, `Write`, `NotebookEdit`, `MultiEdit` |
+| Codex | The hook's `agent_type` names a configured native tier in the active profile. Use the tier name as the native subagent profile name. | `apply_patch` (also matched by Codex's `Edit` and `Write` aliases) |
+| Antigravity | For a Worker, the hook uses `T3CODE_THREAD_ID` to read the delegated thread's provider instance and model from T3. It applies the same tier matching as `delegate_task`. A Worker with unresolved access defaults to read-only. | `write_to_file`, `replace_file_content`, `multi_replace_file_content`, `generate_image` |
+
+On Claude and Codex, a T3-delegated thread without native agent fields can also resolve its tier from its own T3 row. The hook keeps the existing behavior when it cannot resolve the tier on either harness. An agent ID alone or a generic subagent profile used with a model override does not identify the configured tier. A standalone Worker launched without native tier identity or a T3 delegation record may have only its brief and native permissions.
+
+The shell classifier recognizes patterns such as output redirection, mutating Git commands, and common file operations. It does not analyze arbitrary scripts, every CLI mutation, or writes through tools outside the hook's coverage. Use native permissions and isolation for a security boundary.
+
 ### Manager models for T3 thread creation
 
 Set `policy.manager_models` in your `workers.yml` override to a list of exact, nonblank model IDs, for example `[example/manager-model]`, then rerun `agent-workbench install`. Managers can launch or create threads with those models by including `L3 approval: <link to the approval>` on its own line in the launch text or each applicable thread prompt. The default `[]` grants no exception. Profiles can replace the list. Changing an existing thread's model remains limited to eligible L1/L2 models.
@@ -124,7 +138,7 @@ This is a cooperative guardrail, not a permission boundary. It trusts an operato
 
 ### Enrol an Antigravity Manager
 
-**Upgrade note:** Enrol your existing Antigravity Managers before upgrading the workspace hook. An unenrolled top-level session now gets Worker rules: it cannot launch, configure, or create threads; create or re-enable schedules with `schedule_task`; use T3 browser tools other than status; start `watch_pull_request`; or run recognized local automation shell commands. Pausing an identified schedule remains allowed.
+**Upgrade note:** Enrol your existing Antigravity Managers before upgrading the workspace hook. An unenrolled top-level session now gets Worker rules: it cannot launch, configure, or create threads; create or re-enable schedules with `schedule_task`; use T3 browser tools other than status; start `watch_pull_request`; or run recognized local automation shell commands. The [read-only Worker hook](#read-only-worker-hooks) also blocks edits and classified shell writes when the tier is read-only or unavailable. Pausing an identified schedule remains allowed.
 
 1. Copy the **T3 thread ID** from the top-level session's T3 link. Use that ID, not Antigravity's hook `conversationId`. This role lookup was verified with T3 0.1.13 and its Antigravity provider.
 2. Add it to `agent-workbench/antigravity-managers.json` under the hook's state root (`AGENT_WORKBENCH_STATE_HOME`, then `XDG_STATE_HOME`, then `~/.local/state`). The operator maintains the file; install does not create it.

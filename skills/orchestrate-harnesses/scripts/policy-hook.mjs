@@ -27,6 +27,7 @@ const SCHEDULE_TASK = "New schedule_task calls are unavailable because the curre
   "A Claude Manager or an enrolled Antigravity Manager can create or re-enable a schedule that matches an entry in policy.schedules. Identified schedules can be paused.";
 const BROWSER_TOOL = /^mcp__t3_code(?:_direct)?__(preview_.+|t3_preview_.+)$/;
 const BROWSER_MANAGER = "Browser tools other than status require a Claude Manager main loop with valid turn state.";
+const NATIVE_EDITS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
 const AGY_EDITS = new Set(["write_to_file", "replace_file_content", "multi_replace_file_content", "generate_image"]);
 const AGY_SUBAGENTS = new Set(["invoke_subagent", "define_subagent", "swarm", "run_workflow"]);
 const MANAGER_APPROVAL = "Manager work approval: <link to a Chief PM or owner message>";
@@ -944,28 +945,63 @@ function enrolledCodexManager(event) {
   }
 }
 
-async function antigravityManager(thread) {
-  if (!thread) return false;
+async function t3Thread(thread) {
+  if (!thread) return undefined;
   try {
-    const { threads } = JSON.parse(fs.readFileSync(path.join(policyStateDirectory(), "antigravity-managers.json"), "utf8"));
-    if (!Array.isArray(threads) || !threads.every((id) => typeof id === "string" && id && id === id.trim()) ||
-        !threads.includes(thread)) return false;
     const { DatabaseSync } = await import("node:sqlite");
     const home = process.env.T3CODE_HOME || path.join(os.homedir(), ".t3");
     const db = new DatabaseSync(path.join(home, "userdata", "statev2.sqlite"), { readOnly: true });
     try {
-      const row = db.prepare(`
+      return db.prepare(`
         SELECT json_type(payload_json, '$.lineage') AS lineage,
-               json_type(payload_json, '$.lineage.relationshipToParent') AS relationship
+               json_type(payload_json, '$.lineage.relationshipToParent') AS relationshipType,
+               json_extract(payload_json, '$.lineage.relationshipToParent') AS relationship,
+               json_extract(payload_json, '$.providerInstanceId') AS providerInstanceId,
+               json_extract(payload_json, '$.modelSelection.model') AS model
         FROM orchestration_v2_projection_threads WHERE thread_id = ? LIMIT 1
       `).get(thread);
-      return row?.lineage === "object" && row.relationship === "null";
     } finally {
       db.close();
     }
   } catch {
+    return undefined;
+  }
+}
+
+function antigravityManager(thread, row) {
+  if (row?.lineage !== "object" || row.relationshipType !== "null") return false;
+  try {
+    const { threads } = JSON.parse(fs.readFileSync(path.join(policyStateDirectory(), "antigravity-managers.json"), "utf8"));
+    return Array.isArray(threads) && threads.every((id) => typeof id === "string" && id && id === id.trim()) &&
+      threads.includes(thread);
+  } catch {
     return false;
   }
+}
+
+function t3WorkerTier(workers, event, row) {
+  if (row?.relationship !== "subagent" || typeof row.model !== "string" || !row.model.trim()) return undefined;
+  return delegateTier(workers, event, row, false).tier;
+}
+
+async function readOnlyWorker(workers, event, agy, agyManager, agyThread) {
+  if (agy) {
+    if (agyManager) return false;
+    const tier = t3WorkerTier(workers, event, agyThread);
+    return !tier || tier.access === "read-only";
+  }
+  if (event.agent_type != null || event.agent_id != null) {
+    if (typeof event.agent_type !== "string") return false;
+    try {
+      const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(workers, "utf8")), event);
+      const tier = config.tiers[event.agent_type];
+      return !tier?.provider && tier?.access === "read-only";
+    } catch {
+      return false;
+    }
+  }
+  const row = await t3Thread(process.env.T3CODE_THREAD_ID?.trim());
+  return t3WorkerTier(workers, event, row)?.access === "read-only";
 }
 
 function resetManagerTurn(previous, prompt, turn, worker = previous.worker || /^Role: Worker\r?$/m.test(prompt)) {
@@ -1146,6 +1182,7 @@ async function main() {
     let event = JSON.parse(fs.readFileSync(0, "utf8"));
     if (!isDict(event)) return;
     let agyManager = false;
+    let agyThread;
     let agyTurn;
     let agyStateFile;
     if (agy) {
@@ -1158,7 +1195,8 @@ async function main() {
       }
       if (tool === "mcp__t3_code__delegate_task" && !isDict(args.target)) args.target = {};
       const thread = process.env.T3CODE_THREAD_ID?.trim();
-      agyManager = await antigravityManager(thread);
+      agyThread = await t3Thread(thread);
+      agyManager = antigravityManager(thread, agyThread);
       agyRoleResolved = true;
       if (agyManager) {
         // Hash the prompt and thread separately; neither raw prompts nor paths from IDs go on disk.
@@ -1238,6 +1276,14 @@ async function main() {
         permissionDecisionReason: "Enrolled Codex Managers can't run shell commands without " +
           "`Manager work approval: <link>` at the start of the turn; send shell work to a Worker.",
       } });
+      return;
+    }
+    const isEdit = (agy ? AGY_EDITS : NATIVE_EDITS).has(tool);
+    const isPatch = codex && tool === "apply_patch";
+    const shellWrite = (isShell || (codex && tool === "exec_command")) && mutatingBash(shellCommand);
+    if ((isEdit || isPatch || shellWrite) &&
+        await readOnlyWorker(workers, event, agy, agyManager, agyThread)) {
+      emitPreToolUse("deny", "Read-only Workers cannot edit files or run shell commands that change files or state.");
       return;
     }
     const normalizedTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
@@ -1328,11 +1374,10 @@ async function main() {
       auditBrowserCall(stateFile, event, input, profile, previewTool.replace(/^preview_/, ""), decision, browserWorker());
     }
     const enforceManager = mainLoop && !managerState.worker && !workApproved();
-    if (enforceManager && !decision && codexManager && tool === "apply_patch" &&
+    if (enforceManager && !decision && codexManager && isPatch &&
         !isMemoryPatch(isDict(args) ? args.command : undefined, typeof event.cwd === "string" ? event.cwd : process.cwd())) {
       [decision, reason] = ["deny", managerGateReason("apply_patch to a file", stateFile)];
     }
-    const isEdit = agy ? AGY_EDITS.has(tool) : ["Edit", "Write", "NotebookEdit", "MultiEdit"].includes(tool);
     if (enforceManager && !decision && isEdit) {
       // Image generation names its output but does not expose a TargetFile for the memory exception.
       const filePath = agy ? (tool === "generate_image" ? undefined : dict(args).TargetFile)
@@ -1342,7 +1387,7 @@ async function main() {
         reason = managerGateReason(`${tool} to ${filePath || "a file"}`, stateFile);
       }
     }
-    if (enforceManager && !decision && isShell && mutatingBash(shellCommand)) {
+    if (enforceManager && !decision && isShell && shellWrite) {
       decision = "deny";
       reason = managerGateReason("A Bash command that changes files or state", stateFile);
     }
