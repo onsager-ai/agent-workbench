@@ -1293,6 +1293,39 @@ describe("policy hook", () => {
     }
   });
 
+  test("the codex exec gate covers heredocs, global flags, and timeout options", () => {
+    const shell = (command) => invoke(JSON.stringify({ tool_name: "Bash", tool_input: { command } }));
+    const body = "\nInspect Walker's changes.\nL3 approval: https://example.test/a\nBRIEF\n";
+    for (const command of [
+      `codex exec<<'BRIEF'${body}`,
+      `codex --enable shell_snapshot -c 'features.multi_agent=true' exec <<'BRIEF'${body}`,
+      `timeout --foreground --kill-after=5s -s TERM 60s codex exec - <<'BRIEF'${body}`,
+      "codex exec --unknown -m gpt-6-luna 'Inspect.'",
+      "codex exec <<'BRIEF'\nInspect.\n",
+    ]) {
+      assert.match(shell(command).permissionDecisionReason, /Set an explicit Worker model/, command);
+    }
+    for (const command of [
+      `codex exec -m gpt-6-luna<<'BRIEF'${body}`,
+      `codex --strict-config --model gpt-6-luna exec <<'BRIEF'${body}`,
+      `timeout --preserve-status -k 5s -- .5m codex -c name=value e -m gpt-6-luna - <<'BRIEF'${body}`,
+      "cat <<'BRIEF'\ncodex exec\nBRIEF\n",
+    ]) assert.equal(shell(command), null, command);
+    const offLadder = shell(`codex -m gpt-6-luna exec -m gpt-6.2-astra <<'BRIEF'${body}`);
+    assert.match(offLadder.permissionDecisionReason, /gpt-6.2-astra is not in the ladder/);
+  });
+
+  test("named Claude dispatch checks a local definition before the configured user directory", () => {
+    const cwd = path.join(directory, "project");
+    const agents = path.join(cwd, ".claude", "agents");
+    fs.mkdirSync(agents, { recursive: true });
+    const dispatch = (cwd) => invoke(JSON.stringify({ cwd, tool_name: "Agent", tool_input: { subagent_type: "sonnet" } }));
+    assert.equal(dispatch(os.homedir()), null);
+    assert.equal(dispatch(cwd), null);
+    fs.writeFileSync(path.join(agents, "sonnet.md"), "---\nname: sonnet\nmodel: inherit\n---\n");
+    assert.match(dispatch(cwd).permissionDecisionReason, /cannot inherit/);
+  });
+
   test("named agents cannot override their model", () => {
     for (const tool of ["Agent", "Task"]) {
       for (const [subagentType, model] of [["luna", "sonnet"], ["sol", "sonnet"], ["haiku", "opus"], ["custom-agent", "haiku"]]) {
@@ -1919,6 +1952,12 @@ describe("policy hook", () => {
     assert.equal(denied.decision, "deny");
     assert.match(denied.reason, /match a configured Worker tier/);
     assert.equal(denied.overwrite, undefined);
+    const approvedUnsupported = antigravity({ name: "mcp_t3-code_delegate_task", args: {
+      task: `${task}\nL3 approval: https://example.test/a`,
+      target: { providerInstanceId: "codex", model: "gpt-6.2-astra" },
+    } });
+    assert.equal(approvedUnsupported.decision, "deny");
+    assert.match(approvedUnsupported.reason, /match a configured Worker tier/);
   });
 
   test("Antigravity requires explicit native Codex Sol effort and still stamps the brief", () => {

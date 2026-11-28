@@ -247,12 +247,14 @@ const WORDCHARS = new Set(
   "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" +
   "ßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞ" + "~-./*?=");
 
-function shlex(text, whitespaceSplit, redirects = false) {
+function shlex(text, whitespaceSplit, redirects = false, skipHeredocs = false) {
   const punctuation = redirects ? PUNCTUATION + "<>" : PUNCTUATION;
   const chars = Array.from(text);
   const pushback = [];
   let position = 0;
   const tokens = [];
+  const heredocs = [];
+  let heredocTabs;
   const read = () => (pushback.length ? pushback.pop() : position < chars.length ? chars[position++] : "");
   const skipLine = () => {
     let character;
@@ -376,6 +378,27 @@ function shlex(text, whitespaceSplit, redirects = false) {
     }
     if (eof && !token && !quoted) return tokens;
     tokens.push(redirects ? { token, operator, leadingTilde, escaped, substitutionRedirect } : token);
+    if (skipHeredocs) {
+      if (operator && token === "<<") {
+        const next = read();
+        heredocTabs = next === "-";
+        if (next && !heredocTabs) pushback.push(next);
+      } else if (heredocTabs !== undefined && !operator) {
+        heredocs.push([token, heredocTabs]);
+        heredocTabs = undefined;
+      }
+      if (operator && token.includes("\n")) {
+        for (const [delimiter, stripTabs] of heredocs.splice(0)) {
+          for (;;) {
+            let line = "";
+            let next;
+            while ((next = read()) && next !== "\n") line += next;
+            if ((stripTabs ? line.replace(/^\t+/, "") : line) === delimiter) break;
+            if (!next) throw new Error("Missing here-document delimiter");
+          }
+        }
+      }
+    }
     if (eof) return tokens;
   }
 }
@@ -443,11 +466,12 @@ function pollsGithub(command) {
   return null;
 }
 
-function shellCommands(command) {
+function shellCommands(command, redirects = false, skipHeredocs = false) {
   if (typeof command !== "string") throw new TypeError("command must be a string");
   const raw = [];
-  for (const token of shlex(command, true)) {
-    if (token && punctuationOnly(token)) raw.push(...token);
+  for (const word of shlex(command, true, redirects, skipHeredocs)) {
+    const token = redirects ? word.token : word;
+    if (token && (redirects ? word.operator && punctuationOnly(token) : punctuationOnly(token))) raw.push(...token);
     else raw.push(token);
   }
   const tokens = [];
@@ -665,13 +689,14 @@ function endsWithUserQuestion(text) {
 
 function installedClaudeModel(cwd, named, expected) {
   if (!expected || !/^[a-z][a-z0-9-]*$/.test(named)) return undefined;
-  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+  const home = os.homedir();
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(home, ".claude");
   const relativeAgent = path.join("agents", `${named}.md`);
   let directory = cwd;
   let definition;
   while (directory !== path.dirname(directory)) {
     const local = path.join(directory, ".claude", relativeAgent);
-    if (fs.existsSync(local)) {
+    if (directory !== home && fs.existsSync(local)) {
       definition = local;
       break;
     }
@@ -865,34 +890,81 @@ function afterCdPrefix(words) {
   return words[0] === "cd" && ["&&", "||"].includes(words[2]) ? words.slice(3) : words;
 }
 
+const CODEX_EXEC_EXPLICIT_MODEL = "Set an explicit Worker model with codex exec -m <model> before the brief.";
+const CODEX_VALUE_FLAGS = new Set(["-c", "--config", "-s", "--sandbox", "-p", "--profile", "-C", "--cd", "-o",
+  "--output-last-message", "--add-dir", "--color", "--output-schema", "--enable", "--disable", "--remote",
+  "--remote-auth-token-env", "--local-provider", "--thread-source", "--cyber-access-program", "-a", "--ask-for-approval",
+  "-i", "--image"]);
+const CODEX_SWITCHES = new Set(["--strict-config", "--oss", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox",
+  "--dangerously-bypass-hook-trust", "--worktree", "--skip-git-repo-check", "--trust", "--ephemeral", "--ignore-user-config",
+  "--ignore-rules", "--json", "--search", "--no-alt-screen", "--no-daemon"]);
+const CODEX_INFO_FLAGS = new Set(["-h", "--help", "-V", "--version"]);
+
+function withoutTimeout(words) {
+  if (path.basename(words[0] ?? "") !== "timeout") return words;
+  let index = 1;
+  while (words[index]?.startsWith("-")) {
+    const flag = words[index++];
+    if (flag === "--") break;
+    if (["-k", "--kill-after", "-s", "--signal"].includes(flag)) index++;
+    else if (!/^(?:--(?:foreground|preserve-status|verbose)|-v|--(?:kill-after|signal)=.+|-[ks].+)$/.test(flag)) return words;
+  }
+  return /^(?:\d+(?:\.\d*)?|\.\d+)[smhd]?$/.test(words[index] ?? "") ? commandWords(words.slice(index + 1)) : words;
+}
+
+function codexFlags(args) {
+  let model;
+  let uncertain = false;
+  let info = false;
+  let index = 0;
+  for (; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--" || !arg.startsWith("-") || arg === "-") break;
+    if (arg === "-m" || arg === "--model") model = args[++index] ?? "";
+    else if (arg.startsWith("--model=")) model = arg.slice("--model=".length);
+    else if (arg.startsWith("-m")) model = arg.slice(arg.startsWith("-m=") ? 3 : 2);
+    else if (CODEX_VALUE_FLAGS.has(arg)) index++;
+    else if (CODEX_INFO_FLAGS.has(arg)) info = true;
+    else if (!CODEX_SWITCHES.has(arg) && !CODEX_VALUE_FLAGS.has(arg.split("=", 1)[0]) &&
+      !/^-[cspCoai].+/.test(arg)) uncertain = true;
+  }
+  return { model, uncertain, info, rest: args.slice(index) };
+}
+
+function readCodexExec(words) {
+  const [program, ...args] = withoutTimeout(commandWords(afterCdPrefix(words)));
+  if (path.basename(program ?? "") !== "codex") return undefined;
+  const isExec = (arg) => arg === "exec" || arg === "e";
+  const root = codexFlags(args);
+  if (!isExec(root.rest[0])) {
+    return root.uncertain && args.some(isExec) ? { uncertain: true } : undefined;
+  }
+  const child = codexFlags(root.rest.slice(1));
+  const prompt = child.rest[child.rest[0] === "--" ? 1 : 0];
+  return { model: child.model ?? root.model, uncertain: root.uncertain || child.uncertain,
+    info: root.info || child.info, brief: prompt?.startsWith("<") ? undefined : prompt };
+}
+
 function codexExecDispatch(command, workers, event) {
   if (!command.includes("codex")) return [];
   let statements;
   try {
-    statements = shellCommands(command);
+    statements = shellCommands(command, true, true);
   } catch {
-    return [];
-  }
-  for (const words of statements) {
-    const [program, operation, ...args] = commandWords(afterCdPrefix(words));
-    if (path.basename(program ?? "") !== "codex" || operation !== "exec") continue;
-    if (["-h", "--help", "-V", "--version"].includes(args[0])) continue;
-    let model;
-    let brief;
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index];
-      if (arg === "--model" || arg === "-m") model = args[++index];
-      else if (arg.startsWith("--model=")) model = arg.slice("--model=".length);
-      else if (["-c", "--config", "-s", "--sandbox", "-p", "--profile", "-C", "--cd", "-o", "--output-last-message",
-        "--add-dir", "--color", "--output-schema", "--enable", "--disable", "--remote", "--remote-auth-token-env",
-        "--local-provider", "--thread-source", "--cyber-access-program", "-i", "--image"].includes(arg)) index++;
-      else if (arg === "--" || !arg.startsWith("-")) {
-        brief = arg === "--" ? args[index + 1] : arg;
-        break;
-      }
+    // The first line can still identify a direct invocation when the rest cannot be parsed.
+    try {
+      if (!shellCommands(command.split("\n", 1)[0], true).some(readCodexExec)) return [];
+    } catch {
+      return [];
     }
-    const result = workerDispatch(workers, event, { model,
-      brief, requiredModel: "Set an explicit Worker model with codex exec -m <model> before the brief." });
+    return ["deny", CODEX_EXEC_EXPLICIT_MODEL, RULE.inheritedModel];
+  }
+  for (const statement of statements) {
+    const call = readCodexExec(statement);
+    if (!call || call.info) continue;
+    if (call.uncertain) return ["deny", CODEX_EXEC_EXPLICIT_MODEL, RULE.inheritedModel];
+    const result = workerDispatch(workers, event, { model: call.model,
+      brief: call.brief, requiredModel: CODEX_EXEC_EXPLICIT_MODEL });
     if (result[0]) return result;
   }
   return [];
