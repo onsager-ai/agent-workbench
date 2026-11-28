@@ -661,7 +661,7 @@ function dispatchApproval(file, event, tier) {
   }
 }
 
-function delegateTier(file, event, { model, providerInstanceId, driverKind }, exact = false) {
+function delegateTier(file, event, { model, providerInstanceId, driverKind }, requireTier) {
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
     const entries = Object.entries(config.tiers);
@@ -675,13 +675,7 @@ function delegateTier(file, event, { model, providerInstanceId, driverKind }, ex
     if (providers.has(driverKind) || (!providerInstanceId && providerTiers.some(([, tier]) => tier.model === model))) {
       return { denial: "Set target.providerInstanceId to the provider of the configured Worker tier in the active profile." };
     }
-    if (exact) {
-      const match = !providerInstanceId && entries.find(([, tier]) =>
-        !tier.provider && (tier.model === model || tier.claude_route === model));
-      return match ? { name: match[0], tier: match[1] }
-        : { denial: "Set target.model and target.providerInstanceId (for provider tiers) to exactly match a configured Worker tier in the active profile." };
-    }
-    // Legacy matching accepts tier names, model IDs and routes, ignoring prefixes and context suffixes.
+    // Non-provider tiers match tier names, model IDs and routes, ignoring provider instance IDs and normalizing model strings.
     const full = String(model).replace(/\[[^\]]*\]$/, "");
     const short = full.split("/").pop();
     for (const [name, tier] of entries) {
@@ -690,16 +684,17 @@ function delegateTier(file, event, { model, providerInstanceId, driverKind }, ex
       }
     }
   } catch {
-    if (exact) return { denial: CONFIG_MISSING };
-    // Legacy calls pass through when no tier can be resolved.
+    if (requireTier) return { denial: CONFIG_MISSING };
   }
-  return {};
+  return requireTier
+    ? { denial: "Set target.model and target.providerInstanceId (for provider tiers) to match a configured Worker tier in the active profile." }
+    : {};
 }
 
-function checkDelegation(workers, event, input, { stampRole, exact = false }) {
+function checkDelegation(workers, event, input, { stampRole, requireTier = false }) {
   const target = dict(input.target);
   if (!target.model) return { decision: "deny", reason: T3_MODEL };
-  const { name, tier, denial } = delegateTier(workers, event, target, exact);
+  const { name, tier, denial } = delegateTier(workers, event, target, requireTier);
   if (denial) return { decision: "deny", reason: denial };
   const readOnly = tier?.access === "read-only";
   const isolation = tier?.isolation ?? (readOnly ? ["shared"] : ["shared", "worktree"]);
@@ -1114,7 +1109,7 @@ async function main() {
         emit(reason ? { decision: "deny", reason } : { decision: "allow" });
       } else if (tool === "mcp__t3_code__delegate_task") {
         const result = checkDelegation(workers, event, { ...args, target: isDict(args.target) ? args.target : {} },
-          { stampRole: true, exact: true });
+          { stampRole: true, requireTier: true });
         if (result.decision) emit({ decision: "deny", reason: result.reason });
         else emit({ decision: "allow", ...(result.task === undefined ? {} : { overwrite: { task: result.task } }) });
       } else if (tool === "mcp__t3_code__t3_thread_send") {

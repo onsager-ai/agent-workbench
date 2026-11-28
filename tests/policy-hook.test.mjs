@@ -1327,6 +1327,24 @@ describe("policy hook", () => {
     return result.stdout ? JSON.parse(result.stdout) : null;
   };
 
+  test("Antigravity resolves shipped non-provider tiers like other hosts but denies unknown models", () => {
+    const task = "Review this change.";
+    const sonnet = bundle.profiles.codex.tiers.sonnet.model;
+    const delegate = (target) => antigravity({ name: "mcp_t3-code_delegate_task", args: { task, target } });
+    for (const target of [
+      { providerInstanceId: "codex", model: "gpt-6-luna" },
+      { providerInstanceId: "codex", model: "luna" },
+      { providerInstanceId: "codex", model: "example-provider/gpt-6-luna[1m]" },
+      { providerInstanceId: "claudeAgent", model: sonnet },
+    ]) {
+      assert.deepEqual(delegate(target), { decision: "allow", overwrite: { task: `Role: Worker\n${task}` } });
+    }
+    const denied = delegate({ providerInstanceId: "codex", model: "unlisted" });
+    assert.equal(denied.decision, "deny");
+    assert.match(denied.reason, /match a configured Worker tier/);
+    assert.equal(denied.overwrite, undefined);
+  });
+
   test("Antigravity stamps exact T3 delegation and ignores toolSummary", () => {
     bundle.profile = null;
     bundle.base.tiers.remote = { provider: "example-provider", model: "catalog/example-model", access: "read-only" };
@@ -1342,7 +1360,8 @@ describe("policy hook", () => {
     for (const unmatched of [{ ...target, model: "unlisted" }, { model: "unlisted" }, { ...target, providerInstanceId: "other-provider" }]) {
       const denied = delegate({ target: unmatched });
       assert.equal(denied.decision, "deny");
-      assert.match(denied.reason, /exactly match a configured Worker/);
+      assert.match(denied.reason, unmatched.providerInstanceId === target.providerInstanceId
+        ? /exactly match a configured Worker model/ : /match a configured Worker tier/);
       assert.equal(denied.overwrite, undefined);
     }
     assert.match(delegate({ target: { model: target.model } }).reason, /Set target\.providerInstanceId/);
