@@ -1409,6 +1409,16 @@ describe("policy hook", () => {
       assert.deepEqual(antigravity(image, { ...env, T3CODE_THREAD_ID: child }), { decision: "allow" });
     });
 
+    test("a routine resolved Worker call allows without creating Manager state", () => {
+      const state = path.join(directory, "state/agent-workbench/manager-turns");
+      const worker = { ...env, T3CODE_THREAD_ID: child };
+      assert.equal(fs.existsSync(state), false);
+      assert.deepEqual(antigravity({ name: "run_command", args: { CommandLine: "git status --short" } }, worker), {
+        decision: "allow",
+      });
+      assert.equal(fs.existsSync(state), false);
+    });
+
     test("a policy error after resolving the role returns an Antigravity denial", () => {
       assert.deepEqual(antigravity(edit("write_to_file", { toString: null }), env), {
         decision: "deny", reason: "Could not evaluate the Antigravity tool policy.",
@@ -1538,7 +1548,9 @@ describe("policy hook", () => {
     assert.deepEqual(send("No footer.", env), { decision: "allow" });
     assert.deepEqual(send(message, { ...env, T3CODE_THREAD_ID: "" }), { decision: "allow" });
     fs.writeFileSync(path.join(directory, "wbmsg", "thread-12345678.seq"), "invalid counter");
-    assert.equal(send(message, env), null, "internal hook errors emit no decision");
+    assert.deepEqual(send(message, env), {
+      decision: "deny", reason: "Could not evaluate the Antigravity tool policy.",
+    }, "a corrupt footer counter denies the send rather than letting it proceed unstamped");
   });
 
   test("Antigravity denies only the targeted native delegation tools", () => {

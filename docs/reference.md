@@ -73,6 +73,8 @@ Codex CLI 0.141 or newer (hooks are on by default) gets the same policy hook thr
 
 Antigravity CLI can use a workspace `PreToolUse` hook with the installed `policy-hook --host antigravity` adapter. Its [documented hook payload](https://antigravity.google/docs/hooks) uses `toolCall.name` and `toolCall.args`. For every role, the hook checks shell calls for protected branches and GitHub polling, checks T3 delegation against the Worker ladder (including exact provider and model matching for provider tiers), and stamps Worker briefs and WB_MSG footers. It returns changed arguments in `overwrite`. Antigravity's native `invoke_subagent`, `define_subagent`, `swarm`, and `run_workflow` tools are denied because they bypass the Worker ladder.
 
+A corrupt WB_MSG send-counter file causes Antigravity to deny a `t3_thread_send` that needs a stamp rather than send it unstamped.
+
 To register it in one workspace, run `agent-workbench install --antigravity --workspace PATH` and select the hook in Antigravity before activation. The same command upgrades unchanged, previously owned shell-only and role-independent registrations. If the registration is missing `--workers` or its `workers.json` cannot be read, T3 delegation is denied; rerun the workspace install command. Plain install and update do not register or upgrade workspace hooks. Remove the workspace registration with `agent-workbench uninstall --antigravity --workspace PATH`.
 
 
