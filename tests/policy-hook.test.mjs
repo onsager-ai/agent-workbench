@@ -30,15 +30,28 @@ describe("policy hook", () => {
   let bundle;
   let directory;
 
+  function installClaudeTier(name, model) {
+    const agents = path.join(directory, "claude", "agents");
+    fs.mkdirSync(agents, { recursive: true });
+    fs.writeFileSync(path.join(agents, `${name}.md`), `---\nname: ${name}\nmodel: ${JSON.stringify(model)}\n---\n`);
+  }
+
   beforeEach(() => {
     directory = tmp();
     workers = path.join(directory, "workers.json");
     bundle = workerBundle(WORKERS);
+    for (const name of ["luna", "sol", "terra"]) {
+      const tier = bundle.profiles.codex.tiers[name];
+      tier.claude_route = `onsager/codex/${tier.model}`;
+      installClaudeTier(name, tier.claude_route);
+    }
+    for (const name of ["haiku", "sonnet", "opus"]) installClaudeTier(name, bundle.base.tiers[name].model);
     fs.writeFileSync(workers, JSON.stringify(bundle));
   });
 
   function run(payload, { env, args = ["--workers", workers] } = {}) {
-    const result = spawnSync(process.execPath, [HOOK, ...args], { input: payload, encoding: "utf8", env });
+    const result = spawnSync(process.execPath, [HOOK, ...args], { input: payload, encoding: "utf8",
+      env: { ...(env ?? process.env), CLAUDE_CONFIG_DIR: path.join(directory, "claude") } });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stderr, "");
     return result;
@@ -583,7 +596,7 @@ describe("policy hook", () => {
     for (const tool of ["Agent", "Task"]) {
       assert.equal(call(tool, { subagent_type: "luna", prompt: "Inspect the issue." }), null, tool);
     }
-    assert.equal(call("spawn_agent", { agent_type: "luna", message: "Inspect the issue." }), null);
+    assert.equal(call("spawn_agent", { model: "gpt-6-luna", message: "Inspect the issue." }), null);
     for (const tool of ["t3_thread_send", "t3_queue", "send_to_user", "t3_pending_request",
       "t3_background_wait", "AskUserQuestion", "ToolSearch", "pull_request_merge",
       "pull_request_review", "pull_request_respond", "link_pull_request", "link_pull_requests",
@@ -1074,8 +1087,8 @@ describe("policy hook", () => {
     const denied = delegate(target, { isolation: "worktree" });
     assert.equal(denied.permissionDecision, "deny");
     assert.match(denied.permissionDecisionReason, /does not allow worktree isolation/);
-    assert.equal(delegate({ ...target, providerInstanceId: "other-provider" }, { isolation: "worktree" }).updatedInput.task,
-      "Role: Worker\nReview this change.");
+    assert.match(delegate({ ...target, providerInstanceId: "other-provider" }, { isolation: "worktree" }).permissionDecisionReason,
+      /not in the ladder/);
     for (const bypass of [
       { driverKind: "example-provider", model: "other-model" },
       { driverKind: "example-provider", providerInstanceId: "other-provider", model: "other-model" },
@@ -1085,8 +1098,7 @@ describe("policy hook", () => {
       assert.equal(result.permissionDecision, "deny", JSON.stringify(bypass));
       assert.match(result.permissionDecisionReason, /Set target\.providerInstanceId/);
     }
-    assert.equal(delegate({ model: "remote" }, { isolation: "worktree" }).updatedInput.task,
-      "Role: Worker\nReview this change.");
+    assert.match(delegate({ model: "remote" }, { isolation: "worktree" }).permissionDecisionReason, /not in the ladder/);
   });
 
   test("delegate_task leaves isolation to T3 for a legacy tier", () => {
@@ -1122,6 +1134,8 @@ describe("policy hook", () => {
   test("neutral profile keeps L3 approval and disallows named model overrides", () => {
     bundle = workerBundle(WORKERS, [NEUTRAL_OVERRIDE]);
     fs.writeFileSync(workers, JSON.stringify(bundle));
+    installClaudeTier("standard", "sonnet");
+    installClaudeTier("expert", "opus");
     const dispatch = (subagentType, model) => invoke(JSON.stringify({
       hook_event_name: "PreToolUse", tool_name: "Agent",
       tool_input: { subagent_type: subagentType, model },
@@ -1151,7 +1165,7 @@ describe("policy hook", () => {
     const delegate = (model, task = "Review the PR.") => invoke(JSON.stringify({
       tool_name: "mcp__t3-code__delegate_task", tool_input: { task, target: { model } },
     }));
-    for (const model of ["claude-opus-5-5", "opus", "onsager/auto/claude-opus-5-5[1m]"]) {
+    for (const model of ["claude-opus-5-5", "opus"]) {
       const decision = delegate(model);
       assert.equal(decision.permissionDecision, "deny");
       assert.match(decision.permissionDecisionReason, /^Worker opus at level L3 needs the user's approval/);
@@ -1159,8 +1173,10 @@ describe("policy hook", () => {
       assert.equal(delegate(model, "Review the PR.\nL3 approval: https://example.test/approval"), null);
     }
     assert.equal(delegate("claude-opus-5-5", "Mention L3 approval: inline only.").permissionDecision, "deny");
-    for (const model of ["claude-sonnet-5-5", "onsager/kiro/claude-sonnet-5-5[1m]", "unlisted/model"]) {
-      assert.equal(delegate(model), null);
+    assert.equal(delegate("claude-sonnet-5-5"), null);
+    for (const model of ["onsager/auto/claude-opus-5-5[1m]", "onsager/kiro/claude-sonnet-5-5[1m]", "unlisted/model"]) {
+      assert.match(delegate(model).permissionDecisionReason, /not in the ladder/);
+      assert.equal(delegate(model, "Review the PR.\nL3 approval: https://example.test/a"), null);
     }
   });
 
@@ -1195,19 +1211,19 @@ describe("policy hook", () => {
     assert.equal(invoke(JSON.stringify({ tool_name: "Agent", tool_input: { subagent_type: "sol" } })).permissionDecision, "deny");
   });
 
-  test("missing or unreadable workers asks on every dispatch", () => {
+  test("missing or unreadable workers denies every dispatch", () => {
     for (const content of [null, "invalid json", "{}"]) {
       if (content === null) fs.rmSync(workers);
       else fs.writeFileSync(workers, content);
       for (const tier of ["luna", "Plan", "custom"]) {
         const result = invoke(JSON.stringify({ tool_name: "Agent", tool_input: { subagent_type: tier } }));
-        assert.equal(result.permissionDecision, "ask");
-        assert.match(result.permissionDecisionReason, /agent-workbench install/);
+        assert.equal(result.permissionDecision, "deny");
+        assert.match(result.permissionDecisionReason, /agent-workbench install|cannot inherit/);
       }
     }
     fs.rmSync(workers);
     fs.mkdirSync(workers);
-    assert.equal(invoke(JSON.stringify({ tool_name: "Task", tool_input: {} })).permissionDecision, "ask");
+    assert.equal(invoke(JSON.stringify({ tool_name: "Task", tool_input: {} })).permissionDecision, "deny");
   });
 
   test("T3 delegate requires worker model", () => {
@@ -1240,9 +1256,40 @@ describe("policy hook", () => {
     }
   });
 
-  test("named fork and custom agents pass through", () => {
-    for (const subagentType of ["fork", "sonnet", "custom-agent"]) {
-      assert.equal(invoke(JSON.stringify({ tool_name: "Agent", tool_input: { subagent_type: subagentType } })), null);
+  test("named agents need a fixed installed tier model", () => {
+    const dispatch = (subagent_type) => invoke(JSON.stringify({ tool_name: "Agent", tool_input: {
+      subagent_type, prompt: "Inspect.\nL3 approval: https://example.test/a",
+    } }));
+    assert.equal(dispatch("sonnet"), null);
+    installClaudeTier("sonnet", "inherit");
+    for (const name of ["fork", "sonnet", "custom-agent"]) assert.equal(dispatch(name).permissionDecision, "deny");
+  });
+
+  test("Worker dispatch requires approval for an explicit model outside the active ladder", () => {
+    const approved = "Inspect.\nL3 approval: https://example.test/a";
+    const model = "gpt-6.2-astra";
+    for (const [tool, input] of [
+      ["Agent", (prompt) => ({ subagent_type: "Plan", model, prompt })],
+      ["Task", (prompt) => ({ subagent_type: "Plan", model, prompt })],
+      ["spawn_agent", (message) => ({ model, message })],
+      ["mcp__t3-code__delegate_task", (task) => ({ task, target: { model } })],
+      ["mcp__t3_code_direct__delegate_task", (task) => ({ task, target: { model } })],
+      ["Bash", (prompt) => ({ command: `timeout 60 /usr/bin/codex exec --model=${model} -s read-only '${prompt}'` })],
+    ]) {
+      const dispatch = (brief) => invoke(JSON.stringify({ tool_name: tool, tool_input: input(brief) }));
+      assert.match(dispatch("Inspect.").permissionDecisionReason, /not in the ladder/, tool);
+      assert.equal(dispatch(approved), null, tool);
+    }
+  });
+
+  test("the codex exec gate matches the invocation and requires a model flag", () => {
+    const shell = (command) => invoke(JSON.stringify({ tool_name: "Bash", tool_input: { command } }));
+    for (const command of ["codex exec 'Inspect.'", "cd /tmp && codex exec 'Inspect.'", "codex exec -c model=gpt-6-luna 'Inspect.'",
+      "codex exec -m '$MODEL' 'L3 approval: https://example.test/a'"]) {
+      assert.match(shell(command).permissionDecisionReason, /Set an explicit Worker model/, command);
+    }
+    for (const command of ["codex exec --help", "echo 'codex exec'", "codex exec -m gpt-6-luna 'Inspect.'"]) {
+      assert.equal(shell(command), null, command);
     }
   });
 
@@ -1863,7 +1910,7 @@ describe("policy hook", () => {
     for (const target of [
       { providerInstanceId: "codex", model: "gpt-6-luna" },
       { providerInstanceId: "codex", model: "luna" },
-      { providerInstanceId: "codex", model: "example-provider/gpt-6-luna[1m]" },
+      { providerInstanceId: "codex", model: "codex/gpt-6-luna[1m]" },
       { providerInstanceId: "claudeAgent", model: sonnet },
     ]) {
       assert.deepEqual(delegate(target), { decision: "allow", overwrite: { task: `Role: Worker\n${task}` } });
@@ -2544,7 +2591,7 @@ describe("policy hook", () => {
       assert.equal(tool("direct-manager", delegate, input).updatedInput.task, "Role: Worker\nInspect this.");
       assert.equal(tool("outside", delegate, input), null);
       assert.match(tool("direct-manager", delegate, { target: {} }).permissionDecisionReason, /Set target.model/);
-      assert.equal(tool("outside", delegate, { target: {} }), null);
+      assert.match(tool("outside", delegate, { target: {} }).permissionDecisionReason, /Set target.model/);
       for (const session of ["direct-manager", "outside"]) {
         assert.match(tool(session, schedule, {}).permissionDecisionReason, /policy\.schedules/);
         assert.equal(tool(session, schedule, { scheduledTaskId: "s-1", enabled: false }), null);
@@ -2729,20 +2776,23 @@ describe("policy hook", () => {
     });
 
     test("spawn_agent approval rules become deny", () => {
-      const byType = codex({ tool_name: "spawn_agent", tool_input: { agent_type: "opus", message: "x" } });
+      const byType = codex({ tool_name: "spawn_agent", tool_input: { agent_type: "opus", model: "gpt-6-luna", message: "x" } });
       assert.equal(byType.permissionDecision, "deny");
       assert.match(byType.permissionDecisionReason, /^Worker opus at level L3 needs the user's approval/);
       assert.match(byType.permissionDecisionReason, /`L3 approval: <link to the approval>` to the brief and retry\.$/);
       assert.equal(codex({
-        tool_name: "spawn_agent", tool_input: { agent_type: "opus", message: "x\nL3 approval: https://example.test/a" },
+        tool_name: "spawn_agent", tool_input: { agent_type: "opus", model: "gpt-6-luna", message: "x\nL3 approval: https://example.test/a" },
       }), null);
       const byModel = codex({ tool_name: "spawn_agent", tool_input: { model: "opus" } });
       assert.equal(byModel.permissionDecision, "deny");
       assert.match(byModel.permissionDecisionReason, /Opus Worker needs the user's approval/);
     });
 
-    test("spawn_agent of an unknown type or an L1 tier passes through", () => {
-      assert.equal(codex({ tool_name: "spawn_agent", tool_input: { message: "x" } }), null);
+    test("spawn_agent requires an explicit model even with approval", () => {
+      for (const model of [undefined, "inherit", "default", " "]) {
+        const tool_input = { model, agent_type: "haiku", message: "x\nL3 approval: https://example.test/a" };
+        assert.match(codex({ tool_name: "spawn_agent", tool_input }).permissionDecisionReason, /cannot inherit/);
+      }
       assert.equal(codex({ tool_name: "spawn_agent", tool_input: { agent_type: "haiku", model: "claude-haiku-5-5" } }), null);
     });
 
@@ -2753,7 +2803,7 @@ describe("policy hook", () => {
       assert.equal(spawn(input).permissionDecision, "allow");
       assert.deepEqual(spawn(input).updatedInput, { ...input, reasoning_effort: "medium" });
       const inherited = { message: "Inspect.", fork_turns: "all" };
-      assert.deepEqual(spawn(inherited, sol.model).updatedInput, { ...inherited, reasoning_effort: "medium" });
+      assert.equal(spawn(inherited, sol.model).permissionDecision, "deny");
       assert.equal(spawn({ ...input, reasoning_effort: "xhigh" }), null);
       assert.equal(spawn({ ...input, model: "gpt-6-luna", reasoning_effort: "low" }, sol.model), null);
       assert.match(spawn({ ...input, reasoning_effort: "low" }).permissionDecisionReason, /set reasoning_effort to "medium"/);
@@ -2777,7 +2827,7 @@ describe("policy hook", () => {
     });
 
     test("Claude host denies an unapproved spawn_agent too", () => {
-      const deny = invoke(JSON.stringify({ tool_name: "spawn_agent", tool_input: { agent_type: "opus" } }));
+      const deny = invoke(JSON.stringify({ tool_name: "spawn_agent", tool_input: { agent_type: "opus", model: "gpt-6-luna" } }));
       assert.equal(deny.permissionDecision, "deny");
     });
 

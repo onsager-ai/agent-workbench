@@ -61,7 +61,7 @@ const MUTATING_GIT = new Set(["commit", "push", "tag", "merge", "rebase", "reset
 const APPROVAL_LINE = "Get it first (through the Chief PM when one is registered), then add a line " +
   "`L3 approval: <link to the approval>` to the brief and retry.";
 
-const INHERITED_MODEL ="Built-in agents inherit the Manager's model. Use a tier agent " +
+const INHERITED_MODEL = "Workers cannot inherit the Manager's model. Use a configured Claude tier agent " +
   "(subagent_type: <role>) or pass model explicitly.";
 const INHERITING_AGENT_TYPES = new Set([undefined, null, "general-purpose", "Plan", "Explore", "claude"]);
 const MODEL_OVERRIDE = "model overrides the model in this agent's definition, so a tier agent would run on " +
@@ -663,25 +663,70 @@ function endsWithUserQuestion(text) {
   return /[?？]$/.test(sentence) || /^(?:should I|do you want|let me know whether)\b/i.test(sentence);
 }
 
-function dispatchApproval(file, event, tier) {
+function installedClaudeModel(cwd, named, expected) {
+  if (!expected || !/^[a-z][a-z0-9-]*$/.test(named)) return undefined;
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+  const relativeAgent = path.join("agents", `${named}.md`);
+  let directory = cwd;
+  let definition;
+  while (directory !== path.dirname(directory)) {
+    const local = path.join(directory, ".claude", relativeAgent);
+    if (fs.existsSync(local)) {
+      definition = local;
+      break;
+    }
+    directory = path.dirname(directory);
+  }
+  try {
+    const file = definition ?? path.join(configDir, relativeAgent);
+    const stat = fs.statSync(file);
+    if (!stat.isFile() || stat.size > 64 * 1024) return undefined;
+    const content = fs.readFileSync(file, "utf8");
+    const header = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content)?.[1];
+    const models = header?.match(/^model:.*$/gm);
+    const literal = models?.length === 1 && /^model:\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(models[0]);
+    return literal && (literal[1] ?? literal[2] ?? literal[3]) === expected ? expected : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function workerDispatch(file, event, { model, named, providerTier, brief, requiredModel, forceOpus = false, role }) {
+  const explicit = (value) => typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_./:-]*(?:\[1m\])?$/.test(value) &&
+    !/^(?:default|inherit|auto)(?:\[1m\])?$/i.test(value);
+  const missing = ["deny", requiredModel ?? INHERITED_MODEL, RULE.inheritedModel];
+  if (named == null && !explicit(model)) return missing;
   try {
     if (file === null) throw new Error("missing workers path");
     const bundle = JSON.parse(fs.readFileSync(file, "utf8"));
     const { config, profile, cwd } = selectWorkerProfile(bundle, event);
-    const known = new Set([bundle.base, ...Object.values(bundle.profiles)].flatMap((item) => Object.keys(item.tiers)));
-    if (!known.has(tier) || config.tiers[tier]?.opt_in) return null;
-    for (const level of config.ladder) {
-      if (level.tiers.includes(tier)) {
-        if (level.approval === "required") {
-          return `Worker ${tier} at level ${level.level} needs the user's approval for this task (configured Worker ladder).`;
-        }
-        return null;
-      }
+    if (named != null) {
+      const definition = config.tiers[named];
+      const expected = definition && !definition.provider && (definition.harness === "codex" ? definition.claude_route : definition.model);
+      model = installedClaudeModel(cwd, named, expected);
+      if (!explicit(model)) return missing;
     }
-    return `Worker ${tier} is not in the ladder for profile ${profile || "base"} at ${cwd}; ` +
-      "dispatch it only with the user's approval.";
+    const id = model.replace(/\[1m\]$/, "");
+    const selected = named ?? providerTier ?? Object.keys(config.tiers).find((name) => {
+      const tier = config.tiers[name];
+      return !tier.provider && ([name, tier.model, tier.claude_route].includes(id) ||
+        (tier.harness === "codex" && id === `codex/${tier.model}`));
+    });
+    const subjects = role && Object.hasOwn(config.tiers, role) && role !== selected ? [role, selected] : [selected];
+    for (const tier of subjects) {
+      const level = config.ladder.find(({ tiers }) => tiers.includes(tier));
+      let approval;
+      if (forceOpus && !named && tier === selected && id === "opus") approval = APPROVAL;
+      else if (tier && config.tiers[tier]?.opt_in) continue;
+      else if (!level) approval = `Worker ${tier ?? model} is not in the ladder for profile ${profile || "base"} at ${cwd}; ` +
+        "dispatch it only with the user's approval.";
+      else if (level.approval === "required") approval = `Worker ${tier} at level ${level.level} needs the user's approval for this task (configured Worker ladder).`;
+      const result = gate(approval, brief);
+      if (result[0]) return result;
+    }
+    return [];
   } catch {
-    return CONFIG_MISSING;
+    return ["deny", CONFIG_MISSING, RULE.workerConfig];
   }
 }
 
@@ -698,8 +743,10 @@ function solEffort({ name, tier }, requested, field, canRewrite) {
 }
 
 function checkDelegation(workers, event, input, { stampRole, requireTier = false, codex, agy }) {
-  const target = dict(input.target);
-  if (!target.model) return { decision: "deny", reason: T3_MODEL, rule: RULE.delegationModel };
+  const target = isDict(input.target) ? input.target : {};
+  if (typeof target.model !== "string" || !target.model.trim()) {
+    return { decision: "deny", reason: T3_MODEL, rule: RULE.delegationModel };
+  }
   const { name, tier, denial } = delegateTier(workers, event, target, requireTier);
   if (denial) return { decision: "deny", reason: denial, rule: denial === CONFIG_MISSING ? RULE.workerConfig : RULE.delegationTier };
   const readOnly = tier?.access === "read-only";
@@ -708,7 +755,9 @@ function checkDelegation(workers, event, input, { stampRole, requireTier = false
   if ((tier?.provider || tier?.isolation || tier?.access) && !isolation.includes(requestedIsolation)) {
     return { decision: "deny", reason: `Worker ${name} does not allow ${requestedIsolation} isolation; use ${isolation.join(" or ")}.`, rule: RULE.delegationIsolation };
   }
-  const [decision, reason, rule] = gate(name && dispatchApproval(workers, event, name), input.task);
+  const [decision, reason, rule] = workerDispatch(workers, event, {
+    model: target.model, providerTier: tier?.provider ? name : undefined, brief: input.task, requiredModel: T3_MODEL,
+  });
   if (decision) return { decision, reason, rule };
   const provider = target.providerInstanceId ?? target.driverKind;
   const update = {};
@@ -814,6 +863,39 @@ function literalShellBody(words) {
 
 function afterCdPrefix(words) {
   return words[0] === "cd" && ["&&", "||"].includes(words[2]) ? words.slice(3) : words;
+}
+
+function codexExecDispatch(command, workers, event) {
+  if (!command.includes("codex")) return [];
+  let statements;
+  try {
+    statements = shellCommands(command);
+  } catch {
+    return [];
+  }
+  for (const words of statements) {
+    const [program, operation, ...args] = commandWords(afterCdPrefix(words));
+    if (path.basename(program ?? "") !== "codex" || operation !== "exec") continue;
+    if (["-h", "--help", "-V", "--version"].includes(args[0])) continue;
+    let model;
+    let brief;
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index];
+      if (arg === "--model" || arg === "-m") model = args[++index];
+      else if (arg.startsWith("--model=")) model = arg.slice("--model=".length);
+      else if (["-c", "--config", "-s", "--sandbox", "-p", "--profile", "-C", "--cd", "-o", "--output-last-message",
+        "--add-dir", "--color", "--output-schema", "--enable", "--disable", "--remote", "--remote-auth-token-env",
+        "--local-provider", "--thread-source", "--cyber-access-program", "-i", "--image"].includes(arg)) index++;
+      else if (arg === "--" || !arg.startsWith("-")) {
+        brief = arg === "--" ? args[index + 1] : arg;
+        break;
+      }
+    }
+    const result = workerDispatch(workers, event, { model,
+      brief, requiredModel: "Set an explicit Worker model with codex exec -m <model> before the brief." });
+    if (result[0]) return result;
+  }
+  return [];
 }
 
 function isAutomationShellCommand(command) {
@@ -1580,8 +1662,7 @@ async function main() {
     const normalizedTool = typeof tool === "string" ? tool.replaceAll("-", "_") : tool;
     const canonicalTool = codex && typeof normalizedTool === "string"
       ? normalizedTool.replace(/^mcp__t3_code_direct__/, "mcp__t3_code__") : normalizedTool;
-    const isDelegateTask = normalizedTool === "mcp__t3_code__delegate_task" ||
-      (codexManager && canonicalTool === "mcp__t3_code__delegate_task");
+    const isDelegateTask = /^mcp__t3_code(?:_direct)?__delegate_task$/.test(normalizedTool);
     const previewTool = browserToolName(tool);
     const browserWorker = () => (agy ? !agyManager : !codexManager && (host !== "claude" || event.agent_id != null)) ||
       managerState.worker || !managerState.turn || managerState.invalidBrowser || !codexTurnMatches();
@@ -1716,8 +1797,11 @@ async function main() {
       else if (agy) emitPreToolUse("allow");
       return;
     }
+    if (!decision && shellTool && !managerGoalCommand) {
+      [decision, reason, rule] = codexExecDispatch(shellCommand, workers, event);
+    }
     if (!decision && isDelegateTask) {
-      const input = dict(args);
+      const input = isDict(args) ? args : {};
       const result = checkDelegation(workers, event, input, { stampRole: agy || mainLoop, requireTier: agy, codex, agy });
       if (result.decision) ({ decision, reason, rule } = result);
       else if (Object.keys(result).length) {
@@ -1725,29 +1809,26 @@ async function main() {
         return;
       }
     } else if (!decision && tool === "spawn_agent") {
-      const subagentType = dict(args).agent_type;
-      const approval = dispatchApproval(workers, event, subagentType) ?? (args.model === "opus" ? APPROVAL : null);
-      [decision, reason, rule] = gate(approval, args.message);
+      const input = isDict(args) ? args : {};
+      const { model, message, reasoning_effort, agent_type: agentType } = input;
+      [decision, reason, rule] = workerDispatch(workers, event, { model, brief: message, forceOpus: true, role: agentType });
       if (!decision && codex) {
-        const model = args.model ?? (subagentType === "sol" ? subagentType
-          : subagentType == null ? event.model : undefined);
-        if (typeof model === "string") {
-          const match = delegateTier(workers, event, { model }, false);
-          const result = solEffort(match, args.reasoning_effort, "reasoning_effort", true);
-          if (result.decision) ({ decision, reason, rule } = result);
-          else if (result.effort) {
-            emitUpdate({ ...args, reasoning_effort: result.effort });
-            return;
-          }
+        const match = delegateTier(workers, event, { model }, false);
+        const result = solEffort(match, reasoning_effort, "reasoning_effort", true);
+        if (result.decision) ({ decision, reason, rule } = result);
+        else if (result.effort) {
+          emitUpdate({ ...input, reasoning_effort: result.effort });
+          return;
         }
       }
     } else if (!decision && (tool === "Agent" || tool === "Task")) {
-      const subagentType = dict(args).subagent_type;
-      const approval = dispatchApproval(workers, event, subagentType);
-      if (args.model && !INHERITING_AGENT_TYPES.has(subagentType) && subagentType !== "fork") {
+      const { subagent_type: subagentType, model, prompt } = isDict(args) ? args : {};
+      const usesNamed = !INHERITING_AGENT_TYPES.has(subagentType) && subagentType !== "fork";
+      if (model && usesNamed) {
         [decision, reason, rule] = ["deny", MODEL_OVERRIDE, RULE.modelOverride];
-      } else if (approval || args.model === "opus") [decision, reason, rule] = gate(approval ?? APPROVAL, args.prompt);
-      else if (INHERITING_AGENT_TYPES.has(subagentType) && !args.model) [decision, reason, rule] = ["deny", INHERITED_MODEL, RULE.inheritedModel];
+      } else [decision, reason, rule] = workerDispatch(workers, event, {
+        model, named: usesNamed ? subagentType : undefined, brief: prompt, forceOpus: true,
+      });
     } else if (!decision && isShell && !managerGoalCommand) {
       [reason, rule] = classifyBash(shellCommand, agy ? { cwd: dict(args).Cwd ?? event.cwd } : event, mainLoop);
       if (reason) decision = "deny";
