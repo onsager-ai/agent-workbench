@@ -136,6 +136,11 @@ describe("policy hook", () => {
   const readOnlyDenial = /Read-only Workers cannot edit files/;
   const shellReads = ["git status --short", "git show HEAD", "git log -1", "cat notes.md", "grep text notes.md", "gh pr view 1"];
   const shellWrites = ["touch notes.md", "git commit -m change", "echo change > notes.md"];
+  const goalCommand = `ostrom-goal set lane --statement 'Use ; && | $(literal) as text' --plan '{\n  "goal":"read"\n}'`;
+  const compoundGoalCommands = ["ostrom-goal complete lane; pwd", "ostrom-goal complete lane && pwd",
+    "ostrom-goal complete lane | cat", "pwd; ostrom-goal complete lane", "ostrom-goal complete lane >out",
+    "ostrom-goal complete lane\npwd",
+    'ostrom-goal set lane --statement "$(pwd)"', "ostrom-goal set lane --statement `pwd`"];
 
   test("Claude uses the active profile's native agent type for Worker edit and shell policy", () => {
     bundle = workerBundle(WORKERS, [NEUTRAL_OVERRIDE]);
@@ -1514,6 +1519,17 @@ describe("policy hook", () => {
       assert.match(antigravity(edit(), env, { lastUserInput: "Review only." }).reason, /Manager work approval/);
     });
 
+    test("Antigravity Managers can record goals with standalone counted commands", () => {
+      const run = (command) => ({ name: "run_command", args: { CommandLine: command } });
+      for (const [index, command] of compoundGoalCommands.entries()) {
+        assert.equal(antigravity(run(command), env, { lastUserInput: `Goal check ${index}` }).decision, "deny", command);
+      }
+      const turn = { lastUserInput: "Record weekly goals." };
+      for (let index = 0; index < 5; index++) assert.deepEqual(antigravity(run(goalCommand), env, turn), { decision: "allow" });
+      assert.match(antigravity(run(goalCommand), env, turn).reason, /sixth counted work call/);
+      assert.match(antigravity(run(goalCommand), { ...env, T3CODE_THREAD_ID: child }).reason, readOnlyDenial);
+    });
+
     test("ACP file tools and native state changes require Manager approval and are denied to read-only Workers", () => {
       const readOnly = { ...env, T3CODE_THREAD_ID: child };
       const memory = path.join(os.homedir(), ".claude/projects/example/memory/notes.md");
@@ -1820,6 +1836,15 @@ describe("policy hook", () => {
     for (const command of githubReads.slice(0, 5)) assert.equal(browserCall(session, "Bash", { command }), null, command);
     assert.match(browserCall(session, "Bash", { command: githubReads[5] }).permissionDecisionReason, /sixth counted work call/);
     assert.equal(denialEntries().at(-1).rule, "manager-work-limit");
+  });
+
+  test("Claude Managers can record goals with standalone counted commands", () => {
+    for (const [index, command] of compoundGoalCommands.entries()) {
+      assert.equal(browserCall(`goal-compound-${index}`, "Bash", { command }).permissionDecision, "deny", command);
+    }
+    const call = (command) => browserCall("goal-counted", "Bash", { command });
+    for (let index = 0; index < 5; index++) assert.equal(call(goalCommand), null);
+    assert.match(call(goalCommand).permissionDecisionReason, /sixth counted work call/);
   });
 
   test("Claude Managers can redirect to /dev/null and use quoted angle brackets", () => {
@@ -2137,15 +2162,20 @@ describe("policy hook", () => {
       assert.equal(JSON.parse(fs.readFileSync(stateFile("counted"), "utf8")).count, 1);
     });
 
-    test("enrolled Codex Managers need current approval for other shell calls", () => {
+    test("enrolled Codex Managers can read from the shell and need current approval for other work", () => {
       enrol("manager");
       const nestedPatch = `bash -c ${shellQuote("apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: task.txt\n+work\n*** End Patch\nPATCH")}`;
       const reason = "Enrolled Codex Managers need `Manager work approval: <link>` at the start " +
-        "of the turn for shell commands outside the one-shot GitHub reads; send other shell work to a Worker.";
+        "of the turn for shell commands outside the allowed reads; send other shell work to a Worker.";
       for (const [toolName, key] of [["Bash", "command"], ["exec_command", "command"], ["exec_command", "cmd"]]) {
         const call = (session, command, details) => tool(session, toolName, { [key]: command, workdir: directory }, details);
         prompt("manager");
-        for (const command of ["git status", nestedPatch]) {
+        for (const command of ["cat ~/.agents/AGENTS.md", "ls", "grep 'unclosed (|)' notes.md"]) {
+          assert.equal(call("manager", command), null, command);
+        }
+        assert.equal(JSON.parse(fs.readFileSync(stateFile("manager"), "utf8")).count, 3);
+        for (const command of [nestedPatch, "git status", "rg text notes.md", "rg --pre=touch text notes.md", "git diff --out=out.txt",
+          "cat notes.md; touch task.txt", 'cat "$(touch task.txt)"']) {
           const decision = call("manager", command);
           assert.equal(decision.permissionDecision, "deny");
           assert.equal(decision.permissionDecisionReason, reason);
@@ -2156,8 +2186,18 @@ describe("policy hook", () => {
         prompt("manager", APPROVED);
         assert.equal(call("manager", "git status"), null);
         assert.match(call("manager", "gh run watch 123").permissionDecisionReason, /watch_pull_request for waiting/);
-        assert.equal(call("manager", "git status", { turn_id: "turn-2" }).permissionDecisionReason, reason);
+        assert.equal(call("manager", nestedPatch, { turn_id: "turn-2" }).permissionDecisionReason, reason);
       }
+    });
+
+    test("enrolled Codex Managers can record goals with standalone counted commands", () => {
+      enrol("manager");
+      prompt("manager");
+      for (const command of compoundGoalCommands) {
+        assert.match(bash("manager", command).permissionDecisionReason, /Manager work approval/, command);
+      }
+      for (let index = 0; index < 5; index++) assert.equal(bash("manager", goalCommand), null);
+      assert.match(bash("manager", goalCommand).permissionDecisionReason, /sixth counted work call/);
     });
 
     test("unenrolled top-level Codex sessions report the native ID and an unknown role", () => {
