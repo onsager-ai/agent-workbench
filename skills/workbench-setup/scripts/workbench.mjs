@@ -193,7 +193,8 @@ function validateWorkerShape(config, { profile = false } = {}) {
     }
   }
   if (has(config, "policy")) {
-    keys(config.policy, ["max_auto_rework", "context", "stop_classifier", "browser", "schedules", "manager_models", "manager_threads"], "policy");
+    keys(config.policy, ["max_auto_rework", "context", "stop_classifier", "browser", "schedules", "manager_models",
+      "manager_threads", "manager_model_pairs"], "policy");
     if (has(config.policy, "manager_models")) {
       const { manager_models } = config.policy;
       if (!Array.isArray(manager_models) || manager_models.some((model) => typeof model !== "string" || !model.trim())) {
@@ -204,6 +205,17 @@ function validateWorkerShape(config, { profile = false } = {}) {
       const { manager_threads } = config.policy;
       if (!Array.isArray(manager_threads) || manager_threads.some((id) => typeof id !== "string" || !id.trim())) {
         throw new Conflict("policy.manager_threads must be a list of nonblank T3 thread ID strings; correct it in workers.yml");
+      }
+    }
+    if (has(config.policy, "manager_model_pairs")) {
+      const { manager_model_pairs } = config.policy;
+      if (!Array.isArray(manager_model_pairs)) throw new Conflict("policy.manager_model_pairs must be a list; correct it in workers.yml");
+      for (const [index, pair] of manager_model_pairs.entries()) {
+        const where = `policy.manager_model_pairs[${index}]`;
+        keys(pair, ["thread", "model"], where);
+        if (![pair.thread, pair.model].every((value) => nonEmptyString(value) && value === value.trim())) {
+          throw new Conflict(`${where} must contain nonblank thread and model IDs without surrounding whitespace`);
+        }
       }
     }
     if (has(config.policy, "browser")) {

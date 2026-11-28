@@ -1151,6 +1151,31 @@ describe("workbench setup", () => {
     }
   });
 
+  test("the installer validates Manager model pairs and resolves profile inheritance", () => {
+    const f = new Fixture();
+    f.installOrchestration();
+    const pair = { thread: "example-thread", model: "example/trial-model" };
+    const configure = (value, profiles) => f.write(f.overridePath, JSON.stringify({
+      policy: { manager_model_pairs: value }, profiles,
+    }));
+    configure([pair]);
+    f.run("install");
+    const installed = () => f.json(path.join(f.state, "workers.json"));
+    assert.deepEqual(installed().base.policy.manager_model_pairs, [pair]);
+    assert.deepEqual(installed().profiles.codex.policy.manager_model_pairs, [pair]);
+
+    configure([pair], { codex: { policy: { manager_model_pairs: [] } } });
+    f.run("install");
+    assert.deepEqual(installed().base.policy.manager_model_pairs, [pair]);
+    assert.deepEqual(installed().profiles.codex.policy.manager_model_pairs, []);
+
+    for (const value of [null, pair, [null], [{ model: pair.model }],
+      [{ ...pair, model: " " }], [{ ...pair, thread: " trial" }], [{ ...pair, extra: true }]]) {
+      configure(value);
+      assert.match(f.run("install", [], false).stderr, /policy\.manager_model_pairs/);
+    }
+  });
+
   test("only valid T3 schedule entries are accepted by the installer", () => {
     const f = new Fixture();
     f.installOrchestration();
