@@ -1778,8 +1778,11 @@ describe("policy hook", () => {
       assert.equal(result.decision, "deny", name);
       assert.match(result.reason, /skip the Worker ladder; dispatch Workers with T3 delegate_task/);
     }
-    for (const name of ["manage_subagents", "mcp_t3-code_pull_request_read"]) {
-      assert.deepEqual(antigravity({ name, args: { toolSummary: "Checking status" } }), { decision: "allow" });
+    for (const tool of [
+      { name: "manage_subagents", args: { Action: "list", toolSummary: "Listing subagents" } },
+      { name: "mcp_t3-code_pull_request_read", args: { toolSummary: "Checking status" } },
+    ]) {
+      assert.deepEqual(antigravity(tool), { decision: "allow" });
     }
   });
 
