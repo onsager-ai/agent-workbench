@@ -123,33 +123,21 @@ The file contains only these fields. Command text, tool arguments, full paths, a
 
 After upgrading, run `agent-workbench install` and trust the new hook entries with `/hooks` or, for the default Codex home, `agent-workbench trust`. If the previous install still had the managed `Read|Grep|Glob` entry, removing it shifts later entries. Use `/hooks` to re-trust all entries, including hooks installed by other tools.
 
-This opt-in was designed for T3's native Codex provider on Codex 0.172. A listed top-level Codex session gets the same per-turn Manager workflow as Claude: each new prompt resets the count and approval, and a `Role: Worker` brief marks the session as a Worker. An enrolled Codex Manager can use one-shot `gh pr view`, `gh pr checks`, `gh run view` (including CI logs), `gh run list`, and GET `gh api` shell calls without approval. Put `Manager work approval: <link>` at the start of the turn to enable other shell work. The edit gate still applies to native `apply_patch`, and the sixth counted work call in an unapproved turn is blocked. Delegation lifecycle calls (`orchestrator_capabilities`, `task_status`, `task_cancel`, `t3_thread_wait`, `SendMessage`, and `TaskStop`) do not count toward the Manager work limit on Claude or enrolled Codex, so Managers can inspect and coordinate delegated work after reaching the limit. Only tools matched by the installed hooks count. T3 thread launch, creation and model changes follow the shared allowlist and quoted `L3 approval:` rules. [Browser rules](#t3-bot-browser-profiles) also apply. Other Codex sessions keep the ordinary Codex policy.
+This opt-in was designed for T3's native Codex provider on Codex 0.172. A top-level Codex session enrolled by T3 thread ID or native session ID gets the same per-turn Manager workflow as Claude: each new prompt resets the count and approval, and a `Role: Worker` brief marks the session as a Worker. An enrolled Codex Manager can use one-shot `gh pr view`, `gh pr checks`, `gh run view` (including CI logs), `gh run list`, and GET `gh api` shell calls without approval. Put `Manager work approval: <link>` at the start of the turn to enable other shell work. The edit gate still applies to native `apply_patch`, and the sixth counted work call in an unapproved turn is blocked. Delegation lifecycle calls (`orchestrator_capabilities`, `task_status`, `task_cancel`, `t3_thread_wait`, `SendMessage`, and `TaskStop`) do not count toward the Manager work limit on Claude or enrolled Codex, so Managers can inspect and coordinate delegated work after reaching the limit. Only tools matched by the installed hooks count. T3 thread launch, creation and model changes follow the shared allowlist and quoted `L3 approval:` rules. [Browser rules](#t3-bot-browser-profiles) also apply. Other Codex sessions keep the ordinary Codex policy.
 
 1. Install the current Workbench hooks on the host running T3's Codex provider. Review and trust them with `/hooks` in Codex using that provider's Codex home (including the new `UserPromptSubmit` and `PreToolUse` entries). For the default home, `agent-workbench trust` is the alternative; `agent-workbench status` reports what is trusted.
-2. Once the T3 thread has opened a native Codex session, look up its **native Codex thread ID** (the rollout ID and hook `session_id`), not the T3 thread ID. In T3 0.1.13 the provider thread record in `userdata/statev2.sqlite` stores this as `nativeThreadRef.nativeId`. On the provider host, use the T3 thread ID from its link with this read-only lookup (Node 22.13+):
-
-   ```sh
-   t3_thread_id='<T3 thread ID>'
-   node --input-type=module - "${T3CODE_HOME:-$HOME/.t3}/userdata/statev2.sqlite" "$t3_thread_id" <<'JS'
-   import { DatabaseSync } from 'node:sqlite';
-   const db = new DatabaseSync(process.argv[2], { readOnly: true });
-   const row = db.prepare(`
-     SELECT json_extract(payload_json, '$.nativeThreadRef.nativeId') AS session_id
-     FROM orchestration_v2_projection_provider_threads
-     WHERE thread_id = ? AND driver = 'codex' AND owner_node_id IS NULL
-     ORDER BY updated_at DESC LIMIT 1
-   `).get(process.argv[3]);
-   console.log(row?.session_id ?? 'No native Codex session yet');
-   JS
-   ```
-
-3. Add that result to `agent-workbench/codex-managers.json` under the hook's state root (`AGENT_WORKBENCH_STATE_HOME`, then `XDG_STATE_HOME`, then `~/.local/state`). The operator maintains this file; install does not create it. Start a new turn to record that turn's state.
+2. Copy the **T3 thread ID** from the top-level thread's T3 link. It stays the same when Codex starts a new native session in that thread.
+3. Add it under `threads` in `agent-workbench/codex-managers.json` under the hook's state root (`AGENT_WORKBENCH_STATE_HOME`, then `XDG_STATE_HOME`, then `~/.local/state`). The operator maintains this file; install does not create it. Start a new turn to record that turn's state.
 
    ```json
-   {"sessions": ["<native Codex session ID>"]}
+   {"threads": ["<T3 thread ID>"], "sessions": ["<native Codex session ID>"]}
    ```
 
-Remove the ID from the file to roll back. The next hook call uses the ordinary Codex policy, without needing a restart or reinstall. A missing or invalid file enrols no sessions. Spawned Codex agents are excluded by their hook markers or separate session IDs.
+Both keys are optional. A single invalid `threads` entry disables the entire `threads` list, just as an invalid `sessions` entry disables the entire `sessions` list. `sessions` uses the native Codex rollout ID (the hook's `session_id`), not the T3 thread ID. For `threads`, the hook looks up that native ID in `${T3CODE_HOME:-~/.t3}/userdata/statev2.sqlite` using read-only SQLite. The native ID must map to exactly one T3 thread. That thread must have a `lineage` object with `relationshipToParent` explicitly set to JSON `null`. Missing lineage or a non-null relationship (including a subagent) cannot enrol by thread. If the database is missing, unreadable, or has no mapping, only `sessions` can enrol the session. Spawned Codex agents with native worker markers are excluded from both lists.
+
+**Upgrade note:** Existing `sessions` entries still work. For T3 Managers, add the stable T3 thread IDs under `threads`, then remove their old native IDs once thread enrolment is confirmed. This avoids re-enrolment after a native session restart. When a denial can identify an unenrolled top-level T3 thread, it tells you which ID to add.
+
+Remove the ID from the file to roll back (from both lists if enrolled both ways). The next hook call uses the ordinary Codex policy, without needing a restart or reinstall.
 
 This is a cooperative guardrail, not a permission boundary. It trusts an operator-maintained file and approval text in prompts, and only sees the tools its hooks match. Indirect calls that Codex does not surface as those tools are outside the gate. The Codex adapter does not register a `PostToolUse` Worker-model check. For a question that blocks progress, the Stop hook points Codex at `request_user_input` or the Chief PM rather than Claude's question tool.
 
