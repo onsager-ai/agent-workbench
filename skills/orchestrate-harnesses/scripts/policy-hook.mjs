@@ -31,7 +31,8 @@ const READ_ONLY_STAMP = "This Worker is read-only: no file edits, commits, pushe
 const THREAD_LAUNCH = "Managers may launch a top-level T3 thread only when the user requests one; " +
   "set nonblank environmentId and projectId and select an exact configured model. " +
   "For models listed in policy.manager_models, quote the user's approval in the launch text as `L3 approval: <link to the approval>`. " +
-  "Model configuration calls have no approval text field and remain limited to non-opt-in L1/L2. " +
+  "Model configuration calls require an explicit threadId and are limited to non-opt-in L1/L2, " +
+  "except that threads enrolled as Codex Managers may be configured with a model listed in policy.manager_models. " +
   "Workers must not launch top-level threads or change thread models. Use a Worker or current-thread wakeup for follow-up work.";
 const SCHEDULE_TASK = "This schedule_task call does not meet the registered schedule rules. " +
   "Use the personal automation registry before activating automation. A Claude Manager or an enrolled Antigravity or Codex Manager " +
@@ -740,7 +741,7 @@ function hasL3Approval(text) {
   return typeof text === "string" && /^L3 approval: \S/m.test(text);
 }
 
-function launchModelAllowed(file, event, model, approved = false) {
+function launchModelAllowed(file, event, model, { approved = false, enrolledTarget = false, provider } = {}) {
   if (typeof model !== "string" || !model.trim()) return false;
   try {
     const { config } = selectWorkerProfile(JSON.parse(fs.readFileSync(file, "utf8")), event);
@@ -750,7 +751,8 @@ function launchModelAllowed(file, event, model, approved = false) {
       const tier = config.tiers[name];
       return tier && !tier.opt_in && matches(tier);
     }));
-    return l1L2Allowed || (approved && config.policy.manager_models?.some((id) => id === model) === true);
+    return l1L2Allowed || ((approved || enrolledTarget) && config.policy.manager_models?.some((id) =>
+      id === model || (enrolledTarget && provider === "codex" && id.replace(/^codex\//, "") === model.replace(/^codex\//, ""))) === true);
   } catch {
     return false;
   }
@@ -947,6 +949,7 @@ function policyStateDirectory() {
 
 const isSessionId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value);
 const isT3ThreadId = (value) => typeof value === "string" && value.length > 0 && value === value.trim();
+const hasEnrolledThread = (threads, id) => Array.isArray(threads) && threads.every(isT3ThreadId) && threads.includes(id);
 
 function appendDenial(host, tool, rule, role, cwd) {
   try {
@@ -1341,11 +1344,9 @@ async function main() {
     const codexTopLevel = codex && topLevelCodex(event);
     const enrolment = codexTopLevel ? codexManagerEnrolment() : undefined;
     const sessions = enrolment?.sessions;
-    const threads = enrolment?.threads;
     const sessionEnrolled = Array.isArray(sessions) && sessions.every(isSessionId) && sessions.includes(event.session_id);
     const codexThread = codexTopLevel && !sessionEnrolled ? await t3Thread(event.session_id, { byCodexSession: true }) : undefined;
-    const threadEnrolled = topLevelT3Thread(codexThread) && Array.isArray(threads) && threads.every(isT3ThreadId) &&
-      threads.includes(codexThread.threadId);
+    const threadEnrolled = topLevelT3Thread(codexThread) && hasEnrolledThread(enrolment?.threads, codexThread.threadId);
     const codexManager = sessionEnrolled || threadEnrolled;
     if (codexTopLevel && !codexManager && (!codexThread || topLevelT3Thread(codexThread))) {
       enrolmentHint = "This top-level Codex session is not enrolled as a Manager. " +
@@ -1493,16 +1494,19 @@ async function main() {
       const model = selection.model;
       const validIds = [input.environmentId, input.projectId].every((value) => typeof value === "string" && value.trim());
       const approved = hasL3Approval(input.message) || hasL3Approval(input.prompt);
-      if (!validIds || !launchModelAllowed(workers, event, model, approved)) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
+      if (!validIds || !launchModelAllowed(workers, event, model, { approved })) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
     } else if (configureModelSelection) {
       const selection = isDict(args.modelSelection) ? args.modelSelection : {};
-      if (!launchModelAllowed(workers, event, selection.model)) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
+      const enrolledTarget = hasEnrolledThread((codexTopLevel ? enrolment : codexManagerEnrolment())?.threads, args.threadId);
+      if (!isT3ThreadId(args.threadId) || !launchModelAllowed(workers, event, selection.model, { enrolledTarget, provider: selection.provider })) {
+        [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
+      }
     } else if (isCreateThreads) {
       const threads = isDict(args) && Array.isArray(args.threads) ? args.threads : [];
       if (!threads.length || threads.some((thread) => {
         const target = isDict(thread) && isDict(thread.target) ? thread.target : {};
         return ![target.environmentId, target.projectId].every((value) => typeof value === "string" && value.trim()) ||
-          !launchModelAllowed(workers, event, target.model, hasL3Approval(thread?.prompt));
+          !launchModelAllowed(workers, event, target.model, { approved: hasL3Approval(thread?.prompt) });
       })) [decision, reason, rule] = ["deny", THREAD_LAUNCH, RULE.threadLaunch];
     } else if (workerContext && (isPrWatch || isLocalAutomation)) {
       [decision, reason, rule] = ["deny", "Workers cannot create automation or initiate new watches. Use the current Manager thread for follow-up work.", RULE.workerAutomation];

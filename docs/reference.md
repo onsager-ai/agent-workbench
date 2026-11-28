@@ -96,7 +96,7 @@ The shell classifier recognizes patterns such as output redirection, mutating Gi
 
 ### Manager models for T3 thread creation
 
-Set `policy.manager_models` in your `workers.yml` override to a list of exact, nonblank model IDs, for example `[example/manager-model]`, then rerun `agent-workbench install`. Managers can launch or create threads with those models by including `L3 approval: <link to the approval>` on its own line in the launch text or each applicable thread prompt. The default `[]` grants no exception. Profiles can replace the list. Changing an existing thread's model remains limited to eligible L1/L2 models.
+Set `policy.manager_models` in your `workers.yml` override to a list of exact, nonblank model IDs, for example `[example/manager-model]`, then rerun `agent-workbench install`. Managers can launch or create threads with those models by including `L3 approval: <link to the approval>` on its own line in the launch text or each applicable thread prompt. The default `[]` grants no exception. Profiles can replace the list. Model changes require an explicit `threadId` and are limited to eligible L1/L2 models unless the target appears under `threads` in `codex-managers.json`, in which case Managers may also select a model from `policy.manager_models`. For this exception, with provider `codex`, model IDs match with or without a single `codex/` prefix.
 
 ### Registered T3 schedules
 
